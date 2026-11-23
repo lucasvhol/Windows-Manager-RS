@@ -1,0 +1,52 @@
+## Categories
+category-home = Home
+category-oneclick = 1-Click
+category-information = Information
+category-optimizer = Optimizer
+category-cleaner = Cleaner
+category-customization = Customization
+category-security = Security
+category-network = Network
+category-misc = Misc. Utilities
+
+## Shell
+shell-search = Search tools…
+shell-admin = Administrator
+shell-standard-user = Standard user
+shell-restart-admin = Restart as administrator
+shell-needs-admin = This tool needs administrator rights to make changes.
+shell-dry-run-active = Dry-run mode is on: changes are only previewed.
+
+## Home
+home-title = Home
+home-welcome = Welcome. Pick a tool from the sidebar.
+home-roadmap = Roadmap
+home-coming = Tools in this category are coming in a later phase.
+
+## Change journal
+journal-title = Change Journal
+journal-intro = Every change made by this app is recorded here and can be undone.
+journal-empty = No changes recorded yet.
+journal-count = { $count ->
+    [one] 1 recorded change
+   *[other] { $count } recorded changes
+}
+journal-undo = Undo
+journal-undone = Undone
+journal-col-time = Time
+journal-col-tool = Tool
+journal-col-change = Change
+journal-col-action = Action
+
+## Settings
+settings-title = Settings
+settings-language = Language
+settings-theme = Theme
+settings-theme-system = System
+settings-theme-light = Light
+settings-theme-dark = Dark
+settings-dry-run = Dry-run mode (preview changes without applying them)
+settings-restore-points = Create a restore point before bulk operations
+settings-create-restore-point = Create restore point now
+settings-restore-point-created = Restore point created.
+settings-open-data = Open data folder
