@@ -96,3 +96,10 @@ startmenu-title = Start Menu Manager
 hotkeys-title = Hotkey Manager
 runshortcuts-title = Run Shortcut Creator
 jumplist-title = JumpList Quick Launcher
+
+## Security tools
+privacy-title = Privacy Protector
+lockdown-title = Settings Security
+filesecurity-title = File Security
+securitylock-title = Security Lock
+undelete-title = File Undelete

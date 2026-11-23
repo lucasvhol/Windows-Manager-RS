@@ -1,0 +1,94 @@
+# Settings Security: per-user policies (the registry equivalent of Group Policy).
+# Useful for shared or child accounts. Everything applies to the CURRENT user only.
+
+[[tweak]]
+id = "no_autorun"
+title = "Turn off AutoPlay/AutoRun on all drives"
+description = "Prevents programs from starting automatically when a USB drive or disc is inserted."
+group = "Hardening"
+effect = "explorer"
+[[tweak.set]]
+key = 'HKCU\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer'
+name = "NoDriveTypeAutoRun"
+on = { dword = 0xFF }
+off = "delete"
+
+[[tweak]]
+id = "no_wsh"
+title = "Disable Windows Script Host (.vbs, .js scripts)"
+description = "Blocks a common malware delivery method. Some old installers and admin scripts need it."
+group = "Hardening"
+[[tweak.set]]
+key = 'HKCU\Software\Microsoft\Windows Script Host\Settings'
+name = "Enabled"
+on = { dword = 0 }
+off = "delete"
+
+[[tweak]]
+id = "no_control_panel"
+title = "Block Control Panel and Settings"
+description = "The user cannot open Control Panel or the Settings app."
+group = "Restrict this account"
+effect = "sign-out"
+[[tweak.set]]
+key = 'HKCU\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer'
+name = "NoControlPanel"
+on = { dword = 1 }
+off = "delete"
+
+[[tweak]]
+id = "no_run_dialog"
+title = "Remove the Run dialog (Win+R)"
+description = "Hides Run from Start and disables Win+R."
+group = "Restrict this account"
+effect = "sign-out"
+[[tweak.set]]
+key = 'HKCU\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer'
+name = "NoRun"
+on = { dword = 1 }
+off = "delete"
+
+[[tweak]]
+id = "no_cmd"
+title = "Block Command Prompt"
+description = "cmd.exe refuses to open interactively (batch files still run)."
+group = "Restrict this account"
+[[tweak.set]]
+key = 'HKCU\Software\Policies\Microsoft\Windows\System'
+name = "DisableCMD"
+on = { dword = 2 }
+off = "delete"
+
+[[tweak]]
+id = "no_task_manager"
+title = "Block Task Manager"
+description = "Task Manager cannot be opened by this user."
+group = "Restrict this account"
+[[tweak.set]]
+key = 'HKCU\Software\Microsoft\Windows\CurrentVersion\Policies\System'
+name = "DisableTaskMgr"
+on = { dword = 1 }
+off = "delete"
+
+[[tweak]]
+id = "no_regedit"
+title = "Block Registry Editor"
+description = "Blocks regedit and reg.exe for this user. Win Manager RS uses reg.exe to back up registry keys, so whole-key backups and their undo stop working while this is on (single-value changes are unaffected)."
+group = "Restrict this account"
+[[tweak.set]]
+key = 'HKCU\Software\Microsoft\Windows\CurrentVersion\Policies\System'
+name = "DisableRegistryTools"
+on = { dword = 1 }
+off = "delete"
+
+[[tweak]]
+id = "no_wallpaper_change"
+title = "Prevent changing the desktop background"
+description = "Locks the current wallpaper."
+group = "Restrict this account"
+effect = "sign-out"
+[[tweak.set]]
+key = 'HKCU\Software\Microsoft\Windows\CurrentVersion\Policies\ActiveDesktop'
+name = "NoChangingWallPaper"
+on = { dword = 1 }
+off = "delete"

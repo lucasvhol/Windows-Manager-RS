@@ -1,0 +1,171 @@
+# Privacy Protector settings. `off` is the Windows default ("delete" = value absent).
+
+[[tweak]]
+id = "advertising_id"
+title = "Turn off the advertising ID"
+description = "Apps can no longer use your advertising ID to show personalised ads."
+group = "Advertising and personalisation"
+[[tweak.set]]
+key = 'HKCU\Software\Microsoft\Windows\CurrentVersion\AdvertisingInfo'
+name = "Enabled"
+on = { dword = 0 }
+off = { dword = 1 }
+
+[[tweak]]
+id = "tailored_experiences"
+title = "Turn off tailored experiences"
+description = "Microsoft no longer uses diagnostic data to personalise tips, ads and recommendations."
+group = "Advertising and personalisation"
+[[tweak.set]]
+key = 'HKCU\Software\Microsoft\Windows\CurrentVersion\Privacy'
+name = "TailoredExperiencesWithDiagnosticDataEnabled"
+on = { dword = 0 }
+off = { dword = 1 }
+
+[[tweak]]
+id = "language_list"
+title = "Don't let websites read my language list"
+description = "Websites no longer see your installed languages to tailor content."
+group = "Advertising and personalisation"
+[[tweak.set]]
+key = 'HKCU\Control Panel\International\User Profile'
+name = "HttpAcceptLanguageOptOut"
+on = { dword = 1 }
+off = "delete"
+
+[[tweak]]
+id = "track_launches"
+title = "Don't track app launches"
+description = "Windows stops recording which apps you open to improve Start and search."
+group = "Advertising and personalisation"
+[[tweak.set]]
+key = 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced'
+name = "Start_TrackProgs"
+on = { dword = 0 }
+off = "delete"
+
+[[tweak]]
+id = "settings_suggestions"
+title = "Hide suggested content in Settings"
+description = "Removes Microsoft suggestions shown inside the Settings app."
+group = "Suggestions and ads"
+[[tweak.set]]
+key = 'HKCU\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager'
+name = "SubscribedContent-338393Enabled"
+on = { dword = 0 }
+off = { dword = 1 }
+[[tweak.set]]
+key = 'HKCU\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager'
+name = "SubscribedContent-353694Enabled"
+on = { dword = 0 }
+off = { dword = 1 }
+[[tweak.set]]
+key = 'HKCU\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager'
+name = "SubscribedContent-353696Enabled"
+on = { dword = 0 }
+off = { dword = 1 }
+
+[[tweak]]
+id = "tips_notifications"
+title = "Turn off tips and suggestions notifications"
+description = "Stops \"Get tips and suggestions when using Windows\" notifications."
+group = "Suggestions and ads"
+[[tweak.set]]
+key = 'HKCU\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager'
+name = "SubscribedContent-338389Enabled"
+on = { dword = 0 }
+off = { dword = 1 }
+[[tweak.set]]
+key = 'HKCU\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager'
+name = "SoftLandingEnabled"
+on = { dword = 0 }
+off = { dword = 1 }
+
+[[tweak]]
+id = "lock_screen_facts"
+title = "No fun facts and tips on the lock screen"
+description = "Removes Microsoft content overlaid on the lock screen picture."
+group = "Suggestions and ads"
+[[tweak.set]]
+key = 'HKCU\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager'
+name = "RotatingLockScreenOverlayEnabled"
+on = { dword = 0 }
+off = { dword = 1 }
+
+[[tweak]]
+id = "silent_app_installs"
+title = "Block automatic installation of suggested apps"
+description = "Stops Windows from silently installing promoted apps."
+group = "Suggestions and ads"
+[[tweak.set]]
+key = 'HKCU\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager'
+name = "SilentInstalledAppsEnabled"
+on = { dword = 0 }
+off = { dword = 1 }
+
+[[tweak]]
+id = "inking_typing"
+title = "Turn off inking and typing personalisation"
+description = "Windows stops building a personal dictionary from your typing and handwriting."
+group = "Data collection"
+[[tweak.set]]
+key = 'HKCU\Software\Microsoft\InputPersonalization'
+name = "RestrictImplicitInkCollection"
+on = { dword = 1 }
+off = { dword = 0 }
+[[tweak.set]]
+key = 'HKCU\Software\Microsoft\InputPersonalization'
+name = "RestrictImplicitTextCollection"
+on = { dword = 1 }
+off = { dword = 0 }
+[[tweak.set]]
+key = 'HKCU\Software\Microsoft\InputPersonalization\TrainedDataStore'
+name = "HarvestContacts"
+on = { dword = 0 }
+off = { dword = 1 }
+
+[[tweak]]
+id = "feedback_prompts"
+title = "Never ask for feedback"
+description = "Windows stops showing feedback surveys."
+group = "Data collection"
+[[tweak.set]]
+key = 'HKCU\Software\Microsoft\Siuf\Rules'
+name = "NumberOfSIUFInPeriod"
+on = { dword = 0 }
+off = "delete"
+
+[[tweak]]
+id = "recall_snapshots"
+title = "Turn off Recall snapshots"
+description = "On Copilot+ PCs, Windows stops saving snapshots of your screen (policy DisableAIDataAnalysis)."
+group = "Data collection"
+effect = "sign-out"
+[[tweak.set]]
+key = 'HKCU\Software\Policies\Microsoft\Windows\WindowsAI'
+name = "DisableAIDataAnalysis"
+on = { dword = 1 }
+off = "delete"
+
+[[tweak]]
+id = "diagnostic_required"
+title = "Send only required diagnostic data"
+description = "Limits Windows telemetry to the required level (policy AllowTelemetry = 1)."
+group = "Data collection"
+effect = "restart"
+[[tweak.set]]
+key = 'HKLM\SOFTWARE\Policies\Microsoft\Windows\DataCollection'
+name = "AllowTelemetry"
+on = { dword = 1 }
+off = "delete"
+
+[[tweak]]
+id = "activity_history"
+title = "Don't collect activity history"
+description = "Windows stops recording the apps, files and sites you use (policy PublishUserActivities)."
+group = "Data collection"
+[[tweak.set]]
+key = 'HKLM\SOFTWARE\Policies\Microsoft\Windows\System'
+name = "PublishUserActivities"
+on = { dword = 0 }
+off = "delete"

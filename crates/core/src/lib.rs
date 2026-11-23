@@ -2,6 +2,7 @@
 //! localisation, elevation helpers, background tasks and the safety layer
 //! (change journal + restore points) that all system-modifying code must go through.
 
+pub mod acl;
 pub mod config;
 pub mod elevation;
 pub mod i18n;
