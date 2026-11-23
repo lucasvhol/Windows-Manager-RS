@@ -69,6 +69,8 @@ pub enum Effect {
     Immediate,
     SignOut,
     Restart,
+    /// Takes effect when Explorer restarts (the panel offers a restart button).
+    Explorer,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -121,7 +123,10 @@ impl Tweak {
                 let data = if apply { &s.on } else { &s.off };
                 match data.to_raw() {
                     Some(v) => registry::write_raw(&s.key, &s.name, &v)?,
-                    None => registry::delete_value(&s.key, &s.name)?,
+                    None => {
+                        registry::delete_value(&s.key, &s.name)?;
+                        registry::prune_empty_class_override(&s.key);
+                    }
                 }
             }
             Ok(())
@@ -171,6 +176,8 @@ pub struct TweakPanel {
     tweaks: Vec<Tweak>,
     states: Vec<State>,
     message: Message,
+    /// Set after changing a tweak that only takes effect once Explorer restarts.
+    explorer_restart_pending: bool,
 }
 
 impl TweakPanel {
@@ -182,6 +189,7 @@ impl TweakPanel {
             states: Vec::new(),
             tweaks,
             message: None,
+            explorer_restart_pending: false,
         }
     }
 
@@ -204,6 +212,14 @@ impl TweakPanel {
             }
             let applied = self.states.iter().filter(|s| **s == State::Applied).count();
             ui.weak(format!("{applied} of {} tweaks applied", self.tweaks.len()));
+            if self.explorer_restart_pending && ui.button("Restart Explorer to apply").clicked() {
+                self.message = Some(
+                    crate::process::restart_explorer()
+                        .map(|()| "Explorer restarted.".to_owned())
+                        .map_err(|e| format!("{e:#}")),
+                );
+                self.explorer_restart_pending = false;
+            }
         });
         show_message(ui, &self.message);
         ui.add_space(6.0);
@@ -244,6 +260,9 @@ impl TweakPanel {
                         Effect::Restart => {
                             ui.weak("· after restart");
                         }
+                        Effect::Explorer => {
+                            ui.weak("· after Explorer restart");
+                        }
                     }
                     if t.needs_admin() {
                         ui.weak("· admin");
@@ -267,6 +286,9 @@ impl TweakPanel {
                 } else {
                     t.revert(ctx.journal, self.tool)
                 };
+                if r.is_ok() && t.effect == Effect::Explorer {
+                    self.explorer_restart_pending = true;
+                }
                 r.map(|()| format!("{} {}.", if apply { "Applied" } else { "Reverted" }, t.title))
                     .map_err(|e| format!("{e:#}"))
             });

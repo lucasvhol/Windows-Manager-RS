@@ -27,6 +27,10 @@ pub enum UndoAction {
     RestoreFromRecycleBin { paths: Vec<PathBuf> },
     /// Files were moved `(from, to)`; undo moves each `to` back to `from`.
     MoveBack { moves: Vec<(PathBuf, PathBuf)> },
+    /// Files were created by the change; undo moves them to the Recycle Bin.
+    DeleteCreatedFiles { paths: Vec<PathBuf> },
+    /// A file was modified; undo copies the pre-change `backup` over `original`.
+    RestoreFile { original: PathBuf, backup: PathBuf },
     /// Run a command to revert (e.g. `sc config … start= auto`).
     RunCommand { program: String, args: Vec<String> },
     /// The change cannot be reverted automatically (recorded for the audit trail only).
@@ -126,6 +130,21 @@ impl ChangeJournal {
         Ok(UndoAction::ImportRegFile { path })
     }
 
+    /// Copies a file to the backups folder *before* it is modified; returns the undo action.
+    pub fn backup_file(&self, path: &Path) -> Result<UndoAction> {
+        let stamp = Local::now().format("%Y%m%d-%H%M%S%.3f");
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let backup = self.backups.join(format!("{stamp}-{name}"));
+        std::fs::copy(path, &backup).with_context(|| format!("backing up {}", path.display()))?;
+        Ok(UndoAction::RestoreFile {
+            original: path.to_owned(),
+            backup,
+        })
+    }
+
     /// Moves files/folders to the Recycle Bin and journals it.
     pub fn recycle(&self, tool: &str, description: impl Into<String>, paths: Vec<PathBuf>) -> Result<Entry> {
         trash::delete_all(&paths).context("moving to Recycle Bin")?;
@@ -177,6 +196,16 @@ fn execute_undo(action: &UndoAction) -> Result<()> {
                 bail!("items are no longer in the Recycle Bin");
             }
             trash::os_limited::restore_all(items).map_err(|e| anyhow::anyhow!("{e}"))?;
+        }
+        UndoAction::DeleteCreatedFiles { paths } => {
+            let existing: Vec<&PathBuf> = paths.iter().filter(|p| p.exists()).collect();
+            if !existing.is_empty() {
+                trash::delete_all(existing).context("moving created files to the Recycle Bin")?;
+            }
+        }
+        UndoAction::RestoreFile { original, backup } => {
+            std::fs::copy(backup, original)
+                .with_context(|| format!("restoring {} from {}", original.display(), backup.display()))?;
         }
         UndoAction::MoveBack { moves } => {
             let mut failed = Vec::new();

@@ -1,0 +1,46 @@
+# Start menu options. `off` is the Windows default ("delete" = value absent).
+
+[[tweak]]
+id = "start_no_recent"
+title = "Don't show recently opened items in Start"
+description = "Hides recent files in Start, Jump Lists and File Explorer."
+group = "Start menu"
+[[tweak.set]]
+key = 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced'
+name = "Start_TrackDocs"
+on = { dword = 0 }
+off = "delete"
+
+[[tweak]]
+id = "start_no_recommendations"
+title = "Don't show tips and app recommendations in Start"
+description = "Removes suggestions for apps and tips from the Recommended section."
+group = "Start menu"
+[[tweak.set]]
+key = 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced'
+name = "Start_IrisRecommendations"
+on = { dword = 0 }
+off = "delete"
+
+[[tweak]]
+id = "start_more_pins"
+title = "Show more pins"
+description = "Uses the \"More pins\" layout (fewer recommendations)."
+group = "Start menu"
+[[tweak.set]]
+key = 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced'
+name = "Start_Layout"
+on = { dword = 1 }
+off = "delete"
+
+[[tweak]]
+id = "start_no_web_search"
+title = "Don't search the web from Start"
+description = "Start search only shows results from this PC (Bing suggestions off)."
+group = "Search"
+effect = "sign-out"
+[[tweak.set]]
+key = 'HKCU\Software\Policies\Microsoft\Windows\Explorer'
+name = "DisableSearchBoxSuggestions"
+on = { dword = 1 }
+off = "delete"

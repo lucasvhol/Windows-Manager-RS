@@ -59,6 +59,35 @@ pub fn exe_from_command(command: &str) -> Option<String> {
     split_command_line(command).map(|(exe, _)| exe)
 }
 
+fn explorer_running() -> bool {
+    hidden_command("tasklist")
+        .args(["/fi", "imagename eq explorer.exe", "/fo", "csv", "/nh"])
+        .output()
+        .is_ok_and(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .to_lowercase()
+                .contains("explorer.exe")
+        })
+}
+
+/// Restarts the Windows shell so Explorer/taskbar settings take effect.
+/// Windows usually restarts the shell by itself; we only start it if it did not.
+pub fn restart_explorer() -> Result<()> {
+    let _ = hidden_command("taskkill")
+        .args(["/f", "/im", "explorer.exe"])
+        .output();
+    for _ in 0..20 {
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        if explorer_running() {
+            return Ok(());
+        }
+    }
+    Command::new("explorer.exe")
+        .spawn()
+        .context("starting explorer.exe")?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

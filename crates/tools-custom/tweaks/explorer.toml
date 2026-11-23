@@ -1,0 +1,114 @@
+# File Explorer Tweaker. `off` is the Windows default ("delete" = value absent).
+
+[[tweak]]
+id = "show_extensions"
+title = "Show file name extensions"
+description = "Shows .exe, .pdf and other extensions, which helps spot disguised files."
+group = "Files"
+[[tweak.set]]
+key = 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced'
+name = "HideFileExt"
+on = { dword = 0 }
+off = { dword = 1 }
+
+[[tweak]]
+id = "show_hidden"
+title = "Show hidden files and folders"
+description = "Shows items marked hidden (system files stay hidden)."
+group = "Files"
+[[tweak.set]]
+key = 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced'
+name = "Hidden"
+on = { dword = 1 }
+off = { dword = 2 }
+
+[[tweak]]
+id = "show_super_hidden"
+title = "Show protected operating system files"
+description = "Shows files Windows protects. Deleting them can break Windows; enable only when needed."
+group = "Files"
+[[tweak.set]]
+key = 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced'
+name = "ShowSuperHidden"
+on = { dword = 1 }
+off = { dword = 0 }
+
+[[tweak]]
+id = "item_checkboxes"
+title = "Use check boxes to select items"
+description = "Shows a check box next to files for easy multi-select."
+group = "Files"
+[[tweak.set]]
+key = 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced'
+name = "AutoCheckSelect"
+on = { dword = 1 }
+off = { dword = 0 }
+
+[[tweak]]
+id = "no_shortcut_suffix"
+title = "Don't add \"- Shortcut\" to new shortcuts"
+description = "New shortcuts keep the original name."
+group = "Files"
+effect = "explorer"
+[[tweak.set]]
+key = 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\NamingTemplates'
+name = "ShortcutNameTemplate"
+on = { sz = "%s.lnk" }
+off = "delete"
+
+[[tweak]]
+id = "open_this_pc"
+title = "Open File Explorer to This PC"
+description = "Starts File Explorer on This PC instead of Home."
+group = "Windows and views"
+[[tweak.set]]
+key = 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced'
+name = "LaunchTo"
+on = { dword = 1 }
+off = "delete"
+
+[[tweak]]
+id = "full_path_title"
+title = "Show the full path in the title bar"
+description = "Displays the complete folder path in the window title."
+group = "Windows and views"
+[[tweak.set]]
+key = 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\CabinetState'
+name = "FullPath"
+on = { dword = 1 }
+off = { dword = 0 }
+
+[[tweak]]
+id = "compact_view"
+title = "Compact view"
+description = "Reduces the spacing between items."
+group = "Windows and views"
+[[tweak.set]]
+key = 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced'
+name = "UseCompactMode"
+on = { dword = 1 }
+off = { dword = 0 }
+
+[[tweak]]
+id = "no_recent_files"
+title = "Don't show recent files in Home"
+description = "Stops listing recently opened files in File Explorer Home."
+group = "Privacy"
+effect = "explorer"
+[[tweak.set]]
+key = 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer'
+name = "ShowRecent"
+on = { dword = 0 }
+off = "delete"
+
+[[tweak]]
+id = "no_frequent_folders"
+title = "Don't show frequent folders in Home"
+description = "Stops listing frequently used folders in File Explorer Home."
+group = "Privacy"
+effect = "explorer"
+[[tweak.set]]
+key = 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer'
+name = "ShowFrequent"
+on = { dword = 0 }
+off = "delete"

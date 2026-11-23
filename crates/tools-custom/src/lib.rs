@@ -1,0 +1,72 @@
+//! Customization tools (Phase 4): context menu, Win+X, Start menu, hotkeys, Run
+//! aliases, jump list launcher, and visual / Explorer / This PC / navigation pane tweaks.
+
+mod context_menu;
+mod hotkeys;
+mod jumplist;
+mod run_shortcuts;
+mod start_menu;
+mod tweak_tool;
+mod winx;
+
+use tweak_tool::TweakTool;
+use wm_core::Tool;
+
+pub fn tools() -> Vec<Box<dyn Tool>> {
+    vec![
+        Box::new(TweakTool::new(
+            "visual",
+            "Theme, taskbar and window appearance. Each switch restores the Windows default when turned off.",
+            include_str!("../tweaks/visual.toml"),
+        )),
+        Box::new(TweakTool::new(
+            "explorertweaks",
+            "File Explorer options that are otherwise spread across several dialogs.",
+            include_str!("../tweaks/explorer.toml"),
+        )),
+        Box::new(TweakTool::new(
+            "thispc",
+            "Choose which personal folders appear in This PC. Applies to all users (administrator required).",
+            include_str!("../tweaks/thispc.toml"),
+        )),
+        Box::new(TweakTool::new(
+            "navpane",
+            "Choose what the File Explorer navigation pane shows.",
+            include_str!("../tweaks/navpane.toml"),
+        )),
+        Box::new(context_menu::ContextMenuManager::default()),
+        Box::new(winx::WinXEditor::default()),
+        Box::new(start_menu::StartMenuManager::default()),
+        Box::new(hotkeys::HotkeyManager::default()),
+        Box::new(run_shortcuts::RunShortcuts::default()),
+        Box::new(jumplist::JumpListLauncher::default()),
+    ]
+}
+
+#[cfg(test)]
+mod tests {
+    use wm_core::tweaks::parse;
+
+    #[test]
+    fn all_tweak_files_parse_with_unique_ids() {
+        let mut ids = Vec::new();
+        for text in [
+            include_str!("../tweaks/visual.toml"),
+            include_str!("../tweaks/explorer.toml"),
+            include_str!("../tweaks/thispc.toml"),
+            include_str!("../tweaks/navpane.toml"),
+            include_str!("../tweaks/start.toml"),
+        ] {
+            for t in parse(text).unwrap() {
+                assert!(!t.settings.is_empty());
+                assert!(t.settings.iter().all(|s| s.on != s.off), "{}", t.id);
+                let _ = t.state();
+                ids.push(t.id);
+            }
+        }
+        let n = ids.len();
+        ids.sort();
+        ids.dedup();
+        assert_eq!(ids.len(), n, "duplicate tweak ids across files");
+    }
+}

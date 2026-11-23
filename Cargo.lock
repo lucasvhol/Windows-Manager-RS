@@ -4480,6 +4480,7 @@ dependencies = [
  "winresource",
  "wm-core",
  "wm-tools-cleaner",
+ "wm-tools-custom",
  "wm-tools-info",
  "wm-tools-optimizer",
 ]
@@ -4856,6 +4857,21 @@ dependencies = [
  "walkdir",
  "windows",
  "winreg",
+ "wm-core",
+]
+
+[[package]]
+name = "wm-tools-custom"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "rfd",
+ "serde",
+ "tempfile",
+ "toml",
+ "tracing",
+ "walkdir",
+ "windows",
  "wm-core",
 ]
 

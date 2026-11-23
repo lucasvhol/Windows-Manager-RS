@@ -57,6 +57,95 @@ pub fn is_broken_shortcut(lnk: &Path) -> bool {
     matches!(shortcut_target(lnk), Ok(Some(t)) if !t.exists())
 }
 
+/// Initialises COM (single-threaded apartment) on the current thread if needed.
+/// Safe to call repeatedly; an already-initialised thread is left as it is.
+pub fn ensure_com() {
+    unsafe {
+        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+    }
+}
+
+/// What a shortcut should launch.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ShortcutSpec {
+    pub target: PathBuf,
+    pub args: String,
+    pub working_dir: Option<PathBuf>,
+    pub description: String,
+    /// `HOTKEYF_*` modifiers in the high byte, virtual-key code in the low byte; 0 = none.
+    pub hotkey: u16,
+}
+
+/// Builds an in-memory shell link (also used for jump list tasks).
+pub fn make_link(spec: &ShortcutSpec) -> Result<IShellLinkW> {
+    unsafe {
+        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        let link: IShellLinkW = CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER)?;
+        link.SetPath(&HSTRING::from(spec.target.as_os_str()))?;
+        if !spec.args.is_empty() {
+            link.SetArguments(&HSTRING::from(spec.args.as_str()))?;
+        }
+        let dir = spec
+            .working_dir
+            .clone()
+            .or_else(|| spec.target.parent().map(Path::to_path_buf));
+        if let Some(d) = dir {
+            link.SetWorkingDirectory(&HSTRING::from(d.as_os_str()))?;
+        }
+        if !spec.description.is_empty() {
+            link.SetDescription(&HSTRING::from(spec.description.as_str()))?;
+        }
+        link.SetIconLocation(&HSTRING::from(spec.target.as_os_str()), 0)?;
+        if spec.hotkey != 0 {
+            link.SetHotkey(spec.hotkey)?;
+        }
+        Ok(link)
+    }
+}
+
+/// Writes a `.lnk` file.
+pub fn create_shortcut(lnk: &Path, spec: &ShortcutSpec) -> Result<()> {
+    let link = make_link(spec)?;
+    unsafe {
+        link.cast::<IPersistFile>()?
+            .Save(&HSTRING::from(lnk.as_os_str()), true)?
+    };
+    Ok(())
+}
+
+/// Reads target, arguments and hotkey from a `.lnk` file.
+pub fn read_shortcut(lnk: &Path) -> Result<ShortcutSpec> {
+    unsafe {
+        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        let link: IShellLinkW = CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER)?;
+        link.cast::<IPersistFile>()?
+            .Load(&HSTRING::from(lnk.as_os_str()), STGM_READ)?;
+        let mut buf = vec![0u16; 2048];
+        let text = |buf: &[u16]| {
+            let end = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+            String::from_utf16_lossy(&buf[..end])
+        };
+        let target = if link.GetPath(&mut buf, std::ptr::null_mut(), 4).is_ok() {
+            text(&buf)
+        } else {
+            String::new()
+        };
+        buf.fill(0);
+        let args = if link.GetArguments(&mut buf).is_ok() {
+            text(&buf)
+        } else {
+            String::new()
+        };
+        Ok(ShortcutSpec {
+            target: PathBuf::from(crate::paths::expand_env(&target)),
+            args,
+            working_dir: None,
+            description: String::new(),
+            hotkey: link.GetHotkey().unwrap_or(0),
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -94,5 +183,23 @@ mod tests {
         );
         assert!(!is_broken_shortcut(&good));
         assert!(is_broken_shortcut(&bad));
+    }
+
+    #[test]
+    fn create_and_read_shortcut_with_hotkey() {
+        let dir = tempfile::tempdir().unwrap();
+        let lnk = dir.path().join("np.lnk");
+        // Ctrl+Alt+N: modifiers (HOTKEYF_CONTROL 2 | HOTKEYF_ALT 4) << 8 | 'N'.
+        let spec = ShortcutSpec {
+            target: PathBuf::from(r"C:\Windows\notepad.exe"),
+            args: "/A test.txt".into(),
+            hotkey: (6 << 8) | u16::from(b'N'),
+            ..Default::default()
+        };
+        create_shortcut(&lnk, &spec).unwrap();
+        let back = read_shortcut(&lnk).unwrap();
+        assert_eq!(back.target, spec.target);
+        assert_eq!(back.args, spec.args);
+        assert_eq!(back.hotkey, spec.hotkey);
     }
 }

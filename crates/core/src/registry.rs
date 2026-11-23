@@ -138,7 +138,28 @@ pub fn delete_value(key: &str, name: &str) -> Result<()> {
 pub fn restore(s: &ValueSnapshot) -> Result<()> {
     match &s.previous {
         Some(v) => write_raw(&s.key, &s.name, v),
-        None => delete_value(&s.key, &s.name),
+        None => {
+            delete_value(&s.key, &s.name)?;
+            prune_empty_class_override(&s.key);
+            Ok(())
+        }
+    }
+}
+
+/// A per-user `HKCU\Software\Classes\…` key shadows the machine-wide key of the same
+/// name in HKCR. If deleting a value left such a key completely empty, remove it so the
+/// system default shows through again.
+pub fn prune_empty_class_override(key: &str) {
+    let lower = key.to_ascii_lowercase();
+    if !(lower.starts_with(r"hkcu\software\classes\")
+        || lower.starts_with(r"hkey_current_user\software\classes\"))
+    {
+        return;
+    }
+    let Ok(k) = open_read(key) else { return };
+    let empty = k.query_info().is_ok_and(|i| i.sub_keys == 0 && i.values == 0);
+    if empty && let Ok((root, sub)) = split_path(key) {
+        let _ = root.delete_subkey(sub);
     }
 }
 
@@ -235,5 +256,23 @@ mod tests {
         root.delete_subkey_all(sub).unwrap();
         // Deleting from a missing key is a no-op.
         delete_value(&key, "Existing").unwrap();
+    }
+
+    #[test]
+    fn empty_class_override_is_pruned_but_others_kept() {
+        let class_key = format!(r"HKCU\Software\Classes\CLSID\{{wm-test-{}}}", std::process::id());
+        let snap = snapshot(&class_key, "System.IsPinnedToNameSpaceTree");
+        write_raw(&class_key, "System.IsPinnedToNameSpaceTree", &dword(0)).unwrap();
+        restore(&snap).unwrap();
+        assert!(open_read(&class_key).is_err(), "empty per-user class key removed");
+
+        // Keys outside HKCU\Software\Classes are never pruned.
+        let other = test_key("noprune");
+        write_raw(&other, "x", &dword(1)).unwrap();
+        delete_value(&other, "x").unwrap();
+        prune_empty_class_override(&other);
+        assert!(open_read(&other).is_ok());
+        let (root, sub) = split_path(&other).unwrap();
+        root.delete_subkey_all(sub).unwrap();
     }
 }

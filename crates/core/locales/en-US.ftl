@@ -84,3 +84,15 @@ uninstaller-title = Smart Uninstaller
 apps-title = Windows Apps Uninstaller
 winsxs-title = Component Store Cleaner
 regclean-title = Registry Cleaner
+
+## Customization tools
+visual-title = Visual Customizer
+explorertweaks-title = File Explorer Tweaker
+thispc-title = This PC Manager
+navpane-title = Navigation Pane
+contextmenu-title = Context Menu Manager
+winx-title = Win+X Menu Editor
+startmenu-title = Start Menu Manager
+hotkeys-title = Hotkey Manager
+runshortcuts-title = Run Shortcut Creator
+jumplist-title = JumpList Quick Launcher

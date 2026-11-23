@@ -1,0 +1,60 @@
+# Navigation Pane. Per-user overrides of the documented
+# System.IsPinnedToNameSpaceTree property (HKCU\Software\Classes\CLSID\…).
+
+[[tweak]]
+id = "nav_hide_home"
+title = "Hide Home"
+description = "Removes Home (recent and pinned items) from the navigation pane."
+group = "Items"
+effect = "explorer"
+[[tweak.set]]
+key = 'HKCU\Software\Classes\CLSID\{f874310e-b6b7-47dc-bc84-b9e6b38f5903}'
+name = "System.IsPinnedToNameSpaceTree"
+on = { dword = 0 }
+off = "delete"
+
+[[tweak]]
+id = "nav_hide_gallery"
+title = "Hide Gallery"
+description = "Removes Gallery from the navigation pane."
+group = "Items"
+effect = "explorer"
+[[tweak.set]]
+key = 'HKCU\Software\Classes\CLSID\{e88865ea-0e1c-4e20-9aa6-edcd0212c87c}'
+name = "System.IsPinnedToNameSpaceTree"
+on = { dword = 0 }
+off = "delete"
+
+[[tweak]]
+id = "nav_show_libraries"
+title = "Show Libraries"
+description = "Adds Libraries (Documents, Music, Pictures, Videos) to the navigation pane."
+group = "Items"
+effect = "explorer"
+[[tweak.set]]
+key = 'HKCU\Software\Classes\CLSID\{031E4825-7B94-4dc3-B131-E946B44C8DD5}'
+name = "System.IsPinnedToNameSpaceTree"
+on = { dword = 1 }
+off = "delete"
+
+[[tweak]]
+id = "nav_expand_current"
+title = "Expand to the open folder"
+description = "The navigation pane follows the folder you are viewing."
+group = "Behaviour"
+[[tweak.set]]
+key = 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced'
+name = "NavPaneExpandToCurrentFolder"
+on = { dword = 1 }
+off = { dword = 0 }
+
+[[tweak]]
+id = "nav_show_all"
+title = "Show all folders"
+description = "Shows Desktop contents, Control Panel and Recycle Bin in the navigation pane."
+group = "Behaviour"
+[[tweak.set]]
+key = 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced'
+name = "NavPaneShowAllFolders"
+on = { dword = 1 }
+off = { dword = 0 }

@@ -1,0 +1,104 @@
+# Visual Customizer. `off` is the Windows default ("delete" = value absent).
+
+[[tweak]]
+id = "dark_apps"
+title = "Dark mode for apps"
+description = "Apps that follow the Windows theme use dark mode (Settings › Personalization › Colors)."
+group = "Theme"
+[[tweak.set]]
+key = 'HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize'
+name = "AppsUseLightTheme"
+on = { dword = 0 }
+off = { dword = 1 }
+
+[[tweak]]
+id = "dark_system"
+title = "Dark mode for Windows (taskbar, Start)"
+description = "Uses the dark theme for the taskbar, Start and notifications."
+group = "Theme"
+[[tweak.set]]
+key = 'HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize'
+name = "SystemUsesLightTheme"
+on = { dword = 0 }
+off = { dword = 1 }
+
+[[tweak]]
+id = "accent_titlebars"
+title = "Accent colour on title bars and window borders"
+description = "Colours the title bar of the active window with your accent colour."
+group = "Theme"
+[[tweak.set]]
+key = 'HKCU\Software\Microsoft\Windows\DWM'
+name = "ColorPrevalence"
+on = { dword = 1 }
+off = { dword = 0 }
+
+[[tweak]]
+id = "taskbar_left"
+title = "Align taskbar icons to the left"
+description = "Places Start and taskbar icons on the left like earlier Windows versions."
+group = "Taskbar"
+effect = "explorer"
+[[tweak.set]]
+key = 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced'
+name = "TaskbarAl"
+on = { dword = 0 }
+off = "delete"
+
+[[tweak]]
+id = "hide_task_view"
+title = "Hide the Task View button"
+description = "Removes the Task View button; Win+Tab still works."
+group = "Taskbar"
+effect = "explorer"
+[[tweak.set]]
+key = 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced'
+name = "ShowTaskViewButton"
+on = { dword = 0 }
+off = "delete"
+
+[[tweak]]
+id = "hide_search_box"
+title = "Hide the taskbar search box"
+description = "Removes search from the taskbar; press Win and type to search."
+group = "Taskbar"
+effect = "explorer"
+[[tweak.set]]
+key = 'HKCU\Software\Microsoft\Windows\CurrentVersion\Search'
+name = "SearchboxTaskbarMode"
+on = { dword = 0 }
+off = "delete"
+
+[[tweak]]
+id = "clock_seconds"
+title = "Show seconds in the taskbar clock"
+description = "Uses slightly more power on laptops."
+group = "Taskbar"
+effect = "explorer"
+[[tweak.set]]
+key = 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced'
+name = "ShowSecondsInSystemClock"
+on = { dword = 1 }
+off = "delete"
+
+[[tweak]]
+id = "end_task"
+title = "Add \"End task\" to taskbar right-click menus"
+description = "Lets you close an unresponsive app from its taskbar button."
+group = "Taskbar"
+[[tweak.set]]
+key = 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced\TaskbarDeveloperSettings'
+name = "TaskbarEndTask"
+on = { dword = 1 }
+off = "delete"
+
+[[tweak]]
+id = "no_snap_flyout"
+title = "Hide the snap layouts flyout on the maximise button"
+description = "Snap layouts stay available with Win+Z."
+group = "Windows"
+[[tweak.set]]
+key = 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced'
+name = "EnableSnapAssistFlyout"
+on = { dword = 0 }
+off = "delete"
