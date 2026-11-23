@@ -67,3 +67,10 @@ procman-title = Process Manager
 hwmon-title = Hardware Monitor
 events-title = Event Viewer
 devices-title = Device Manager
+
+## Optimizer tools
+startup-title = Startup Manager
+services-title = Service Manager
+tasks-title = Task Scheduler
+boot-title = Boot Configuration
+speed-title = System Speed

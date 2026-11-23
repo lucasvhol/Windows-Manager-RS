@@ -1,0 +1,239 @@
+//! Registry helpers: `HKCU\…`-style path parsing and exact value snapshots for undo.
+//!
+//! A [`ValueSnapshot`] records whether a value existed and its exact type and bytes, so
+//! restoring it can also *delete* a value that a change created. A `.reg` re-import
+//! cannot do that.
+
+use std::borrow::Cow;
+
+use anyhow::{Context, Result, bail};
+use serde::{Deserialize, Serialize};
+use winreg::enums::*;
+use winreg::{RegKey, RegValue};
+
+/// Splits `HKCU\Software\Foo` into the root key and the sub-path.
+pub fn split_path(path: &str) -> Result<(RegKey, &str)> {
+    let (root, sub) = path.split_once('\\').unwrap_or((path, ""));
+    let hkey = match root.to_ascii_uppercase().as_str() {
+        "HKCU" | "HKEY_CURRENT_USER" => HKEY_CURRENT_USER,
+        "HKLM" | "HKEY_LOCAL_MACHINE" => HKEY_LOCAL_MACHINE,
+        "HKCR" | "HKEY_CLASSES_ROOT" => HKEY_CLASSES_ROOT,
+        "HKU" | "HKEY_USERS" => HKEY_USERS,
+        "HKCC" | "HKEY_CURRENT_CONFIG" => HKEY_CURRENT_CONFIG,
+        other => bail!("unknown registry root `{other}`"),
+    };
+    Ok((RegKey::predef(hkey), sub))
+}
+
+/// True for keys under HKLM / HKCR / HKU, which normally need administrator rights to write.
+pub fn needs_admin(path: &str) -> bool {
+    !matches!(
+        path.split('\\').next().map(|r| r.to_ascii_uppercase()).as_deref(),
+        Some("HKCU" | "HKEY_CURRENT_USER")
+    )
+}
+
+pub fn open_read(path: &str) -> Result<RegKey> {
+    let (root, sub) = split_path(path)?;
+    root.open_subkey_with_flags(sub, KEY_READ)
+        .with_context(|| format!("opening {path}"))
+}
+
+/// Opens (creating if needed) a key for writing.
+pub fn open_write(path: &str) -> Result<RegKey> {
+    let (root, sub) = split_path(path)?;
+    let (key, _) = root
+        .create_subkey_with_flags(sub, KEY_READ | KEY_WRITE)
+        .with_context(|| format!("opening {path} for writing"))?;
+    Ok(key)
+}
+
+fn type_to_u32(t: &RegType) -> u32 {
+    t.clone() as isize as u32
+}
+
+fn type_from_u32(v: u32) -> RegType {
+    [
+        REG_NONE,
+        REG_SZ,
+        REG_EXPAND_SZ,
+        REG_BINARY,
+        REG_DWORD,
+        REG_DWORD_BIG_ENDIAN,
+        REG_LINK,
+        REG_MULTI_SZ,
+        REG_RESOURCE_LIST,
+        REG_FULL_RESOURCE_DESCRIPTOR,
+        REG_RESOURCE_REQUIREMENTS_LIST,
+        REG_QWORD,
+    ]
+    .into_iter()
+    .find(|t| type_to_u32(t) == v)
+    .unwrap_or(REG_BINARY)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RawValue {
+    pub vtype: u32,
+    pub bytes: Vec<u8>,
+}
+
+impl RawValue {
+    pub fn to_reg_value(&self) -> RegValue<'_> {
+        RegValue {
+            bytes: Cow::Borrowed(&self.bytes),
+            vtype: type_from_u32(self.vtype),
+        }
+    }
+}
+
+/// State of one registry value before a change.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ValueSnapshot {
+    pub key: String,
+    pub name: String,
+    /// `None` when the value (or its key) did not exist.
+    pub previous: Option<RawValue>,
+}
+
+pub fn read_raw(key: &str, name: &str) -> Option<RawValue> {
+    let k = open_read(key).ok()?;
+    let v = k.get_raw_value(name).ok()?;
+    Some(RawValue {
+        vtype: type_to_u32(&v.vtype),
+        bytes: v.bytes.into_owned(),
+    })
+}
+
+pub fn snapshot(key: &str, name: &str) -> ValueSnapshot {
+    ValueSnapshot {
+        key: key.to_owned(),
+        name: name.to_owned(),
+        previous: read_raw(key, name),
+    }
+}
+
+pub fn write_raw(key: &str, name: &str, value: &RawValue) -> Result<()> {
+    open_write(key)?
+        .set_raw_value(name, &value.to_reg_value())
+        .with_context(|| format!("writing {key}\\{name}"))
+}
+
+/// Deletes a value; succeeds if it is already absent.
+pub fn delete_value(key: &str, name: &str) -> Result<()> {
+    let Ok(k) = split_path(key).and_then(|(root, sub)| {
+        root.open_subkey_with_flags(sub, KEY_READ | KEY_WRITE)
+            .map_err(anyhow::Error::from)
+    }) else {
+        return Ok(()); // key missing → value missing
+    };
+    match k.delete_value(name) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e).with_context(|| format!("deleting {key}\\{name}")),
+    }
+}
+
+/// Puts a value back exactly as it was in the snapshot.
+pub fn restore(s: &ValueSnapshot) -> Result<()> {
+    match &s.previous {
+        Some(v) => write_raw(&s.key, &s.name, v),
+        None => delete_value(&s.key, &s.name),
+    }
+}
+
+/// REG_DWORD helper.
+pub fn dword(v: u32) -> RawValue {
+    RawValue {
+        vtype: type_to_u32(&REG_DWORD),
+        bytes: v.to_le_bytes().to_vec(),
+    }
+}
+
+/// REG_SZ helper (UTF-16LE with terminating NUL).
+pub fn string(s: &str) -> RawValue {
+    let mut bytes: Vec<u8> = s
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .flat_map(u16::to_le_bytes)
+        .collect();
+    bytes.shrink_to_fit();
+    RawValue {
+        vtype: type_to_u32(&REG_SZ),
+        bytes,
+    }
+}
+
+/// REG_BINARY helper.
+pub fn binary(b: &[u8]) -> RawValue {
+    RawValue {
+        vtype: type_to_u32(&REG_BINARY),
+        bytes: b.to_vec(),
+    }
+}
+
+/// Decodes REG_SZ / REG_EXPAND_SZ bytes to a string.
+pub fn decode_string(v: &RawValue) -> String {
+    let wide: Vec<u16> = v
+        .bytes
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|c| u16::from_le_bytes(*c))
+        .collect();
+    let end = wide.iter().position(|&c| c == 0).unwrap_or(wide.len());
+    String::from_utf16_lossy(&wide[..end])
+}
+
+/// Decodes a REG_DWORD.
+pub fn decode_dword(v: &RawValue) -> Option<u32> {
+    Some(u32::from_le_bytes(v.bytes.get(..4)?.try_into().ok()?))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_key(tag: &str) -> String {
+        format!(r"HKCU\Software\win-manager-rs-test-{tag}-{}", std::process::id())
+    }
+
+    #[test]
+    fn path_parsing() {
+        assert!(split_path(r"HKCU\Software").is_ok());
+        assert!(split_path(r"HKEY_LOCAL_MACHINE\SOFTWARE").is_ok());
+        assert!(split_path(r"HKXX\Foo").is_err());
+        assert!(!needs_admin(r"HKCU\Software"));
+        assert!(needs_admin(r"HKLM\SOFTWARE"));
+    }
+
+    #[test]
+    fn encoders() {
+        assert_eq!(decode_string(&string("abc")), "abc");
+        assert_eq!(decode_dword(&dword(0x8000_0001)), Some(0x8000_0001));
+        assert_eq!(type_from_u32(type_to_u32(&REG_QWORD)), REG_QWORD);
+    }
+
+    #[test]
+    fn snapshot_restore_existing_and_missing_values() {
+        let key = test_key("snap");
+        write_raw(&key, "Existing", &string("before")).unwrap();
+
+        let existing = snapshot(&key, "Existing");
+        let missing = snapshot(&key, "Created");
+        assert!(missing.previous.is_none());
+
+        write_raw(&key, "Existing", &dword(7)).unwrap();
+        write_raw(&key, "Created", &dword(1)).unwrap();
+
+        restore(&existing).unwrap();
+        restore(&missing).unwrap();
+        assert_eq!(read_raw(&key, "Existing"), Some(string("before")));
+        assert_eq!(read_raw(&key, "Created"), None);
+
+        let (root, sub) = split_path(&key).unwrap();
+        root.delete_subkey_all(sub).unwrap();
+        // Deleting from a missing key is a no-op.
+        delete_value(&key, "Existing").unwrap();
+    }
+}

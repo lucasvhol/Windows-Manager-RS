@@ -19,6 +19,10 @@ pub enum UndoAction {
     ImportRegFile { path: PathBuf },
     /// The key did not exist before the change; undo deletes it.
     DeleteRegKey { key: String },
+    /// Put individual registry values back exactly (deleting ones that did not exist).
+    RestoreRegValues {
+        values: Vec<crate::registry::ValueSnapshot>,
+    },
     /// Files were moved to the Recycle Bin; undo restores them to their original paths.
     RestoreFromRecycleBin { paths: Vec<PathBuf> },
     /// Run a command to revert (e.g. `sc config … start= auto`).
@@ -155,6 +159,12 @@ fn execute_undo(action: &UndoAction) -> Result<()> {
         }
         UndoAction::DeleteRegKey { key } => {
             run_checked(hidden_command("reg").args(["delete", key, "/f"]))?;
+        }
+        UndoAction::RestoreRegValues { values } => {
+            // Restore in reverse order so repeated values end at their earliest state.
+            for v in values.iter().rev() {
+                crate::registry::restore(v)?;
+            }
         }
         UndoAction::RestoreFromRecycleBin { paths } => {
             let items: Vec<_> = trash::os_limited::list()?

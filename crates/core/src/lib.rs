@@ -7,9 +7,11 @@ pub mod elevation;
 pub mod i18n;
 pub mod paths;
 pub mod process;
+pub mod registry;
 pub mod safety;
 pub mod task;
 pub mod tool;
+pub mod tweaks;
 pub mod ui;
 
 pub use eframe::egui;

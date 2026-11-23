@@ -1,0 +1,139 @@
+# System Speed tweaks. Each `off` value is the Windows default ("delete" = value absent).
+# Only documented, reversible settings belong here; no "magic" registry hacks.
+
+[[tweak]]
+id = "menu_show_delay"
+title = "Faster menu display"
+description = "Opens cascading menus after 100 ms instead of the default 400 ms."
+group = "Responsiveness"
+effect = "sign-out"
+[[tweak.set]]
+key = 'HKCU\Control Panel\Desktop'
+name = "MenuShowDelay"
+on = { sz = "100" }
+off = { sz = "400" }
+
+[[tweak]]
+id = "mouse_hover_time"
+title = "Faster hover tooltips"
+description = "Shows tooltips and hover previews after 100 ms instead of 400 ms."
+group = "Responsiveness"
+effect = "sign-out"
+[[tweak.set]]
+key = 'HKCU\Control Panel\Mouse'
+name = "MouseHoverTime"
+on = { sz = "100" }
+off = { sz = "400" }
+
+[[tweak]]
+id = "startup_delay"
+title = "Remove startup app delay"
+description = "Starts your startup apps immediately after sign-in instead of waiting a few seconds."
+group = "Startup and shutdown"
+effect = "sign-out"
+[[tweak.set]]
+key = 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Serialize'
+name = "StartupDelayInMSec"
+on = { dword = 0 }
+off = "delete"
+
+[[tweak]]
+id = "hung_app_timeout"
+title = "Detect unresponsive apps sooner"
+description = "Treats an app as not responding after 2 s instead of 5 s."
+group = "Startup and shutdown"
+effect = "sign-out"
+[[tweak.set]]
+key = 'HKCU\Control Panel\Desktop'
+name = "HungAppTimeout"
+on = { sz = "2000" }
+off = "delete"
+
+[[tweak]]
+id = "wait_to_kill_app"
+title = "Shorter wait for apps at shutdown"
+description = "Waits 5 s instead of 20 s for apps to close at shutdown before offering to end them. Apps are never closed without asking."
+group = "Startup and shutdown"
+effect = "sign-out"
+[[tweak.set]]
+key = 'HKCU\Control Panel\Desktop'
+name = "WaitToKillAppTimeout"
+on = { sz = "5000" }
+off = "delete"
+
+[[tweak]]
+id = "wait_to_kill_service"
+title = "Shorter wait for services at shutdown"
+description = "Gives services 2 s instead of 5 s to stop at shutdown."
+group = "Startup and shutdown"
+effect = "restart"
+[[tweak.set]]
+key = 'HKLM\SYSTEM\CurrentControlSet\Control'
+name = "WaitToKillServiceTimeout"
+on = { sz = "2000" }
+off = { sz = "5000" }
+
+[[tweak]]
+id = "min_animate"
+title = "Disable window minimize/maximize animations"
+description = "Windows snap open and closed instantly."
+group = "Visual performance"
+effect = "sign-out"
+[[tweak.set]]
+key = 'HKCU\Control Panel\Desktop\WindowMetrics'
+name = "MinAnimate"
+on = { sz = "0" }
+off = { sz = "1" }
+
+[[tweak]]
+id = "transparency"
+title = "Disable transparency effects"
+description = "Turns off the translucent taskbar, Start and window backgrounds (Settings › Personalization › Colors)."
+group = "Visual performance"
+effect = "immediate"
+[[tweak.set]]
+key = 'HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize'
+name = "EnableTransparency"
+on = { dword = 0 }
+off = { dword = 1 }
+
+[[tweak]]
+id = "ntfs_last_access"
+title = "Stop updating file last-access times"
+description = "Saves a disk write on every file read (fsutil behavior disablelastaccess 1)."
+group = "File system"
+effect = "restart"
+[[tweak.set]]
+key = 'HKLM\SYSTEM\CurrentControlSet\Control\FileSystem'
+name = "NtfsDisableLastAccessUpdate"
+on = { dword = 0x80000001 }
+off = { dword = 0x80000002 }
+
+[[tweak]]
+id = "ntfs_8dot3"
+title = "Stop creating 8.3 short file names"
+description = "Speeds up folders with many files on new files. Existing short names are kept. Some very old 16-bit installers need 8.3 names."
+group = "File system"
+effect = "restart"
+[[tweak.set]]
+key = 'HKLM\SYSTEM\CurrentControlSet\Control\FileSystem'
+name = "NtfsDisable8dot3NameCreation"
+on = { dword = 1 }
+off = { dword = 2 }
+
+[[tweak]]
+id = "multimedia_responsiveness"
+title = "Prioritise foreground multimedia and games"
+description = "Reserves less CPU for background tasks (SystemResponsiveness 10 instead of 20) and removes network throttling during media playback."
+group = "Gaming and media"
+effect = "restart"
+[[tweak.set]]
+key = 'HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile'
+name = "SystemResponsiveness"
+on = { dword = 10 }
+off = { dword = 20 }
+[[tweak.set]]
+key = 'HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile'
+name = "NetworkThrottlingIndex"
+on = { dword = 0xFFFFFFFF }
+off = { dword = 10 }
