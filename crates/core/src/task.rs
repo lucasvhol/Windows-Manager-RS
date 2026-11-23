@@ -95,6 +95,84 @@ impl<T: Send + 'static> BackgroundTask<T> {
     }
 }
 
+/// Periodically produces values on a background thread (e.g. live CPU usage).
+///
+/// Sampling pauses automatically when the UI has not polled for a few seconds
+/// (the tool is not visible) and the thread exits when the `Sampler` is dropped.
+pub struct Sampler<T> {
+    rx: Receiver<T>,
+    shared: std::sync::Arc<SamplerShared>,
+}
+
+struct SamplerShared {
+    alive: std::sync::atomic::AtomicBool,
+    base: std::time::Instant,
+    /// Milliseconds since `base` when the UI last polled.
+    last_seen_ms: std::sync::atomic::AtomicU64,
+}
+
+impl SamplerShared {
+    fn touch(&self) {
+        let ms = self.base.elapsed().as_millis() as u64;
+        self.last_seen_ms.store(ms, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    fn recently_seen(&self) -> bool {
+        let now = self.base.elapsed().as_millis() as u64;
+        now.saturating_sub(self.last_seen_ms.load(std::sync::atomic::Ordering::Relaxed)) < 3_000
+    }
+}
+
+impl<T: Send + 'static> Sampler<T> {
+    /// `init` runs once on the worker thread; `sample` runs every `interval`.
+    pub fn spawn<S, I, F>(ctx: &egui::Context, interval: std::time::Duration, init: I, mut sample: F) -> Self
+    where
+        I: FnOnce() -> S + Send + 'static,
+        F: FnMut(&mut S) -> T + Send + 'static,
+    {
+        let (tx, rx) = unbounded();
+        let shared = std::sync::Arc::new(SamplerShared {
+            alive: std::sync::atomic::AtomicBool::new(true),
+            base: std::time::Instant::now(),
+            last_seen_ms: std::sync::atomic::AtomicU64::new(0),
+        });
+        let worker = shared.clone();
+        let ctx = ctx.clone();
+        std::thread::spawn(move || {
+            let mut state = init();
+            while worker.alive.load(std::sync::atomic::Ordering::Relaxed) {
+                if worker.recently_seen() {
+                    if tx.send(sample(&mut state)).is_err() {
+                        break;
+                    }
+                    ctx.request_repaint();
+                }
+                std::thread::sleep(interval);
+            }
+        });
+        Self { rx, shared }
+    }
+
+    /// All values produced since the last call (oldest first). Also marks the UI as active.
+    pub fn drain(&mut self) -> Vec<T> {
+        self.shared.touch();
+        self.rx.try_iter().collect()
+    }
+
+    /// Only the most recent value since the last call, if any.
+    pub fn latest(&mut self) -> Option<T> {
+        self.drain().pop()
+    }
+}
+
+impl<T> Drop for Sampler<T> {
+    fn drop(&mut self) {
+        self.shared
+            .alive
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -126,5 +204,27 @@ mod tests {
             task.poll();
         }
         assert_eq!(task.take_result(), Some(Err("boom".into())));
+    }
+
+    #[test]
+    fn sampler_produces_values_while_polled() {
+        let ctx = egui::Context::default();
+        let mut sampler = Sampler::spawn(
+            &ctx,
+            Duration::from_millis(5),
+            || 0u32,
+            |n| {
+                *n += 1;
+                *n
+            },
+        );
+        let start = Instant::now();
+        let mut got = Vec::new();
+        while got.len() < 3 {
+            assert!(start.elapsed() < Duration::from_secs(5), "sampler timed out");
+            got.extend(sampler.drain());
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(&got[..3], &[1, 2, 3]);
     }
 }

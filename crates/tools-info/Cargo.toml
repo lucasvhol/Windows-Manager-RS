@@ -1,0 +1,15 @@
+[package]
+name = "wm-tools-info"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+anyhow = "1.0.105"
+chrono = "0.4.45"
+egui_extras = "0.37.0"
+sysinfo = "0.40.4"
+tracing = "0.1.44"
+windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_System_EventLog", "Win32_Devices_DeviceAndDriverInstallation", "Win32_System_Threading"] }
+winreg = "0.56.0"
+wm-core = { version = "0.1.0", path = "../core" }

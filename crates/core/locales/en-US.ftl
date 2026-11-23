@@ -50,3 +50,20 @@ settings-restore-points = Create a restore point before bulk operations
 settings-create-restore-point = Create restore point now
 settings-restore-point-created = Restore point created.
 settings-open-data = Open data folder
+
+## Common
+common-confirm = Confirm
+common-cancel = Cancel
+common-refresh = Refresh
+common-copy = Copy to clipboard
+common-filter = Filter…
+common-loading = Loading…
+common-copied = Copied to clipboard.
+common-dry-run-skip = Dry run: no changes were made.
+
+## Information tools
+sysinfo-title = System Information
+procman-title = Process Manager
+hwmon-title = Hardware Monitor
+events-title = Event Viewer
+devices-title = Device Manager

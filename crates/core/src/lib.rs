@@ -10,6 +10,7 @@ pub mod process;
 pub mod safety;
 pub mod task;
 pub mod tool;
+pub mod ui;
 
 pub use eframe::egui;
 pub use tool::{AppCtx, Category, Tool};

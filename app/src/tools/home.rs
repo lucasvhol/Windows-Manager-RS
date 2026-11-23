@@ -2,6 +2,9 @@ use wm_core::{AppCtx, Category, Tool, egui};
 
 pub struct Home;
 
+/// Highest phase that has shipped.
+const DONE_THROUGH: u8 = 1;
+
 /// Planned delivery phase for each category (see the project plan).
 const ROADMAP: &[(Category, u8, &str)] = &[
     (
@@ -65,7 +68,8 @@ impl Tool for Home {
             .spacing([16.0, 6.0])
             .show(ui, |ui| {
                 for (cat, phase, tools) in ROADMAP {
-                    ui.label(format!("Phase {phase}"));
+                    let done = if *phase <= DONE_THROUGH { " ✔" } else { "" };
+                    ui.label(format!("Phase {phase}{done}"));
                     ui.strong(ctx.i18n.tr(cat.i18n_key()));
                     ui.label(*tools);
                     ui.end_row();
