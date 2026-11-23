@@ -10,6 +10,7 @@ use anyhow::Result;
 use egui_extras::{Column, TableBuilder};
 use wm_core::{
     AppCtx, Category, Tool, egui,
+    process::exe_from_command,
     registry::{self, ValueSnapshot},
     safety::UndoAction,
     ui::{Confirm, Message, show_message},
@@ -112,23 +113,6 @@ pub fn approved_bytes(enabled: bool, now: SystemTime) -> Vec<u8> {
     };
     v.extend_from_slice(&filetime.to_le_bytes());
     v
-}
-
-/// Extracts the executable from a command line, e.g. `"C:\a b\x.exe" -min` → `C:\a b\x.exe`.
-pub fn exe_from_command(command: &str) -> Option<String> {
-    let c = command.trim();
-    if let Some(rest) = c.strip_prefix('"') {
-        return rest
-            .split('"')
-            .next()
-            .map(str::to_owned)
-            .filter(|s| !s.is_empty());
-    }
-    let lower = c.to_ascii_lowercase();
-    if let Some(i) = lower.find(".exe") {
-        return Some(c[..i + 4].to_owned());
-    }
-    c.split_whitespace().next().map(str::to_owned)
 }
 
 fn approved(source: Source, name: &str) -> bool {

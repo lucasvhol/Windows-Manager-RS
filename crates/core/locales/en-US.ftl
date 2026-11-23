@@ -74,3 +74,13 @@ services-title = Service Manager
 tasks-title = Task Scheduler
 boot-title = Boot Configuration
 speed-title = System Speed
+
+## Cleaner tools
+diskanalyzer-title = Disk Analyzer
+junk-title = Junk File Cleaner
+duplicates-title = Duplicate Files Finder
+desktop-title = Desktop Cleaner
+uninstaller-title = Smart Uninstaller
+apps-title = Windows Apps Uninstaller
+winsxs-title = Component Store Cleaner
+regclean-title = Registry Cleaner

@@ -15,6 +15,7 @@ pub fn all() -> Vec<Box<dyn Tool>> {
     ];
     tools.extend(wm_tools_info::tools());
     tools.extend(wm_tools_optimizer::tools());
+    tools.extend(wm_tools_cleaner::tools());
     tools.sort_by_key(|t| t.category());
     tools
 }

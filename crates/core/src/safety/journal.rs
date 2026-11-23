@@ -25,6 +25,8 @@ pub enum UndoAction {
     },
     /// Files were moved to the Recycle Bin; undo restores them to their original paths.
     RestoreFromRecycleBin { paths: Vec<PathBuf> },
+    /// Files were moved `(from, to)`; undo moves each `to` back to `from`.
+    MoveBack { moves: Vec<(PathBuf, PathBuf)> },
     /// Run a command to revert (e.g. `sc config … start= auto`).
     RunCommand { program: String, args: Vec<String> },
     /// The change cannot be reverted automatically (recorded for the audit trail only).
@@ -175,6 +177,19 @@ fn execute_undo(action: &UndoAction) -> Result<()> {
                 bail!("items are no longer in the Recycle Bin");
             }
             trash::os_limited::restore_all(items).map_err(|e| anyhow::anyhow!("{e}"))?;
+        }
+        UndoAction::MoveBack { moves } => {
+            let mut failed = Vec::new();
+            for (from, to) in moves {
+                if from.exists() {
+                    failed.push(format!("{} (destination exists)", from.display()));
+                } else if let Err(e) = std::fs::rename(to, from) {
+                    failed.push(format!("{} ({e})", to.display()));
+                }
+            }
+            if !failed.is_empty() {
+                bail!("could not move back: {}", failed.join("; "));
+            }
         }
         UndoAction::RunCommand { program, args } => {
             run_checked(hidden_command(program).args(args))?;

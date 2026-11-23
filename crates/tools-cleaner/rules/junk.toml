@@ -1,0 +1,140 @@
+# Junk File Cleaner rules. Paths may use %ENV% variables and `*`/`?` in segments.
+# A directory path means "its contents" (the folder itself is kept).
+# `default` = selected on first scan; `min_age_hours` skips recently modified files.
+
+[[rule]]
+id = "user_temp"
+title = "Temporary files (your account)"
+group = "Windows"
+description = "Files apps left in your temp folder. Files changed in the last 24 hours are kept."
+paths = ['%TEMP%']
+min_age_hours = 24
+default = true
+
+[[rule]]
+id = "windows_temp"
+title = "Temporary files (Windows)"
+group = "Windows"
+description = "Windows' own temp folder. Files changed in the last 24 hours are kept."
+paths = ['%WINDIR%\Temp']
+min_age_hours = 24
+admin = true
+default = true
+
+[[rule]]
+id = "wer_user"
+title = "Error reports (your account)"
+group = "Windows"
+description = "Copies of crash reports that were already sent or are queued for Microsoft."
+paths = ['%LOCALAPPDATA%\Microsoft\Windows\WER']
+default = true
+
+[[rule]]
+id = "wer_system"
+title = "Error reports (system)"
+group = "Windows"
+description = "System-wide crash report archive and queue."
+paths = ['%PROGRAMDATA%\Microsoft\Windows\WER\ReportArchive', '%PROGRAMDATA%\Microsoft\Windows\WER\ReportQueue']
+admin = true
+default = true
+
+[[rule]]
+id = "crash_dumps"
+title = "Application crash dumps"
+group = "Windows"
+description = "Memory dumps written when apps crash. Only needed to diagnose a specific crash."
+paths = ['%LOCALAPPDATA%\CrashDumps']
+default = true
+
+[[rule]]
+id = "memory_dumps"
+title = "System memory dumps"
+group = "Windows"
+description = "Dumps from blue-screen crashes. Keep them if you are troubleshooting crashes."
+paths = ['%WINDIR%\Minidump', '%WINDIR%\MEMORY.DMP']
+admin = true
+
+[[rule]]
+id = "update_cache"
+title = "Windows Update download cache"
+group = "Windows"
+description = "Already-installed update packages. Files from the last 7 days are kept so an in-progress update is not disturbed."
+paths = ['%WINDIR%\SoftwareDistribution\Download']
+min_age_hours = 168
+admin = true
+
+[[rule]]
+id = "delivery_optimization"
+title = "Delivery Optimization cache"
+group = "Windows"
+description = "Update pieces cached to share with other PCs."
+paths = ['%WINDIR%\ServiceProfiles\NetworkService\AppData\Local\Microsoft\Windows\DeliveryOptimization\Cache']
+admin = true
+
+[[rule]]
+id = "thumbnails"
+title = "Thumbnail cache"
+group = "Windows"
+description = "Explorer rebuilds thumbnails as you browse; folders with many pictures will be slower once."
+paths = ['%LOCALAPPDATA%\Microsoft\Windows\Explorer\thumbcache_*.db']
+
+[[rule]]
+id = "shader_cache"
+title = "Graphics shader caches"
+group = "Windows"
+description = "DirectX, NVIDIA and AMD shader caches. Games may stutter briefly while shaders are rebuilt."
+paths = ['%LOCALAPPDATA%\D3DSCache', '%LOCALAPPDATA%\NVIDIA\DXCache', '%LOCALAPPDATA%\NVIDIA\GLCache', '%LOCALAPPDATA%\AMD\DxCache', '%LOCALAPPDATA%\AMD\DxcCache']
+
+[[rule]]
+id = "chrome"
+title = "Google Chrome cache"
+group = "Browsers"
+description = "Cached web content (not history, passwords or cookies). Close Chrome first for best results."
+paths = ['%LOCALAPPDATA%\Google\Chrome\User Data\*\Cache', '%LOCALAPPDATA%\Google\Chrome\User Data\*\Code Cache', '%LOCALAPPDATA%\Google\Chrome\User Data\*\GPUCache']
+default = true
+
+[[rule]]
+id = "edge"
+title = "Microsoft Edge cache"
+group = "Browsers"
+description = "Cached web content (not history, passwords or cookies). Close Edge first for best results."
+paths = ['%LOCALAPPDATA%\Microsoft\Edge\User Data\*\Cache', '%LOCALAPPDATA%\Microsoft\Edge\User Data\*\Code Cache', '%LOCALAPPDATA%\Microsoft\Edge\User Data\*\GPUCache']
+default = true
+
+[[rule]]
+id = "brave"
+title = "Brave cache"
+group = "Browsers"
+description = "Cached web content (not history, passwords or cookies)."
+paths = ['%LOCALAPPDATA%\BraveSoftware\Brave-Browser\User Data\*\Cache', '%LOCALAPPDATA%\BraveSoftware\Brave-Browser\User Data\*\Code Cache', '%LOCALAPPDATA%\BraveSoftware\Brave-Browser\User Data\*\GPUCache']
+default = true
+
+[[rule]]
+id = "firefox"
+title = "Firefox cache"
+group = "Browsers"
+description = "Cached web content (not history, passwords or cookies)."
+paths = ['%LOCALAPPDATA%\Mozilla\Firefox\Profiles\*\cache2']
+default = true
+
+[[rule]]
+id = "discord"
+title = "Discord cache"
+group = "Applications"
+description = "Cached images and scripts. Close Discord first."
+paths = ['%APPDATA%\discord\Cache', '%APPDATA%\discord\Code Cache', '%APPDATA%\discord\GPUCache']
+default = true
+
+[[rule]]
+id = "steam_html"
+title = "Steam web cache"
+group = "Applications"
+description = "Store and community page cache used by the Steam client."
+paths = ['%LOCALAPPDATA%\Steam\htmlcache']
+
+[[rule]]
+id = "recycle_bin"
+title = "Empty the Recycle Bin"
+group = "Recycle Bin"
+description = "Permanently deletes everything in the Recycle Bin on all drives."
+kind = "recycle-bin"

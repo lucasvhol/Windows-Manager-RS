@@ -12,6 +12,7 @@ tracing = "0.1.44"
 tracing-appender = "0.2.5"
 tracing-subscriber = "0.3.23"
 wm-core = { version = "0.1.0", path = "../crates/core" }
+wm-tools-cleaner = { version = "0.1.0", path = "../crates/tools-cleaner" }
 wm-tools-info = { version = "0.1.0", path = "../crates/tools-info" }
 wm-tools-optimizer = { version = "0.1.0", path = "../crates/tools-optimizer" }
 
