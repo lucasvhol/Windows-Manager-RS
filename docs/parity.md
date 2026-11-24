@@ -32,7 +32,7 @@ This file tracks parity between **Win Manager RS** and the features of a commerc
 
 | Tool | Status | Missing | Wave |
 |---|---|---|---|
-| System Protection | 🟡 (restore point in Settings) | Page listing restore points, with delete; System Protection on/off per drive; automatic registry backup (RegBack); recovery links | C |
+| System Protection | ✅ | Restore points listed, created and deleted; protection on/off per drive; RegBack switch (Other Security); System Restore, recovery options, recovery drive, restart to advanced startup | C |
 | 1-Click Kill Processes | ❌ | Escalating kill tiers (standard, enhanced, maximum); protected list; log | E |
 | 1-Click Fixer | 🟡 | 10 checked items in one list: component store health, system files, WMI rebuild, system partition scan, all-volume health, internet connection, file associations, folder permissions, registry permissions, Explorer/shell. Select All, a link to Repair Center, Start, and a collapsible log | D |
 | 1-Click Cleaner | 🟡 | Choose the items (privacy, junk, registry, registry defrag); silent mode; shut down when done; last-clean date | D |
@@ -53,7 +53,7 @@ This file tracks parity between **Win Manager RS** and the features of a commerc
 
 | Tool | Status | Missing | Wave |
 |---|---|---|---|
-| System Speed | 🟡 (11 tweaks) | NTFS paged pool, Fast Startup, Group Policy wait, crash logging, Prefetcher, boot defrag, Last Known Good, disk-check cancel and countdown, process and service wait times, hibernate, power plan tweaker and restore, Delivery Optimization, SSD set, Automatic Maintenance | C |
+| System Speed | ✅ (35 settings) | NTFS cache, kernel paging, Prefetcher, power throttling, Fast Startup, hibernation, power plans (Ultimate Performance, restore defaults), Group Policy network wait, disk-check countdown, verbose status, Last Known Good, boot file placement, crash dump type and options, TRIM, Automatic Maintenance, Delivery Optimization, GPU scheduling, game recording. Power-plan editor goes to D | C |
 | Boot Configuration | 🟡 | Add entry; boot order; back up and restore boot data; Safe Mode with Command Prompt; disable driver signing; restart into advanced startup | D |
 | Startup Manager | 🟡 | Location tree (startup folders and Run keys per scope and bitness, Windows apps, advanced locations); move between locations; edit; online lookup; batch actions; signature and running columns; details pane; block all auto-start | D |
 | Service Manager | 🟡 | Drivers tab; Non-Microsoft grouping; log-on and command-line columns; file properties; delete (also the file); back up and restore startup types; Optimize questionnaire; restore defaults | D |
@@ -77,8 +77,9 @@ This file tracks parity between **Win Manager RS** and the features of a commerc
 
 | Tool | Status | Missing | Wave |
 |---|---|---|---|
-| Custom System | ❌ | Start/tile, desktop, taskbar, thumbnails, notification area, theme schedule, title-bar colours, fonts, lock screen, keys, feature-usage reset (100+ options) | C |
-| File Explorer Tweaker | 🟡 (10 tweaks) | Navigation, launch location, folder views, thumbnails and borders, drag action, naming templates, Ribbon commands, open limit, window states. Split tile: Navigation Pane, This PC, Drag File Action | C |
+| Custom System | 🟡 (34 settings) | Desktop icons and version, shortcut arrow, wallpaper quality, taskbar (combine, all displays, last window, preview delay, animations, Widgets, search), Start, snapping and Alt+Tab, notifications, accent colour, lock and sign-in screen, Num Lock, Windows keys, accessibility prompts, usage and icon-cache resets. Still missing: theme schedule (needs a scheduled task, D), Caps Lock remap (binary Scancode Map, D), fonts (Visual Customizer, D) | C→D |
+| Windows App Settings | ✅ | Where desktop apps may be installed from, suggested-app reinstalls, background Store apps, welcome and finish-setup prompts, shortcuts to Windows' app pages | C |
+| File Explorer Tweaker | 🟡 (29 settings) | Launch location, folder windows, status bar, info tips, name case, open limit, thumbnails and overlays, preview pane, label shadow, compressed colour, drives, sync ads, Sharing Wizard, merge prompt, folder-view memory and reset; Navigation Pane and This PC split tiles. Still missing: drag action and naming templates (per-file-type / undocumented values, D); Ribbon commands do not exist on Windows 11 24H2+ | C→D |
 | Visual Customizer | 🟡 | Sections: system settings (title bar), font and size, system icons, other icons, file-type icons, folder colorizer, theme changer, lock-screen extractor, Bing images; numbered pages; Restore and Save | D |
 | JumpList Quick Launcher | 🟡 | Several named lists; groups; files, folders, URLs, Start items, utilities and apps; edit pane; maximum count; backup and restore | D |
 | Hotkey Manager | 🟡 | Targets: file, folder, URL, Start item, utility, Windows app; enable/disable; backup and restore; conflict detection; kill-all hotkey | D |
@@ -93,20 +94,20 @@ This file tracks parity between **Win Manager RS** and the features of a commerc
 
 | Tool | Status | Missing | Wave |
 |---|---|---|---|
-| System Security | ❌ | Restore-point list; Group Policy and Firewall backup, restore and reset; restrictions; component switches; UAC; sign-in screen; password policy; automatic sign-in | C |
-| Other Security | ❌ | App access blocks; RegBack; Shutdown Event Tracker; OneDrive; Windows Update; service accounts | C |
+| System Security | 🟡 | UAC level and options, sign-in screen, password policy actions, restrictions (MSI, PowerShell scripts, MMC), components (File History, error reporting, Game Bar, Copilot), firewall and Group Policy backup / restore / reset. Restore points live on System Protection. Automatic sign-in (LSA secret) goes to D. Turning off Defender is not offered: Tamper Protection blocks it on current Windows, so the page links to Windows Security instead | C→D |
+| Other Security | 🟡 | 20 per-app permission blocks, Windows Update (auto-update, install mode, restarts, drivers, Store apps), OneDrive off / uninstall, RegBack, Shutdown Event Tracker. Service log-on accounts go to D (Service Manager) | C→D |
 | Settings Security | 🟡 | Hide or show-only Settings pages; Control Panel items; shortcuts to settings pages | D |
 | Files and Folders (File Security) | 🟡 | Tabs: encrypt, decrypt, shred, permission, unlocker; right action pane; add to context menu | D |
 | Privacy Protector | 🟡 | System settings page; sections for URL, Edge, Chrome, folder history (shellbags), executed programs, recent documents, common dialog, jump lists, Prefetch, compatibility cache, feature usage, startup time, USB history; software and network history | D |
 | Security Lock | 🟡 | Function limits (block the Registry Editor, Task Manager, cmd, PowerShell, msconfig, WSH, MMC, Defender…); lock system keys; App Locker (allow or lock by name, signature or hash); Image Hijack; Windows features; templates; backup and restore | D, E |
-| Device Security | ❌ | Hide drives; disk immunity; write protection; removable storage policy; block device installs; USB history; restrict programs; mount and unmount | C |
+| Device Security | 🟡 | Hide / block drives, block programs by name, removable-storage policies (all, read-only, no read, optical, phones, write-protect, USB driver), AutoPlay, block device installs, clear USB history, autorun protection for USB drives, drive letters (remove / assign). Blocking by hash or signer (Software Restriction Policies) goes to D | C→D |
 | File Undelete | 🟡 | Formatted-partition scan; type filter combo; recover with folder structure | D |
 
 ## Network
 
 | Tool | Status | Missing | Wave |
 |---|---|---|---|
-| System Network | ❌ | Browse list and discovery; time sync interval; Remote Desktop (allow, port, limits); Remote Assistance; share manager; admin shares; anonymous enumeration; network reset | C |
+| System Network | 🟡 | Remote Desktop (allow, firewall, port, NLA, idle and disconnected limits), Remote Assistance, network discovery and file sharing, admin shares, anonymous enumeration, LLMNR, time server, interval and sync, Winsock / TCP/IP / network reset, Shared Folders console. A built-in share list goes to D; the browse list (Computer Browser) no longer exists on Windows 10/11 | C→D |
 | URL Manager | 🟡 (hosts) | Favorites checker; per-browser URL blocker; cookie protection list | D |
 | IP Switcher | 🟡 | Profile combo with New, Save, Delete and Apply; adapter status panel; start with Windows | D |
 | Wi-Fi Manager | 🟡 | Priority up and down; connect; details; block or allow lists; backup and restore; last-connected column | D |

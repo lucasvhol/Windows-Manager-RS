@@ -2,11 +2,13 @@
 //! password encryption and read-only NTFS undelete.
 
 pub mod crypto;
+mod device_security;
 mod file_security;
 pub mod ntfs;
 pub mod privacy;
 mod security_lock;
 mod settings_security;
+mod system_protection;
 mod undelete;
 
 use wm_core::{Category, Tool, tweaks::TweakTool};
@@ -16,6 +18,7 @@ pub const PRIVACY_TWEAKS: &str = include_str!("../tweaks/privacy.toml");
 pub const LOCKDOWN_TWEAKS: &str = include_str!("../tweaks/lockdown.toml");
 pub const SYSTEM_SECURITY_TWEAKS: &str = include_str!("../tweaks/systemsecurity.toml");
 pub const OTHER_SECURITY_TWEAKS: &str = include_str!("../tweaks/othersecurity.toml");
+pub const DEVICE_SECURITY_TWEAKS: &str = include_str!("../tweaks/devicesecurity.toml");
 
 pub fn tools() -> Vec<Box<dyn Tool>> {
     vec![
@@ -24,6 +27,8 @@ pub fn tools() -> Vec<Box<dyn Tool>> {
         Box::new(file_security::FileSecurity::default()),
         Box::new(security_lock::SecurityLock::default()),
         Box::new(undelete::FileUndelete::default()),
+        Box::new(device_security::DeviceSecurity::default()),
+        Box::new(system_protection::SystemProtection::default()),
         Box::new(TweakTool::new(
             Category::Security,
             "systemsecurity",

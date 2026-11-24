@@ -1,0 +1,118 @@
+# Device Security policies: removable storage, device installation and history.
+# `off` is the Windows 11 default ("delete" = value absent).
+
+[[tweak]]
+id = "removable_deny_all"
+title = "Block all removable storage"
+description = "USB drives, memory cards, phones and optical discs can't be read or written by anyone on this PC."
+group = "Removable storage"
+[[tweak.set]]
+key = 'HKLM\SOFTWARE\Policies\Microsoft\Windows\RemovableStorageDevices'
+name = "Deny_All"
+on = { dword = 1 }
+off = "delete"
+
+[[tweak]]
+id = "removable_read_only"
+title = "Make USB drives and memory cards read-only"
+description = "Files can still be opened from removable disks, but nothing can be copied to them."
+group = "Removable storage"
+[[tweak.set]]
+key = 'HKLM\SOFTWARE\Policies\Microsoft\Windows\RemovableStorageDevices\{53f5630d-b6bf-11d0-94f2-00a0c91efb8b}'
+name = "Deny_Write"
+on = { dword = 1 }
+off = "delete"
+
+[[tweak]]
+id = "removable_no_read"
+title = "Block reading USB drives and memory cards"
+description = "Removable disks still appear but their files can't be opened."
+group = "Removable storage"
+[[tweak.set]]
+key = 'HKLM\SOFTWARE\Policies\Microsoft\Windows\RemovableStorageDevices\{53f5630d-b6bf-11d0-94f2-00a0c91efb8b}'
+name = "Deny_Read"
+on = { dword = 1 }
+off = "delete"
+
+[[tweak]]
+id = "optical_no_write"
+title = "Block burning CDs and DVDs"
+description = "Optical discs can be read but not written."
+group = "Removable storage"
+[[tweak.set]]
+key = 'HKLM\SOFTWARE\Policies\Microsoft\Windows\RemovableStorageDevices\{53f56308-b6bf-11d0-94f2-00a0c91efb8b}'
+name = "Deny_Write"
+on = { dword = 1 }
+off = "delete"
+
+[[tweak]]
+id = "phones_no_access"
+title = "Block phones, cameras and media players"
+description = "Devices that connect as portable devices (MTP) can't be read or written."
+group = "Removable storage"
+[[tweak.set]]
+key = 'HKLM\SOFTWARE\Policies\Microsoft\Windows\RemovableStorageDevices\{6AC27878-A6FA-4155-BA85-F98F491D4F33}'
+name = "Deny_Read"
+on = { dword = 1 }
+off = "delete"
+[[tweak.set]]
+key = 'HKLM\SOFTWARE\Policies\Microsoft\Windows\RemovableStorageDevices\{6AC27878-A6FA-4155-BA85-F98F491D4F33}'
+name = "Deny_Write"
+on = { dword = 1 }
+off = "delete"
+
+[[tweak]]
+id = "write_protect_usb"
+title = "Write-protect all USB storage"
+description = "Turns on the storage write-protection policy. USB drives connected afterwards are read-only."
+group = "Removable storage"
+effect = "restart"
+[[tweak.set]]
+key = 'HKLM\SYSTEM\CurrentControlSet\Control\StorageDevicePolicies'
+name = "WriteProtect"
+on = { dword = 1 }
+off = "delete"
+
+[[tweak]]
+id = "usbstor_off"
+title = "Turn off the USB storage driver"
+description = "USB drives are no longer recognised at all. Keyboards, mice and other USB devices keep working."
+group = "Removable storage"
+warning = "You won't be able to use USB drives, including for recovery, until this is turned off again."
+[[tweak.set]]
+key = 'HKLM\SYSTEM\CurrentControlSet\Services\USBSTOR'
+name = "Start"
+on = { dword = 4 }
+off = { dword = 3 }
+
+[[tweak]]
+id = "autoplay_off"
+title = "Turn off AutoPlay"
+description = "Nothing opens or asks what to do when you insert a drive, card or phone."
+group = "Removable storage"
+[[tweak.set]]
+key = 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\AutoplayHandlers'
+name = "DisableAutoplay"
+on = { dword = 1 }
+off = { dword = 0 }
+
+[[tweak]]
+id = "block_device_installs"
+title = "Block installing new devices"
+description = "Windows won't install drivers for devices it hasn't seen before. Devices already installed keep working."
+group = "Devices"
+warning = "New keyboards, mice or replacement hardware won't work until this is turned off again."
+[[tweak.set]]
+key = 'HKLM\SOFTWARE\Policies\Microsoft\Windows\DeviceInstall\Restrictions'
+name = "DenyUnspecified"
+on = { dword = 1 }
+off = "delete"
+
+[[tweak]]
+id = "clear_usb_history"
+title = "Clear the list of USB drives used before"
+description = "Removes the records of USB drives that are not connected now. They are set up again if you plug them back in."
+group = "Devices"
+kind = "action"
+admin = true
+action = { program = "powershell", args = ["-NoProfile", "-Command", "Get-PnpDevice | Where-Object { -not $_.Present -and ($_.InstanceId -like 'USBSTOR*' -or $_.InstanceId -like 'SWD\\WPDBUSENUM*') } | ForEach-Object { pnputil /remove-device $_.InstanceId | Out-Null }"], confirm = "Remove the records of every USB drive that is not connected right now?" }

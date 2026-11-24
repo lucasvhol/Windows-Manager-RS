@@ -51,6 +51,8 @@ pub const TILES: &[(Category, &[&str])] = &[
         &[
             "systemsecurity",
             "othersecurity",
+            "devicesecurity",
+            "systemprotection",
             "lockdown",
             "filesecurity",
             "privacy",
@@ -137,6 +139,8 @@ pub fn tool_icon(id: &str) -> &'static str {
         "winx" => i::WINDOWS_LOGO,
         "systemsecurity" => i::SHIELD_CHECK,
         "othersecurity" => i::FINGERPRINT,
+        "devicesecurity" => i::USB,
+        "systemprotection" => i::CLOCK_COUNTER_CLOCKWISE,
         "lockdown" => i::SLIDERS,
         "filesecurity" => i::FILE_LOCK,
         "privacy" => i::EYE_SLASH,

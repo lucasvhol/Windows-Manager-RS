@@ -5189,6 +5189,8 @@ dependencies = [
  "egui_extras",
  "getrandom",
  "rfd",
+ "serde",
+ "serde_json",
  "tempfile",
  "tracing",
  "walkdir",

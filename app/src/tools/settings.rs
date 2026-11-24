@@ -22,6 +22,7 @@ pub fn all_tweaks() -> Vec<Tweak> {
         wm_tools_security::LOCKDOWN_TWEAKS,
         wm_tools_security::SYSTEM_SECURITY_TWEAKS,
         wm_tools_security::OTHER_SECURITY_TWEAKS,
+        wm_tools_security::DEVICE_SECURITY_TWEAKS,
         wm_tools_custom::VISUAL_TWEAKS,
         wm_tools_custom::EXPLORER_TWEAKS,
         wm_tools_custom::START_TWEAKS,
