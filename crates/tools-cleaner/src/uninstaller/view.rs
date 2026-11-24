@@ -79,6 +79,8 @@ pub struct SmartUninstaller {
     details: Option<(String, Vec<(String, String)>)>,
     icon_task: Option<BackgroundTask<IconBatch>>,
     icons: HashMap<String, egui::TextureHandle>,
+    /// Icons already requested (failures are not retried every frame).
+    icon_tried: HashSet<String>,
     updates: Option<Result<Vec<Update>, String>>,
     updates_task: Option<BackgroundTask<Vec<Update>>>,
     update_remove: Option<BackgroundTask<String>>,
@@ -108,6 +110,7 @@ impl Default for SmartUninstaller {
             details: None,
             icon_task: None,
             icons: HashMap::new(),
+            icon_tried: HashSet::new(),
             updates: None,
             updates_task: None,
             update_remove: None,
@@ -189,12 +192,13 @@ impl SmartUninstaller {
         }
         let wanted: Vec<(String, String)> = programs
             .iter()
-            .filter(|p| !self.icons.contains_key(&p.key))
+            .filter(|p| !self.icon_tried.contains(&p.key))
             .filter_map(|p| icon_source(p).map(|s| (p.key.clone(), s)))
             .collect();
         if wanted.is_empty() {
             return;
         }
+        self.icon_tried.extend(wanted.iter().map(|(k, _)| k.clone()));
         self.icon_task = Some(BackgroundTask::spawn(ctx, move |_| {
             Ok(wanted
                 .into_iter()
@@ -616,6 +620,7 @@ impl SmartUninstaller {
             Some(12) => {
                 self.reload();
                 self.icons.clear();
+                self.icon_tried.clear();
             }
             _ => {}
         }

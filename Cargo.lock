@@ -5293,6 +5293,7 @@ dependencies = [
  "blake3",
  "chrono",
  "egui_extras",
+ "image",
  "rayon",
  "rfd",
  "serde",

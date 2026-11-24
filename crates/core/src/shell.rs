@@ -159,6 +159,26 @@ pub fn create_shortcut(lnk: &Path, spec: &ShortcutSpec) -> Result<()> {
     Ok(())
 }
 
+/// Writes a `.lnk` file that opens a shell item by parsing name, e.g. a Store app as
+/// `shell:AppsFolder\<AppUserModelID>`. The shortcut shows the item's own icon.
+pub fn create_item_shortcut(lnk: &Path, parsing_name: &str) -> Result<()> {
+    use windows::Win32::UI::Shell::{Common::ITEMIDLIST, ILFree, SHParseDisplayName};
+    unsafe {
+        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        let mut pidl: *mut ITEMIDLIST = std::ptr::null_mut();
+        SHParseDisplayName(&HSTRING::from(parsing_name), None, &mut pidl, 0, None)?;
+        let result = (|| -> Result<()> {
+            let link: IShellLinkW = CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER)?;
+            link.SetIDList(pidl)?;
+            link.cast::<IPersistFile>()?
+                .Save(&HSTRING::from(lnk.as_os_str()), true)?;
+            Ok(())
+        })();
+        ILFree(Some(pidl));
+        result
+    }
+}
+
 /// Reads target, arguments and hotkey from a `.lnk` file.
 pub fn read_shortcut(lnk: &Path) -> Result<ShortcutSpec> {
     unsafe {
