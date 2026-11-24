@@ -260,7 +260,7 @@ fn execute_undo(action: &UndoAction) -> Result<()> {
             for (from, to) in moves {
                 if from.exists() {
                     failed.push(format!("{} (destination exists)", from.display()));
-                } else if let Err(e) = std::fs::rename(to, from) {
+                } else if let Err(e) = crate::paths::move_path(to, from) {
                     failed.push(format!("{} ({e})", to.display()));
                 }
             }

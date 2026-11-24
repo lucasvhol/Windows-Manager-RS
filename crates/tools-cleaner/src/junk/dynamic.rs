@@ -18,7 +18,7 @@ use wm_core::{
 use super::{Options, RuleScan, allowed, is_system};
 
 /// Folders a drive-wide scan never enters (matched by name, any depth).
-const NEVER_ENTER: &[&str] = &[
+pub(crate) const NEVER_ENTER: &[&str] = &[
     "windows",
     "program files",
     "program files (x86)",

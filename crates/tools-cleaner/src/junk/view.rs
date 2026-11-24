@@ -6,13 +6,11 @@ use std::path::PathBuf;
 
 use egui_extras::{Column, TableBuilder};
 use wm_core::{
-    AppCtx, Category, Tool,
-    drives::{self, DriveKind},
-    egui, icons,
+    AppCtx, Category, Tool, egui, icons,
     safety::UndoAction,
     shell::reveal_in_explorer,
     task::BackgroundTask,
-    ui::{Confirm, Message, ToolButton, format_bytes, show_message, toolbar},
+    ui::{Confirm, Message, ToolButton, drive_picker, format_bytes, show_message, toolbar},
 };
 
 use super::{CleanReport, Kind, Options, RULES, Rule, RuleScan, clean, parse_rules, scan_rule_with};
@@ -106,47 +104,9 @@ impl JunkCleaner {
     }
 
     fn drives_row(&mut self, ui: &mut egui::Ui) {
-        let drives: Vec<_> = drives::list()
-            .into_iter()
-            .filter(|d| matches!(d.kind, DriveKind::Fixed | DriveKind::Removable))
-            .collect();
-        let system = wm_core::paths::expand_env("%SystemDrive%")
-            .chars()
-            .next()
-            .unwrap_or('C')
-            .to_ascii_uppercase();
         ui.horizontal_wrapped(|ui| {
             ui.label("Drives for empty folders and zero-byte files:");
-            for d in drives {
-                let mut on = if self.opts.drives.is_empty() {
-                    d.letter == system
-                } else {
-                    self.opts.drives.contains(&d.letter)
-                };
-                let used = d.used() as f32 / d.total.max(1) as f32;
-                ui.vertical(|ui| {
-                    if ui.checkbox(&mut on, d.display_name()).changed() {
-                        if self.opts.drives.is_empty() {
-                            self.opts.drives.push(system);
-                        }
-                        self.opts.drives.retain(|c| *c != d.letter);
-                        if on {
-                            self.opts.drives.push(d.letter);
-                        }
-                        self.opts.drives.sort_unstable();
-                    }
-                    ui.add(
-                        egui::ProgressBar::new(used)
-                            .desired_width(130.0)
-                            .desired_height(6.0),
-                    )
-                    .on_hover_text(format!(
-                        "{} free of {}",
-                        format_bytes(d.free),
-                        format_bytes(d.total)
-                    ));
-                });
-            }
+            drive_picker(ui, &mut self.opts.drives);
         });
     }
 

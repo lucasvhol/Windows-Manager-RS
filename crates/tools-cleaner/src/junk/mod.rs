@@ -9,7 +9,7 @@
 //! folders. Deletion is permanent by default (that is what frees space); a "use
 //! Recycle Bin" option is available.
 
-mod dynamic;
+pub(crate) mod dynamic;
 mod view;
 
 use std::path::{Path, PathBuf};

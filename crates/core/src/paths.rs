@@ -1,6 +1,6 @@
 //! Per-user directories (config, data, backups, logs).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use directories::ProjectDirs;
@@ -61,6 +61,24 @@ pub fn expand_env(s: &str) -> String {
     }
     out.push_str(rest);
     out
+}
+
+/// Moves a file or folder. A file moved to another drive is copied, then the original
+/// is deleted (a plain rename only works within one drive).
+pub fn move_path(from: &Path, to: &Path) -> std::io::Result<()> {
+    match std::fs::rename(from, to) {
+        Ok(()) => Ok(()),
+        Err(e) if from.is_file() => {
+            if to.exists() {
+                return Err(e);
+            }
+            std::fs::copy(from, to)?;
+            std::fs::remove_file(from).inspect_err(|_| {
+                let _ = std::fs::remove_file(to); // keep exactly one copy
+            })
+        }
+        Err(e) => Err(e),
+    }
 }
 
 /// Case-insensitive wildcard match supporting `*` (any run) and `?` (one char).
