@@ -1,6 +1,7 @@
 //! Information tools (Phase 1): read-mostly views of the system.
 
 mod device_manager;
+mod disk_bench;
 mod event_viewer;
 mod hardware_monitor;
 mod process_manager;

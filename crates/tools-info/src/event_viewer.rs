@@ -57,6 +57,61 @@ pub fn level_query(l: Levels) -> String {
     format!("*[System[({})]]", parts.join(" or "))
 }
 
+/// Full XPath query: chosen levels, optionally only events from the last `hours`.
+pub fn build_query(l: Levels, hours: u32) -> String {
+    if hours == 0 {
+        return level_query(l);
+    }
+    let time = format!(
+        "TimeCreated[timediff(@SystemTime) <= {}]",
+        u64::from(hours) * 3_600_000
+    );
+    let levels = level_query(l);
+    if levels == "*" {
+        return format!("*[System[{time}]]");
+    }
+    // "*[System[(…)]]" -> "*[System[(…) and TimeCreated[…]]]"
+    let inner = levels.trim_start_matches("*[System[").trim_end_matches("]]");
+    format!("*[System[{inner} and {time}]]")
+}
+
+/// Quotes a CSV field when needed.
+pub fn csv_field(s: &str) -> String {
+    if s.contains([',', '"', '\n', '\r']) {
+        format!("\"{}\"", s.replace('"', "\"\""))
+    } else {
+        s.to_owned()
+    }
+}
+
+pub fn to_csv(rows: &[&EventRow]) -> String {
+    let mut out = String::from("Level,Date and time,Source,Event ID,Message\r\n");
+    for r in rows {
+        let msg = r.message.replace("\r\n", " ").replace('\n', " ");
+        out.push_str(&format!(
+            "{},{},{},{},{}\r\n",
+            level_name(r.level),
+            csv_field(&r.time),
+            csv_field(&r.provider),
+            r.event_id,
+            csv_field(&msg)
+        ));
+    }
+    out
+}
+
+/// Grouping key (source, event id) and stats (level, count, latest time, first message line).
+type GroupKey = (String, u32);
+type GroupStats = (u8, usize, String, String);
+
+pub const RANGES: [(u32, &str); 5] = [
+    (0, "Any time"),
+    (1, "Last hour"),
+    (24, "Last 24 hours"),
+    (168, "Last 7 days"),
+    (720, "Last 30 days"),
+];
+
 pub fn level_name(level: u8) -> &'static str {
     match level {
         1 => "Critical",
@@ -206,12 +261,12 @@ fn format_message(publisher: EVT_HANDLE, event: EVT_HANDLE) -> Option<String> {
     }
 }
 
-pub fn query_events(log: &str, levels: Levels, max: usize) -> Result<Vec<EventRow>> {
+pub fn query_events(log: &str, levels: Levels, hours: u32, max: usize) -> Result<Vec<EventRow>> {
     let query = unsafe {
         Evt(EvtQuery(
             None,
             &HSTRING::from(log),
-            &HSTRING::from(level_query(levels)),
+            &HSTRING::from(build_query(levels, hours)),
             EvtQueryChannelPath.0 | EvtQueryReverseDirection.0,
         )?)
     };
@@ -257,6 +312,9 @@ pub struct EventViewer {
     rows: Result<Vec<EventRow>, String>,
     selected: Option<u64>,
     loaded_once: bool,
+    hours: u32,
+    grouped: bool,
+    message: wm_core::ui::Message,
 }
 
 impl Default for EventViewer {
@@ -273,16 +331,19 @@ impl Default for EventViewer {
             rows: Ok(Vec::new()),
             selected: None,
             loaded_once: false,
+            hours: 168,
+            grouped: false,
+            message: None,
         }
     }
 }
 
 impl EventViewer {
     fn reload(&mut self, ctx: &egui::Context) {
-        let (log, levels, max) = (LOGS[self.log], self.levels, self.max);
+        let (log, levels, max, hours) = (LOGS[self.log], self.levels, self.max, self.hours);
         self.selected = None;
         self.task = Some(BackgroundTask::spawn(ctx, move |_| {
-            query_events(log, levels, max)
+            query_events(log, levels, hours, max)
         }));
     }
 }
@@ -322,6 +383,18 @@ impl Tool for EventViewer {
             reload |= ui.checkbox(&mut self.levels.error, "Error").changed();
             reload |= ui.checkbox(&mut self.levels.warning, "Warning").changed();
             reload |= ui.checkbox(&mut self.levels.information, "Information").changed();
+            egui::ComboBox::from_id_salt("event_range")
+                .selected_text(
+                    RANGES
+                        .iter()
+                        .find(|(h, _)| *h == self.hours)
+                        .map_or("", |(_, l)| *l),
+                )
+                .show_ui(ui, |ui| {
+                    for (h, label) in RANGES {
+                        reload |= ui.selectable_value(&mut self.hours, h, label).changed();
+                    }
+                });
             ui.label("Max:");
             reload |= ui
                 .add(egui::DragValue::new(&mut self.max).range(50..=10_000).speed(10))
@@ -361,7 +434,79 @@ impl Tool for EventViewer {
                     || r.event_id.to_string() == f
             })
             .collect();
-        ui.weak(format!("{} events", visible.len()));
+        ui.horizontal(|ui| {
+            ui.weak(format!("{} events", visible.len()));
+            ui.checkbox(&mut self.grouped, "Group by event");
+            if ui
+                .add_enabled(!visible.is_empty(), egui::Button::new("Export CSV…"))
+                .clicked()
+                && let Some(path) = rfd::FileDialog::new()
+                    .add_filter("CSV", &["csv"])
+                    .set_file_name(format!("{}-events.csv", LOGS[self.log]))
+                    .save_file()
+            {
+                self.message = Some(
+                    std::fs::write(&path, to_csv(&visible))
+                        .map(|()| format!("Saved {} events to {}.", visible.len(), path.display()))
+                        .map_err(|e| e.to_string()),
+                );
+            }
+        });
+        wm_core::ui::show_message(ui, &self.message);
+        if self.grouped {
+            // (source, id) -> (level, count, latest time, first message line)
+            let mut groups: Vec<(GroupKey, GroupStats)> = Vec::new();
+            for r in &visible {
+                let key = (r.provider.clone(), r.event_id);
+                match groups.iter_mut().find(|(k, _)| *k == key) {
+                    Some((_, g)) => g.1 += 1,
+                    None => groups.push((
+                        key,
+                        (
+                            r.level,
+                            1,
+                            r.time.clone(),
+                            r.message.lines().next().unwrap_or_default().to_owned(),
+                        ),
+                    )),
+                }
+            }
+            groups.sort_by_key(|g| std::cmp::Reverse(g.1.1));
+            let (error, warn) = (ui.visuals().error_fg_color, ui.visuals().warn_fg_color);
+            egui::ScrollArea::vertical().id_salt("groups").show(ui, |ui| {
+                egui::Grid::new("event_groups")
+                    .striped(true)
+                    .spacing([14.0, 4.0])
+                    .show(ui, |ui| {
+                        for h in ["Count", "Level", "Source", "Event ID", "Latest", "Message"] {
+                            ui.strong(h);
+                        }
+                        ui.end_row();
+                        for ((source, id), (level, count, latest, msg)) in &groups {
+                            ui.label(count.to_string());
+                            let color = match level {
+                                1 | 2 => error,
+                                3 => warn,
+                                _ => ui.visuals().text_color(),
+                            };
+                            ui.colored_label(color, level_name(*level));
+                            ui.label(source);
+                            if ui
+                                .link(id.to_string())
+                                .on_hover_text("Show these events")
+                                .clicked()
+                            {
+                                self.filter = id.to_string();
+                                self.grouped = false;
+                            }
+                            ui.label(latest);
+                            ui.label(msg);
+                            ui.end_row();
+                        }
+                    });
+            });
+            return;
+        }
 
         let detail_height = if self.selected.is_some() { 220.0 } else { 0.0 };
         let table_height = (ui.available_height() - detail_height).max(150.0);
@@ -475,6 +620,30 @@ mod tests {
     }
 
     #[test]
+    fn time_range_queries_and_csv() {
+        assert_eq!(build_query(Levels::default(), 0), "*");
+        assert_eq!(
+            build_query(Levels::default(), 24),
+            "*[System[TimeCreated[timediff(@SystemTime) <= 86400000]]]"
+        );
+        let errors = Levels {
+            critical: false,
+            error: true,
+            warning: false,
+            information: false,
+        };
+        assert_eq!(
+            build_query(errors, 1),
+            "*[System[(Level=2) and TimeCreated[timediff(@SystemTime) <= 3600000]]]"
+        );
+        assert_eq!(csv_field("a,b"), "\"a,b\"");
+        assert_eq!(csv_field("say \"hi\""), "\"say \"\"hi\"\"\"");
+        assert_eq!(csv_field("plain"), "plain");
+        // A real time-limited query must be accepted by the event log service.
+        query_events("System", Levels::default(), 24, 5).unwrap();
+    }
+
+    #[test]
     fn level_queries() {
         assert_eq!(level_query(Levels::default()), "*");
         let only_errors = Levels {
@@ -495,7 +664,7 @@ mod tests {
 
     #[test]
     fn query_system_log() {
-        let rows = query_events("System", Levels::default(), 25).unwrap();
+        let rows = query_events("System", Levels::default(), 0, 25).unwrap();
         assert!(!rows.is_empty(), "System log should contain events");
         assert!(rows.len() <= 25);
         assert!(rows.iter().all(|r| !r.provider.is_empty() && !r.time.is_empty()));

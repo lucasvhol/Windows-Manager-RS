@@ -43,11 +43,11 @@ This file tracks parity between **Win Manager RS** and the features of a commerc
 
 | Tool | Status | Missing | Wave |
 |---|---|---|---|
-| System Information | 🟡 | Hardware/software tree; product key; codecs; printers; user accounts; environment; event log; HDD SMART report; disk benchmark; hardware score; hotfix list and uninstall; system report export; date and uptime status bar | D |
-| Process Manager | 🟡 | Priority, suspend, restart, terminate variants (unsigned, untrusted, high CPU, high memory, kill and block); block list; details; open folder; online lookup; Window Finder; column chooser; view and filter; company and signature columns; lower pane with window titles, threads and modules; process logger | D |
-| Event Viewer | 🟡 | Query side panel with time range (last N days or custom); grouping by event ID; export to CSV | D |
-| Device Manager | 🟡 | Hidden and non-present devices; uninstall checked or all invalid; driver backup and restore; scan for hardware changes; USB storage history; details pane; filter combo | D |
-| Hardware Monitor | 🟡 | Sensor tree (current and maximum); GPU via vendor libraries; SMART temperatures; battery; temperature alarm. Voltages, fans and CPU power need a kernel driver | D, ⛔ partly |
+| System Information | ✅ | Summary (OS, CPU, memory, board, graphics, storage, network, public IP on request) with save/copy; licence, activation, firmware key (hidden until shown) and Experience Index scores with a re-run; user accounts; installed updates with uninstall; printers; codecs; environment; disk health (SMART); disk speed test (sequential and 4K, unbuffered); battery, energy, sleep-study and performance reports | D |
+| Process Manager | ✅ | User, company and signature columns (catalog-aware); end, end tree, suspend, resume, restart; priority; block / unblock through Image File Execution Options; end all unsigned, untrusted, high-CPU or high-memory processes (critical ones excluded); views (mine, not Microsoft, unsigned); window list to find a window's process (instead of a drag crosshair); details with command line, start time, parent, threads and loaded modules; open folder; online lookup | D |
+| Event Viewer | ✅ | Time range (hour, day, week, month) in the query itself; level filters; group by source and event ID with counts; CSV export | D |
+| Device Manager | ✅ | Disconnected devices shown; uninstall a device or every disconnected one; scan for hardware changes; driver backup (export) and restore (install from folder); USB history clearing on Device Security | D |
+| Hardware Monitor | 🟡 | Charts; sensor table with current and maximum; NVIDIA GPU load, memory, temperature, power, fan and clock (NVML); SMART disk temperatures (administrator); battery; temperature alarm with sound. AMD/Intel GPU sensors not yet (no hardware to test ADLX / IGCL). Voltages, fans and CPU power need a kernel driver | D, ⛔ partly |
 
 ## Optimizer
 

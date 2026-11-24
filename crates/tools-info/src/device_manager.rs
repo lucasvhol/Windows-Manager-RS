@@ -28,6 +28,8 @@ pub struct Device {
     pub manufacturer: String,
     /// Config Manager problem code, if the device has a problem.
     pub problem: Option<u32>,
+    /// False for devices that were connected before but are not now.
+    pub present: bool,
 }
 
 impl Device {
@@ -108,13 +110,17 @@ fn instance_id(set: HDEVINFO, data: &SP_DEVINFO_DATA) -> Option<String> {
     Some(String::from_utf16_lossy(&buf[..end]))
 }
 
-pub fn enumerate() -> Result<Vec<Device>> {
+pub fn enumerate(include_disconnected: bool) -> Result<Vec<Device>> {
     let set = unsafe {
         DevInfo(SetupDiGetClassDevsW(
             None,
             PCWSTR::null(),
             None,
-            DIGCF_ALLCLASSES | DIGCF_PRESENT,
+            if include_disconnected {
+                DIGCF_ALLCLASSES
+            } else {
+                DIGCF_ALLCLASSES | DIGCF_PRESENT
+            },
         )?)
     };
     let mut devices = Vec::new();
@@ -139,12 +145,14 @@ pub fn enumerate() -> Result<Vec<Device>> {
         let mut problem = CM_PROB(0);
         let cr = unsafe { CM_Get_DevNode_Status(&mut status, &mut problem, data.DevInst, 0) };
         let problem = (cr == CR_SUCCESS && (status.0 & DN_HAS_PROBLEM.0) != 0).then_some(problem.0);
+        let present = cr == CR_SUCCESS;
         devices.push(Device {
             instance_id: id,
             name,
             class: reg_property(set.0, &data, SPDRP_CLASS).unwrap_or_else(|| "Other devices".into()),
             manufacturer: reg_property(set.0, &data, SPDRP_MFG).unwrap_or_default(),
             problem,
+            present,
         });
     }
     if devices.is_empty() {
@@ -170,6 +178,7 @@ pub enum Action {
     Enable,
     Disable,
     Restart,
+    Remove,
 }
 
 impl Action {
@@ -178,6 +187,7 @@ impl Action {
             Action::Enable => "/enable-device",
             Action::Disable => "/disable-device",
             Action::Restart => "/restart-device",
+            Action::Remove => "/remove-device",
         }
     }
 
@@ -185,7 +195,7 @@ impl Action {
         match self {
             Action::Enable => Some(Action::Disable),
             Action::Disable => Some(Action::Enable),
-            Action::Restart => None,
+            Action::Restart | Action::Remove => None,
         }
     }
 }
@@ -213,6 +223,9 @@ pub struct DeviceManager {
     problems_only: bool,
     selected: Option<String>,
     confirm: Confirm<(Action, Device)>,
+    show_disconnected: bool,
+    batch_confirm: Confirm<Vec<Device>>,
+    side_task: Option<BackgroundTask<String>>,
     message: Message,
 }
 
@@ -265,7 +278,8 @@ impl Tool for DeviceManager {
 
     fn ui(&mut self, ui: &mut egui::Ui, ctx: &mut AppCtx<'_>) {
         if self.task.is_none() && self.devices.is_none() {
-            self.task = Some(BackgroundTask::spawn(ui.ctx(), |_| enumerate()));
+            let all = self.show_disconnected;
+            self.task = Some(BackgroundTask::spawn(ui.ctx(), move |_| enumerate(all)));
         }
         if let Some(task) = &mut self.task {
             task.poll();
@@ -277,10 +291,145 @@ impl Tool for DeviceManager {
         if let Some((action, device)) = self.confirm.show(ui.ctx(), ctx.i18n) {
             self.apply(ctx, action, &device);
         }
+        if let Some(list) = self.batch_confirm.show(ui.ctx(), ctx.i18n) {
+            if ctx.config.dry_run {
+                self.message = Some(Ok(ctx.i18n.tr("common-dry-run-skip")));
+            } else {
+                let mut failed = Vec::new();
+                for d in &list {
+                    if let Err(e) = run_pnputil(Action::Remove, &d.instance_id) {
+                        failed.push(format!("{}: {e}", d.name));
+                    }
+                }
+                let _ = ctx.journal.record(
+                    "devices",
+                    format!("Removed {} disconnected devices", list.len() - failed.len()),
+                    UndoAction::None,
+                );
+                self.message = Some(if failed.is_empty() {
+                    Ok(format!("Removed {} disconnected devices.", list.len()))
+                } else {
+                    Err(format!(
+                        "Some devices could not be removed: {}",
+                        failed.join("; ")
+                    ))
+                });
+                self.devices = None;
+            }
+        }
+        if let Some(t) = &mut self.side_task {
+            t.poll();
+            if let Some(r) = t.take_result() {
+                self.message = Some(r);
+                self.side_task = None;
+                self.devices = None;
+            }
+        }
+
+        let busy = self.side_task.is_some();
+        let tools = [
+            Some(
+                wm_core::ui::ToolButton::new(wm_core::icons::MAGNIFYING_GLASS, "Scan for changes")
+                    .enabled(ctx.elevated && !busy),
+            ),
+            Some(
+                wm_core::ui::ToolButton::new(wm_core::icons::TRASH, "Remove disconnected")
+                    .enabled(ctx.elevated && !busy),
+            ),
+            None,
+            Some(
+                wm_core::ui::ToolButton::new(wm_core::icons::FLOPPY_DISK, "Back up drivers")
+                    .enabled(ctx.elevated && !busy),
+            ),
+            Some(
+                wm_core::ui::ToolButton::new(wm_core::icons::UPLOAD, "Restore drivers")
+                    .enabled(ctx.elevated && !busy),
+            ),
+        ];
+        match wm_core::ui::toolbar(ui, &tools) {
+            Some(0) => {
+                self.side_task = Some(BackgroundTask::spawn(ui.ctx(), |_| {
+                    wm_core::process::run_checked(hidden_command("pnputil").arg("/scan-devices"))?;
+                    Ok("Scan finished.".to_owned())
+                }));
+            }
+            Some(1) => {
+                let all = enumerate(true).unwrap_or_default();
+                let gone: Vec<Device> = all.into_iter().filter(|d| !d.present).collect();
+                if gone.is_empty() {
+                    self.message = Some(Ok("There are no disconnected devices.".into()));
+                } else {
+                    self.batch_confirm.ask(
+                        format!(
+                            "Remove {} devices that are not connected? Windows sets each one up again if it is \
+                             plugged back in.",
+                            gone.len()
+                        ),
+                        gone,
+                    );
+                }
+            }
+            Some(3) => {
+                if let Some(dir) = rfd::FileDialog::new()
+                    .set_title("Folder for the driver backup")
+                    .pick_folder()
+                {
+                    self.side_task = Some(BackgroundTask::spawn(ui.ctx(), move |_| {
+                        let out = wm_core::process::run_checked(
+                            hidden_command("pnputil").args(["/export-driver", "*"]).arg(&dir),
+                        )?;
+                        let _ = out;
+                        Ok(format!("Drivers exported to {}.", dir.display()))
+                    }));
+                }
+            }
+            Some(4) => {
+                if let Some(dir) = rfd::FileDialog::new()
+                    .set_title("Folder with a driver backup")
+                    .pick_folder()
+                {
+                    let _ = ctx.journal.record(
+                        "devices",
+                        format!("Installed drivers from {}", dir.display()),
+                        UndoAction::None,
+                    );
+                    self.side_task = Some(BackgroundTask::spawn(ui.ctx(), move |_| {
+                        let out = hidden_command("pnputil")
+                            .arg("/add-driver")
+                            .arg(dir.join("*.inf"))
+                            .args(["/subdirs", "/install"])
+                            .output()?;
+                        // pnputil returns non-zero when some drivers were already present.
+                        let text = String::from_utf8_lossy(&out.stdout);
+                        let summary = text
+                            .lines()
+                            .rev()
+                            .find(|l| !l.trim().is_empty())
+                            .unwrap_or("")
+                            .trim()
+                            .to_owned();
+                        Ok(format!("Driver restore finished. {summary}"))
+                    }));
+                }
+            }
+            _ => {}
+        }
+        if busy {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.weak("Working…");
+            });
+        }
 
         ui.horizontal(|ui| {
             ui.add(egui::TextEdit::singleline(&mut self.filter).hint_text(ctx.i18n.tr("common-filter")));
             ui.checkbox(&mut self.problems_only, "Only devices with problems");
+            if ui
+                .checkbox(&mut self.show_disconnected, "Show disconnected devices")
+                .changed()
+            {
+                self.devices = None;
+            }
             if ui
                 .add_enabled(
                     self.task.is_none(),
@@ -370,8 +519,18 @@ impl Tool for DeviceManager {
                                 (Action::Disable, d.clone()),
                             );
                         }
-                        if ui.button("Restart device").clicked() {
+                        if d.present && ui.button("Restart device").clicked() {
                             self.confirm.ask(format!("Restart \"{}\"?", d.name), (Action::Restart, d.clone()));
+                        }
+                        if ui.button("Uninstall device").clicked() {
+                            self.confirm.ask(
+                                format!(
+                                    "Uninstall \"{}\"? Its driver stays installed, so Windows sets it up again \
+                                     after a hardware scan or restart.",
+                                    d.name
+                                ),
+                                (Action::Remove, d.clone()),
+                            );
                         }
                     });
                 });
@@ -396,7 +555,9 @@ impl Tool for DeviceManager {
                             None => "",
                         };
                         let text = egui::RichText::new(format!("{icon}{}", d.name));
-                        let text = if d.problem.is_some() && !d.is_disabled() {
+                        let text = if !d.present {
+                            egui::RichText::new(format!("{} (disconnected)", d.name)).weak()
+                        } else if d.problem.is_some() && !d.is_disabled() {
                             text.color(warn)
                         } else {
                             text
@@ -423,6 +584,7 @@ mod tests {
             class: class.into(),
             manufacturer: String::new(),
             problem,
+            present: true,
         }
     }
 
@@ -448,7 +610,8 @@ mod tests {
 
     #[test]
     fn enumerates_real_devices() {
-        let devices = enumerate().unwrap();
+        let devices = enumerate(false).unwrap();
+        assert!(enumerate(true).unwrap().len() >= devices.len());
         assert!(devices.len() > 10, "expected many devices, got {}", devices.len());
         assert!(
             devices

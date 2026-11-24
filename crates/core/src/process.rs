@@ -11,6 +11,14 @@ pub fn hidden_command(program: &str) -> Command {
     use std::os::windows::process::CommandExt;
     let mut cmd = Command::new(program);
     cmd.creation_flags(CREATE_NO_WINDOW);
+    // A PSModulePath inherited from PowerShell 7 makes Windows PowerShell 5.1 load
+    // incompatible modules; without it, 5.1 uses its own default module path.
+    let name = std::path::Path::new(program)
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_ascii_lowercase());
+    if name.as_deref() == Some("powershell") {
+        cmd.env_remove("PSModulePath");
+    }
     cmd
 }
 
@@ -111,5 +119,84 @@ mod tests {
             Some(("MsiExec.exe".into(), "/I{ABC}".into()))
         );
         assert_eq!(split_command_line("  "), None);
+    }
+}
+
+/// Base64 (standard alphabet, padded), used for PowerShell's `-EncodedCommand`.
+fn base64(bytes: &[u8]) -> String {
+    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let b = [chunk[0], *chunk.get(1).unwrap_or(&0), *chunk.get(2).unwrap_or(&0)];
+        let n = (u32::from(b[0]) << 16) | (u32::from(b[1]) << 8) | u32::from(b[2]);
+        for i in 0..4 {
+            if i <= chunk.len() {
+                out.push(T[(n >> (18 - 6 * i) & 63) as usize] as char);
+            } else {
+                out.push('=');
+            }
+        }
+    }
+    out
+}
+
+/// Runs a Windows PowerShell script (passed with `-EncodedCommand`, so no quoting
+/// issues) and parses its output, which the script must produce with
+/// `ConvertTo-Json`. Output is read as UTF-8.
+pub fn powershell_json(script: &str) -> Result<serde_json::Value> {
+    let full = format!(
+        "[Console]::OutputEncoding = [Text.Encoding]::UTF8\n$ProgressPreference = 'SilentlyContinue'\n{script}"
+    );
+    let utf16: Vec<u8> = full.encode_utf16().flat_map(u16::to_le_bytes).collect();
+    let out = run_checked(hidden_command("powershell").args([
+        "-NoProfile",
+        "-NonInteractive",
+        "-EncodedCommand",
+        &base64(&utf16),
+    ]))?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    let text = text.trim().trim_start_matches('\u{feff}');
+    if text.is_empty() {
+        return Ok(serde_json::Value::Array(Vec::new()));
+    }
+    serde_json::from_str(text).with_context(|| {
+        format!(
+            "reading PowerShell output: {}",
+            text.chars().take(200).collect::<String>()
+        )
+    })
+}
+
+/// A JSON value as a list (PowerShell returns a bare object for a single result).
+pub fn json_list(v: serde_json::Value) -> Vec<serde_json::Value> {
+    match v {
+        serde_json::Value::Array(a) => a,
+        serde_json::Value::Null => Vec::new(),
+        other => vec![other],
+    }
+}
+
+#[cfg(test)]
+mod ps_tests {
+    use super::*;
+
+    #[test]
+    fn base64_matches_reference() {
+        assert_eq!(base64(b""), "");
+        assert_eq!(base64(b"f"), "Zg==");
+        assert_eq!(base64(b"fo"), "Zm8=");
+        assert_eq!(base64(b"foo"), "Zm9v");
+        assert_eq!(base64(b"foobar"), "Zm9vYmFy");
+    }
+
+    #[test]
+    fn powershell_json_roundtrip_with_quotes() {
+        let v = powershell_json(
+            r#"[pscustomobject]@{ A = "it's ""quoted"""; B = 3 } | ConvertTo-Json -Compress"#,
+        )
+        .unwrap();
+        let list = json_list(v);
+        assert_eq!(list[0]["A"], r#"it's "quoted""#);
+        assert_eq!(list[0]["B"], 3);
     }
 }

@@ -1,11 +1,14 @@
-//! System Information: OS, CPU, memory, board/BIOS, graphics, storage, network.
+//! System Information: summary, licence and scores, accounts, updates, printers,
+//! codecs, environment, disk health, disk speed test and Windows reports.
 
 use sysinfo::{Disks, Motherboard, Networks, Product, System};
 use winreg::RegKey;
 use winreg::enums::HKEY_LOCAL_MACHINE;
 use wm_core::{
-    AppCtx, Category, Tool, egui,
+    AppCtx, Category, Tool, egui, icons,
+    safety::UndoAction,
     task::BackgroundTask,
+    ui::{Confirm, section_nav},
     ui::{Message, format_bytes, format_duration, show_message},
 };
 
@@ -14,23 +17,220 @@ pub struct Section {
     pub rows: Vec<(String, String)>,
 }
 
+/// A simple table produced by a background query.
+#[derive(Debug, Clone, Default)]
+pub struct Table {
+    pub columns: Vec<&'static str>,
+    pub rows: Vec<Vec<String>>,
+}
+
+fn json_str(v: &serde_json::Value) -> String {
+    match v {
+        serde_json::Value::Null => String::new(),
+        serde_json::Value::Bool(b) => if *b { "Yes" } else { "No" }.into(),
+        serde_json::Value::String(s) => s.trim().to_owned(),
+        other => other.to_string(),
+    }
+}
+
+/// Runs a PowerShell query and turns the listed properties into table columns.
+fn ps_table(script: &str, columns: &[(&'static str, &str)]) -> anyhow::Result<Table> {
+    let list = wm_core::process::json_list(wm_core::process::powershell_json(script)?);
+    Ok(Table {
+        columns: columns.iter().map(|(label, _)| *label).collect(),
+        rows: list
+            .iter()
+            .map(|o| columns.iter().map(|(_, key)| json_str(&o[*key])).collect())
+            .collect(),
+    })
+}
+
+fn licence_status(n: i64) -> &'static str {
+    match n {
+        0 => "Unlicensed",
+        1 => "Activated",
+        2 | 3 | 6 => "Grace period",
+        4 => "Not genuine",
+        5 => "Notification mode",
+        _ => "Unknown",
+    }
+}
+
+fn query_software() -> anyhow::Result<Table> {
+    let v = wm_core::process::powershell_json(
+        r#"$p = Get-CimInstance SoftwareLicensingProduct -Filter "ApplicationID='55c92734-d682-4d71-983e-d6ec3f16059f' and PartialProductKey is not null" | Select-Object -First 1
+$s = Get-CimInstance SoftwareLicensingService
+$w = Get-CimInstance Win32_WinSAT -ErrorAction SilentlyContinue | Select-Object -First 1
+[pscustomobject]@{ Licence = $p.Name; Status = [int]$p.LicenseStatus; Channel = $p.ProductKeyChannel; Partial = $p.PartialProductKey; Firmware = $s.OA3xOriginalProductKey;
+  Cpu = $w.CPUScore; Memory = $w.MemoryScore; Graphics = $w.GraphicsScore; Gaming = $w.D3DScore; Disk = $w.DiskScore; Base = $w.WinSPRLevel } | ConvertTo-Json -Compress"#,
+    )?;
+    let mut rows = vec![
+        vec!["Licence".into(), json_str(&v["Licence"])],
+        vec![
+            "Activation".into(),
+            licence_status(v["Status"].as_i64().unwrap_or(-1)).into(),
+        ],
+        vec!["Key type".into(), json_str(&v["Channel"])],
+        vec!["Installed key ends with".into(), json_str(&v["Partial"])],
+        vec!["Key stored in firmware".into(), json_str(&v["Firmware"])],
+    ];
+    let scores: Vec<(&str, &str)> = vec![
+        ("CPU", "Cpu"),
+        ("Memory", "Memory"),
+        ("Desktop graphics", "Graphics"),
+        ("Gaming graphics", "Gaming"),
+        ("Disk", "Disk"),
+        ("Base score", "Base"),
+    ];
+    for (label, key) in scores {
+        let s = json_str(&v[key]);
+        if !s.is_empty() && s != "0" {
+            rows.push(vec![format!("Experience index: {label}"), s]);
+        }
+    }
+    rows.retain(|r| !r[1].is_empty());
+    Ok(Table {
+        columns: vec!["Item", "Value"],
+        rows,
+    })
+}
+
+fn query_users() -> anyhow::Result<Table> {
+    ps_table(
+        r#"$a = @(Get-LocalGroupMember -SID S-1-5-32-544 -ErrorAction SilentlyContinue | ForEach-Object { ($_.Name -split '\\')[-1] })
+@(Get-LocalUser | ForEach-Object { [pscustomobject]@{ Name = $_.Name; Admin = ($a -contains $_.Name); Enabled = $_.Enabled;
+  Password = $_.PasswordRequired; LastLogon = $(if ($_.LastLogon) { $_.LastLogon.ToString('yyyy-MM-dd HH:mm') } else { '' }); Description = $_.Description } }) | ConvertTo-Json -Compress"#,
+        &[
+            ("Account", "Name"),
+            ("Administrator", "Admin"),
+            ("Enabled", "Enabled"),
+            ("Password required", "Password"),
+            ("Last sign-in", "LastLogon"),
+            ("Description", "Description"),
+        ],
+    )
+}
+
+fn query_updates() -> anyhow::Result<Table> {
+    ps_table(
+        r#"@(Get-HotFix | Select-Object HotFixID, Description, @{ n = 'InstalledOn'; e = { if ($_.InstalledOn) { $_.InstalledOn.ToString('yyyy-MM-dd') } } } | Sort-Object InstalledOn -Descending) | ConvertTo-Json -Compress"#,
+        &[
+            ("Update", "HotFixID"),
+            ("Type", "Description"),
+            ("Installed", "InstalledOn"),
+        ],
+    )
+}
+
+fn query_printers() -> anyhow::Result<Table> {
+    ps_table(
+        r#"@(Get-CimInstance Win32_Printer | Select-Object Name, DriverName, PortName, Default, WorkOffline) | ConvertTo-Json -Compress"#,
+        &[
+            ("Printer", "Name"),
+            ("Driver", "DriverName"),
+            ("Port", "PortName"),
+            ("Default", "Default"),
+            ("Offline", "WorkOffline"),
+        ],
+    )
+}
+
+fn query_disks() -> anyhow::Result<Table> {
+    ps_table(
+        r#"@(Get-PhysicalDisk | Sort-Object DeviceId | ForEach-Object { $r = $_ | Get-StorageReliabilityCounter -ErrorAction SilentlyContinue
+  [pscustomobject]@{ Name = $_.FriendlyName; Media = [string]$_.MediaType; Bus = [string]$_.BusType; Health = [string]$_.HealthStatus;
+    Size = '{0:N0} GB' -f ($_.Size / 1GB); Temp = $(if ($r.Temperature) { "$($r.Temperature) °C" }); Wear = $(if ($r.Wear -ne $null) { "$($r.Wear) %" });
+    Hours = $r.PowerOnHours; Errors = $(if ($r) { [int64]$r.ReadErrorsTotal + [int64]$r.WriteErrorsTotal }) } }) | ConvertTo-Json -Compress"#,
+        &[
+            ("Disk", "Name"),
+            ("Type", "Media"),
+            ("Bus", "Bus"),
+            ("Health", "Health"),
+            ("Size", "Size"),
+            ("Temperature", "Temp"),
+            ("Wear", "Wear"),
+            ("Power-on hours", "Hours"),
+            ("Errors", "Errors"),
+        ],
+    )
+}
+
+fn query_codecs() -> anyhow::Result<Table> {
+    let mut rows = Vec::new();
+    for (view, label) in [
+        (
+            r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Drivers32",
+            "64-bit",
+        ),
+        (
+            r"SOFTWARE\WOW6432Node\Microsoft\Windows NT\CurrentVersion\Drivers32",
+            "32-bit",
+        ),
+    ] {
+        if let Ok(k) = RegKey::predef(HKEY_LOCAL_MACHINE).open_subkey(view) {
+            for (name, _) in k.enum_values().flatten() {
+                let file: String = k.get_value(&name).unwrap_or_default();
+                if !file.trim().is_empty() {
+                    rows.push(vec![name, file, label.into()]);
+                }
+            }
+        }
+    }
+    rows.sort();
+    Ok(Table {
+        columns: vec!["Type", "File", "Platform"],
+        rows,
+    })
+}
+
+fn query_environment() -> Table {
+    let mut rows: Vec<Vec<String>> = std::env::vars().map(|(k, v)| vec![k, v]).collect();
+    rows.sort_by_key(|r| r[0].to_ascii_lowercase());
+    Table {
+        columns: vec!["Variable", "Value"],
+        rows,
+    }
+}
+
+const PAGES: [(&str, &str); 10] = [
+    (icons::CPU, "Summary"),
+    (icons::KEY, "Licence and scores"),
+    (icons::USER, "User accounts"),
+    (icons::DOWNLOAD, "Installed updates"),
+    (icons::PRINTER, "Printers"),
+    (icons::FILE_TEXT, "Codecs"),
+    (icons::LIST_BULLETS, "Environment"),
+    (icons::HARD_DRIVES, "Disk health"),
+    (icons::GAUGE, "Disk speed test"),
+    (icons::CLIPBOARD_TEXT, "Reports"),
+];
+
+#[derive(Default)]
+struct Loaded {
+    task: Option<BackgroundTask<Table>>,
+    data: Option<Result<Table, String>>,
+}
+
 #[derive(Default)]
 pub struct SystemInfo {
+    page: usize,
     task: Option<BackgroundTask<Vec<Section>>>,
     sections: Option<Result<Vec<Section>, String>>,
+    tables: std::collections::HashMap<usize, Loaded>,
+    selected_row: Option<usize>,
+    reveal_key: bool,
+    bench_drive: Option<char>,
+    bench_size: u64,
+    bench: Option<BackgroundTask<crate::disk_bench::BenchResult>>,
+    bench_result: Option<Result<crate::disk_bench::BenchResult, String>>,
+    side_task: Option<BackgroundTask<String>>,
+    external_ip: Option<String>,
+    confirm: Confirm<String>,
     message: Message,
 }
 
-impl Tool for SystemInfo {
-    fn id(&self) -> &'static str {
-        "sysinfo"
-    }
-
-    fn category(&self) -> Category {
-        Category::Information
-    }
-
-    fn ui(&mut self, ui: &mut egui::Ui, ctx: &mut AppCtx<'_>) {
+impl SystemInfo {
+    fn summary(&mut self, ui: &mut egui::Ui, ctx: &mut AppCtx<'_>) {
         if self.task.is_none() && self.sections.is_none() {
             self.task = Some(BackgroundTask::spawn(ui.ctx(), |_| Ok(collect())));
         }
@@ -41,7 +241,6 @@ impl Tool for SystemInfo {
                 self.task = None;
             }
         }
-
         ui.horizontal(|ui| {
             if ui
                 .add_enabled(
@@ -53,11 +252,23 @@ impl Tool for SystemInfo {
                 self.sections = None;
                 self.message = None;
             }
-            if let Some(Ok(sections)) = &self.sections
-                && ui.button(ctx.i18n.tr("common-copy")).clicked()
-            {
-                ui.ctx().copy_text(to_text(sections));
-                self.message = Some(Ok(ctx.i18n.tr("common-copied")));
+            if let Some(Ok(sections)) = &self.sections {
+                if ui.button(ctx.i18n.tr("common-copy")).clicked() {
+                    ui.ctx().copy_text(to_text(sections));
+                    self.message = Some(Ok(ctx.i18n.tr("common-copied")));
+                }
+                if ui.button("Save as text…").clicked()
+                    && let Some(path) = rfd::FileDialog::new()
+                        .add_filter("Text", &["txt"])
+                        .set_file_name("system-information.txt")
+                        .save_file()
+                {
+                    self.message = Some(
+                        std::fs::write(&path, to_text(sections))
+                            .map(|()| format!("Saved {}.", path.display()))
+                            .map_err(|e| e.to_string()),
+                    );
+                }
             }
             if self.task.is_some() {
                 ui.spinner();
@@ -66,7 +277,6 @@ impl Tool for SystemInfo {
         });
         show_message(ui, &self.message);
         ui.add_space(6.0);
-
         match &self.sections {
             Some(Ok(sections)) => {
                 for section in sections {
@@ -86,12 +296,445 @@ impl Tool for SystemInfo {
                                 });
                         });
                 }
+                ui.horizontal(|ui| {
+                    ui.weak("Public IP address");
+                    match &self.external_ip {
+                        Some(ip) => {
+                            ui.label(ip);
+                        }
+                        None => {
+                            if ui
+                                .small_button("Look up")
+                                .on_hover_text("Asks api.ipify.org which address your connection uses.")
+                                .clicked()
+                            {
+                                self.external_ip = Some(match wm_core::net::external_ip() {
+                                    Ok(ip) => ip,
+                                    Err(e) => format!("not available ({e:#})"),
+                                });
+                            }
+                        }
+                    }
+                });
             }
             Some(Err(e)) => {
                 ui.colored_label(ui.visuals().error_fg_color, e);
             }
             None => {}
         }
+    }
+
+    /// Shows a background-loaded table for `page`.
+    fn table_page(
+        &mut self,
+        ui: &mut egui::Ui,
+        ctx: &mut AppCtx<'_>,
+        load: fn() -> anyhow::Result<Table>,
+    ) -> Option<Table> {
+        let page = self.page;
+        let entry = self.tables.entry(page).or_default();
+        if entry.task.is_none() && entry.data.is_none() {
+            entry.task = Some(BackgroundTask::spawn(ui.ctx(), move |_| load()));
+        }
+        if let Some(t) = &mut entry.task {
+            t.poll();
+            if let Some(r) = t.take_result() {
+                entry.data = Some(r);
+                entry.task = None;
+            }
+        }
+        let busy = entry.task.is_some();
+        ui.horizontal(|ui| {
+            if ui
+                .add_enabled(!busy, egui::Button::new(ctx.i18n.tr("common-refresh")))
+                .clicked()
+            {
+                entry.data = None;
+                self.selected_row = None;
+            }
+            if busy {
+                ui.spinner();
+                ui.label(ctx.i18n.tr("common-loading"));
+            }
+            if let Some(Ok(t)) = &entry.data {
+                ui.weak(format!("{} items", t.rows.len()));
+            }
+        });
+        match &entry.data {
+            Some(Err(e)) => {
+                ui.colored_label(ui.visuals().error_fg_color, e);
+                None
+            }
+            Some(Ok(t)) => Some(t.clone()),
+            None => None,
+        }
+    }
+
+    fn draw_table(&mut self, ui: &mut egui::Ui, t: &Table, selectable: bool) {
+        egui::Grid::new(("table", self.page))
+            .striped(true)
+            .spacing([16.0, 4.0])
+            .show(ui, |ui| {
+                for c in &t.columns {
+                    ui.strong(*c);
+                }
+                ui.end_row();
+                for (i, row) in t.rows.iter().enumerate() {
+                    for (k, cell) in row.iter().enumerate() {
+                        if k == 0 && selectable {
+                            if ui.selectable_label(self.selected_row == Some(i), cell).clicked() {
+                                self.selected_row = Some(i);
+                            }
+                        } else {
+                            ui.label(cell);
+                        }
+                    }
+                    ui.end_row();
+                }
+            });
+    }
+
+    fn licence(&mut self, ui: &mut egui::Ui, ctx: &mut AppCtx<'_>) {
+        let Some(mut t) = self.table_page(ui, ctx, query_software) else {
+            return;
+        };
+        ui.checkbox(&mut self.reveal_key, "Show the firmware product key");
+        if !self.reveal_key {
+            for r in &mut t.rows {
+                if r[0] == "Key stored in firmware" && r[1].len() > 5 {
+                    let tail = r[1][r[1].len() - 5..].to_owned();
+                    r[1] = format!("XXXXX-XXXXX-XXXXX-XXXXX-{tail}");
+                }
+            }
+        }
+        self.draw_table(ui, &t, false);
+        ui.add_space(6.0);
+        if ui
+            .add_enabled(
+                ctx.elevated && self.side_task.is_none(),
+                egui::Button::new("Run the Windows Experience assessment"),
+            )
+            .on_hover_text("Measures CPU, memory, graphics and disk (takes a few minutes).")
+            .on_disabled_hover_text(ctx.i18n.tr("shell-needs-admin"))
+            .clicked()
+        {
+            self.side_task = Some(BackgroundTask::spawn(ui.ctx(), |_| {
+                wm_core::process::run_checked(wm_core::process::hidden_command("winsat").arg("formal"))?;
+                Ok("Assessment finished. Refresh to see the scores.".to_owned())
+            }));
+        }
+    }
+
+    fn updates(&mut self, ui: &mut egui::Ui, ctx: &mut AppCtx<'_>) {
+        let Some(t) = self.table_page(ui, ctx, query_updates) else {
+            return;
+        };
+        ui.horizontal(|ui| {
+            let kb = self
+                .selected_row
+                .and_then(|i| t.rows.get(i))
+                .map(|r| r[0].clone());
+            if ui
+                .add_enabled(
+                    kb.is_some() && ctx.elevated && self.side_task.is_none(),
+                    egui::Button::new(format!("{}  Uninstall update", icons::TRASH)),
+                )
+                .on_disabled_hover_text("Select an update (administrator rights needed)")
+                .clicked()
+                && let Some(kb) = kb
+            {
+                self.confirm.ask(
+                    format!(
+                        "Uninstall {kb}? Some updates can't be removed, and Windows may reinstall it later."
+                    ),
+                    kb,
+                );
+            }
+            if ui.button("Update history…").clicked() {
+                let _ = std::process::Command::new("explorer.exe")
+                    .arg("ms-settings:windowsupdate-history")
+                    .spawn();
+            }
+        });
+        self.draw_table(ui, &t, true);
+    }
+
+    fn speed_test(&mut self, ui: &mut egui::Ui, ctx: &mut AppCtx<'_>) {
+        ui.label("Measures how fast a drive reads and writes, bypassing Windows' cache. A temporary file is written and deleted afterwards.");
+        ui.add_space(6.0);
+        let drives: Vec<char> = sysinfo::Disks::new_with_refreshed_list()
+            .map(|d| {
+                d.iter()
+                    .filter_map(|x| x.mount_point().to_string_lossy().chars().next())
+                    .collect()
+            })
+            .unwrap_or_default();
+        let drive = *self
+            .bench_drive
+            .get_or_insert(drives.first().copied().unwrap_or('C'));
+        if self.bench_size == 0 {
+            self.bench_size = 512;
+        }
+        let running = self.bench.is_some();
+        ui.horizontal(|ui| {
+            ui.add_enabled_ui(!running, |ui| {
+                egui::ComboBox::from_id_salt("bench_drive")
+                    .selected_text(format!("{drive}:"))
+                    .show_ui(ui, |ui| {
+                        for d in &drives {
+                            ui.selectable_value(&mut self.bench_drive, Some(*d), format!("{d}:"));
+                        }
+                    });
+                egui::ComboBox::from_id_salt("bench_size")
+                    .selected_text(format!("{} MB", self.bench_size))
+                    .show_ui(ui, |ui| {
+                        for s in [256, 512, 1024, 2048] {
+                            ui.selectable_value(&mut self.bench_size, s, format!("{s} MB"));
+                        }
+                    });
+            });
+            if !running && ui.button(format!("{}  Start", icons::PLAY)).clicked() {
+                let (path, size) = (crate::disk_bench::test_file(drive), self.bench_size);
+                self.bench_result = None;
+                self.bench = Some(BackgroundTask::spawn(ui.ctx(), move |p| {
+                    crate::disk_bench::run(&path, size, 4.0, Some(p))
+                }));
+            }
+            if running
+                && ui.button(ctx.i18n.tr("common-cancel")).clicked()
+                && let Some(b) = &self.bench
+            {
+                b.cancel();
+            }
+        });
+        if let Some(b) = &mut self.bench {
+            b.poll();
+            ui.add(egui::ProgressBar::new(b.progress).text(b.status.clone()));
+            if let Some(r) = b.take_result() {
+                self.bench_result = Some(r);
+                self.bench = None;
+            }
+        }
+        match &self.bench_result {
+            Some(Ok(r)) => {
+                egui::Grid::new("bench")
+                    .striped(true)
+                    .spacing([24.0, 6.0])
+                    .show(ui, |ui| {
+                        ui.strong("Test");
+                        ui.strong("Read");
+                        ui.strong("Write");
+                        ui.end_row();
+                        ui.label("Sequential (1 MB blocks)");
+                        ui.label(format!("{:.0} MB/s", r.seq_read_mbs));
+                        ui.label(format!("{:.0} MB/s", r.seq_write_mbs));
+                        ui.end_row();
+                        ui.label("Random 4 KB (queue depth 1)");
+                        ui.label(format!(
+                            "{:.1} MB/s · {:.0} IOPS",
+                            r.rnd_read_mbs(),
+                            r.rnd_read_iops
+                        ));
+                        ui.label(format!(
+                            "{:.1} MB/s · {:.0} IOPS",
+                            r.rnd_write_mbs(),
+                            r.rnd_write_iops
+                        ));
+                        ui.end_row();
+                    });
+            }
+            Some(Err(e)) => {
+                ui.colored_label(ui.visuals().error_fg_color, e);
+            }
+            None => {}
+        }
+    }
+
+    fn reports(&mut self, ui: &mut egui::Ui, ctx: &mut AppCtx<'_>) {
+        ui.label(
+            "Windows' own diagnostic reports. They are saved to your Documents folder and opened when ready.",
+        );
+        ui.add_space(6.0);
+        let docs = dirs_documents();
+        let busy = self.side_task.is_some();
+        egui::Grid::new("reports")
+            .num_columns(2)
+            .spacing([14.0, 8.0])
+            .show(ui, |ui| {
+                if ui
+                    .add_enabled(!busy, egui::Button::new("Battery report"))
+                    .clicked()
+                {
+                    let out = docs.join("battery-report.html");
+                    self.side_task = Some(BackgroundTask::spawn(ui.ctx(), move |_| {
+                        wm_core::process::run_checked(
+                            wm_core::process::hidden_command("powercfg")
+                                .args(["/batteryreport", "/output"])
+                                .arg(&out),
+                        )?;
+                        let _ = std::process::Command::new("explorer").arg(&out).spawn();
+                        Ok(format!("Saved {}.", out.display()))
+                    }));
+                }
+                ui.weak("Battery capacity and wear over time (laptops).");
+                ui.end_row();
+                if ui
+                    .add_enabled(
+                        !busy && ctx.elevated,
+                        egui::Button::new("Energy efficiency report"),
+                    )
+                    .on_disabled_hover_text(ctx.i18n.tr("shell-needs-admin"))
+                    .clicked()
+                {
+                    let out = docs.join("energy-report.html");
+                    self.side_task = Some(BackgroundTask::spawn(ui.ctx(), move |_| {
+                        // powercfg /energy exits non-zero when it finds problems; the report is still written.
+                        let _ = wm_core::process::hidden_command("powercfg")
+                            .args(["/energy", "/duration", "30", "/output"])
+                            .arg(&out)
+                            .output();
+                        anyhow::ensure!(out.exists(), "the report was not created");
+                        let _ = std::process::Command::new("explorer").arg(&out).spawn();
+                        Ok(format!("Saved {}.", out.display()))
+                    }));
+                }
+                ui.weak("Observes the PC for 30 seconds and lists power problems.");
+                ui.end_row();
+                if ui.add_enabled(!busy, egui::Button::new("Sleep study")).clicked() {
+                    let out = docs.join("sleep-study.html");
+                    self.side_task = Some(BackgroundTask::spawn(ui.ctx(), move |_| {
+                        wm_core::process::run_checked(
+                            wm_core::process::hidden_command("powercfg")
+                                .args(["/sleepstudy", "/output"])
+                                .arg(&out),
+                        )?;
+                        let _ = std::process::Command::new("explorer").arg(&out).spawn();
+                        Ok(format!("Saved {}.", out.display()))
+                    }));
+                }
+                ui.weak("What used power while the PC was in Modern Standby.");
+                ui.end_row();
+                if ui.button("Performance report…").clicked() {
+                    let _ = std::process::Command::new("perfmon").arg("/report").spawn();
+                }
+                ui.weak("Windows' 60-second system diagnostics report.");
+                ui.end_row();
+                if ui.button("System Information (msinfo32)…").clicked() {
+                    let _ = std::process::Command::new("msinfo32").spawn();
+                }
+                ui.weak("Windows' complete hardware and software inventory.");
+                ui.end_row();
+            });
+    }
+}
+
+fn dirs_documents() -> std::path::PathBuf {
+    std::env::var_os("USERPROFILE")
+        .map(|p| std::path::PathBuf::from(p).join("Documents"))
+        .unwrap_or_else(std::env::temp_dir)
+}
+
+impl Tool for SystemInfo {
+    fn id(&self) -> &'static str {
+        "sysinfo"
+    }
+
+    fn category(&self) -> Category {
+        Category::Information
+    }
+
+    fn ui(&mut self, ui: &mut egui::Ui, ctx: &mut AppCtx<'_>) {
+        if let Some(kb) = self.confirm.show(ui.ctx(), ctx.i18n) {
+            let digits: String = kb.chars().filter(char::is_ascii_digit).collect();
+            if ctx.config.dry_run {
+                self.message = Some(Ok(ctx.i18n.tr("common-dry-run-skip")));
+            } else {
+                let _ = ctx.journal.record(
+                    "sysinfo",
+                    format!("Requested removal of update {kb}"),
+                    UndoAction::None,
+                );
+                self.side_task = Some(BackgroundTask::spawn(ui.ctx(), move |_| {
+                    wm_core::process::run_checked(wm_core::process::hidden_command("wusa.exe").args([
+                        "/uninstall".to_owned(),
+                        format!("/kb:{digits}"),
+                        "/quiet".into(),
+                        "/norestart".into(),
+                    ]))?;
+                    Ok(format!("Removed {kb}. Restart to finish."))
+                }));
+            }
+        }
+        if let Some(t) = &mut self.side_task {
+            t.poll();
+            if let Some(r) = t.take_result() {
+                self.message = Some(r);
+                self.side_task = None;
+                self.tables.remove(&self.page);
+            }
+        }
+        ui.horizontal_top(|ui| {
+            ui.vertical(|ui| {
+                ui.set_width(200.0);
+                if section_nav(ui, &PAGES, &mut self.page) {
+                    self.selected_row = None;
+                    self.message = None;
+                }
+            });
+            ui.add_space(14.0);
+            ui.vertical(|ui| {
+                ui.heading(PAGES[self.page].1);
+                ui.add_space(4.0);
+                if self.page != 0 {
+                    show_message(ui, &self.message);
+                }
+                if self.side_task.is_some() {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.weak("Working…");
+                    });
+                }
+                match self.page {
+                    0 => self.summary(ui, ctx),
+                    1 => self.licence(ui, ctx),
+                    2 => {
+                        if let Some(t) = self.table_page(ui, ctx, query_users) {
+                            self.draw_table(ui, &t, false);
+                        }
+                    }
+                    3 => self.updates(ui, ctx),
+                    4 => {
+                        if let Some(t) = self.table_page(ui, ctx, query_printers) {
+                            self.draw_table(ui, &t, false);
+                        }
+                        if ui.button("Printers & scanners…").clicked() {
+                            let _ = std::process::Command::new("explorer.exe")
+                                .arg("ms-settings:printers")
+                                .spawn();
+                        }
+                    }
+                    5 => {
+                        if let Some(t) = self.table_page(ui, ctx, query_codecs) {
+                            self.draw_table(ui, &t, false);
+                        }
+                    }
+                    6 => {
+                        let t = query_environment();
+                        self.draw_table(ui, &t, false);
+                    }
+                    7 => {
+                        if !ctx.elevated {
+                            ui.weak("Temperature, wear and error counters need administrator rights.");
+                        }
+                        if let Some(t) = self.table_page(ui, ctx, query_disks) {
+                            self.draw_table(ui, &t, false);
+                        }
+                    }
+                    8 => self.speed_test(ui, ctx),
+                    _ => self.reports(ui, ctx),
+                }
+            });
+        });
     }
 }
 
@@ -379,6 +1022,26 @@ mod tests {
             windows_product_name("Windows Server 2022", 20_348),
             "Windows Server 2022"
         );
+    }
+
+    #[test]
+    fn every_query_runs() {
+        let sw = query_software().unwrap();
+        assert!(sw.rows.iter().any(|r| r[0] == "Activation"), "{sw:?}");
+        let users = query_users().unwrap();
+        assert!(!users.rows.is_empty());
+        assert_eq!(users.columns.len(), users.rows[0].len());
+        query_updates().unwrap();
+        query_printers().unwrap();
+        query_disks().unwrap();
+        assert!(!query_codecs().unwrap().rows.is_empty());
+        assert!(
+            query_environment()
+                .rows
+                .iter()
+                .any(|r| r[0].eq_ignore_ascii_case("PATH"))
+        );
+        assert_eq!(licence_status(1), "Activated");
     }
 
     #[test]
