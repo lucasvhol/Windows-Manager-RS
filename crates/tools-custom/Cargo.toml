@@ -6,6 +6,7 @@ version.workspace = true
 
 [dependencies]
 egui_extras = "0.37.0"
+chrono = "0.4.45"
 anyhow = "1.0.105"
 rfd = "0.18.0"
 serde = { version = "1.0.229", features = ["derive"] }

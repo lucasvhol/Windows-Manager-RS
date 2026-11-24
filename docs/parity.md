@@ -86,7 +86,7 @@ This file tracks parity between **Win Manager RS** and the features of a commerc
 | Run Shortcut Creator | 🟡 | Type and available columns with broken entries in red; folder and URL targets; window mode; parameters; all-users scope; backup; execute | D |
 | Context Menu Manager | ✅ | 14 sections (10 shell locations, any file type, Open with, New menu, Send To); type, Shift, position, company, signature and scope columns; properties; open in registry; Shift/position switches; delete with backup; editor with 41 built-in commands or any program (elevated, Shift-only, position, per user or all users); repair (re-enable, remove broken); classic Windows 11 menu switch | D |
 | Start Menu Manager | 🟡 | Tree list with user and available columns; rename; launch; pin to taskbar; Pin Any; backup and restore of taskbar pins and Start layout | D |
-| Win+X Menu Editor | 🟡 | Groups (add, rename, move, remove); add file, Start item or utility; restore defaults; run as admin. Needs the WinX hash | D |
+| Win+X Menu Editor | ✅ | Hide/show; add a program, file, folder, Start item or one of 22 Windows tools (arguments, run as administrator); rename; move up/down and between groups; add/remove groups; restore defaults. Entries carry the WinX hash (verified against Windows' own shortcuts) | D |
 | Navigation Pane Manager | 🟡 (tweaks) | Add folders and utilities as items; order; enable/disable; place on top; edit pane | D |
 | This PC Manager | 🟡 (tweaks) | Add file, folder, utility or app; rename; icon; enable/disable; Desktop Icon Settings | D |
 
