@@ -69,6 +69,7 @@ pub const SWAP: &str = "\u{E83C}";
 pub const CARET_DOWN: &str = "\u{E136}";
 pub const ARROW_UP: &str = "\u{E08E}";
 pub const ARROW_DOWN: &str = "\u{E03E}";
+pub const CLOUD_SLASH: &str = "\u{E1B6}";
 pub const SHIELD_CHECK: &str = "\u{E40C}";
 pub const FINGERPRINT: &str = "\u{E23E}";
 pub const USB: &str = "\u{E956}";
