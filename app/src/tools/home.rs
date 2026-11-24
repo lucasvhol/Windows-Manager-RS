@@ -3,7 +3,7 @@ use wm_core::{AppCtx, Category, Tool, egui};
 pub struct Home;
 
 /// Highest phase that has shipped.
-const DONE_THROUGH: u8 = 5;
+const DONE_THROUGH: u8 = 6;
 
 /// Planned delivery phase for each category (see the project plan).
 const ROADMAP: &[(Category, u8, &str)] = &[

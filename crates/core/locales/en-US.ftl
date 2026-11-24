@@ -103,3 +103,10 @@ lockdown-title = Settings Security
 filesecurity-title = File Security
 securitylock-title = Security Lock
 undelete-title = File Undelete
+
+## Network tools
+ipswitcher-title = IP Switcher
+wifi-title = Wi-Fi Manager
+hosts-title = URL Manager
+nettools-title = Network Tools
+netmonitor-title = Network Monitor

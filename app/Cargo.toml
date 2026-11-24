@@ -15,6 +15,7 @@ wm-core = { version = "0.1.0", path = "../crates/core" }
 wm-tools-cleaner = { version = "0.1.0", path = "../crates/tools-cleaner" }
 wm-tools-custom = { version = "0.1.0", path = "../crates/tools-custom" }
 wm-tools-info = { version = "0.1.0", path = "../crates/tools-info" }
+wm-tools-network = { version = "0.1.0", path = "../crates/tools-network" }
 wm-tools-optimizer = { version = "0.1.0", path = "../crates/tools-optimizer" }
 wm-tools-security = { version = "0.1.0", path = "../crates/tools-security" }
 

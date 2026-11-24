@@ -4698,6 +4698,7 @@ dependencies = [
  "wm-tools-cleaner",
  "wm-tools-custom",
  "wm-tools-info",
+ "wm-tools-network",
  "wm-tools-optimizer",
  "wm-tools-security",
 ]
@@ -5103,6 +5104,22 @@ dependencies = [
  "tracing",
  "windows",
  "winreg",
+ "wm-core",
+]
+
+[[package]]
+name = "wm-tools-network"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "egui_extras",
+ "serde",
+ "sysinfo",
+ "tempfile",
+ "toml",
+ "tracing",
+ "windows",
  "wm-core",
 ]
 
