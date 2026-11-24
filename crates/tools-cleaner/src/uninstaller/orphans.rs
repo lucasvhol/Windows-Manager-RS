@@ -149,7 +149,7 @@ impl References {
     }
 }
 
-fn windows_owned(name: &str) -> bool {
+pub(crate) fn windows_owned(name: &str) -> bool {
     let lower = name.to_lowercase();
     WINDOWS_OWNED.contains(&lower.as_str()) || lower.starts_with("microsoft") || lower.starts_with("windows")
 }

@@ -67,9 +67,12 @@ pub fn shortcut_target(lnk: &Path) -> Result<Option<PathBuf>> {
     }
 }
 
-/// True when the shortcut points at a file-system path that no longer exists.
+/// True when the shortcut points at a path on a local fixed disk that no longer
+/// exists. Targets on network shares, removable or optical drives (which may simply
+/// be disconnected) are never reported as broken.
 pub fn is_broken_shortcut(lnk: &Path) -> bool {
-    matches!(shortcut_target(lnk), Ok(Some(t)) if !t.exists())
+    matches!(shortcut_target(lnk), Ok(Some(t))
+        if crate::drives::kind_of(&t) == crate::drives::DriveKind::Fixed && !t.exists())
 }
 
 /// Initialises COM (single-threaded apartment) on the current thread if needed.

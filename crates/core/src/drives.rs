@@ -67,6 +67,24 @@ fn from_wide(buf: &[u16]) -> String {
     String::from_utf16_lossy(&buf[..end])
 }
 
+/// The kind of drive holding `path` (`Unknown` for UNC paths or a missing drive).
+pub fn kind_of(path: &std::path::Path) -> DriveKind {
+    let s = path.to_string_lossy();
+    let mut chars = s.chars();
+    let (Some(letter), Some(':')) = (chars.next(), chars.next()) else {
+        return DriveKind::Unknown;
+    };
+    let w = wide(&format!("{letter}:\\"));
+    match unsafe { GetDriveTypeW(PCWSTR(w.as_ptr())) } {
+        2 => DriveKind::Removable,
+        3 => DriveKind::Fixed,
+        4 => DriveKind::Network,
+        5 => DriveKind::Optical,
+        6 => DriveKind::RamDisk,
+        _ => DriveKind::Unknown,
+    }
+}
+
 /// Every drive letter that is present and ready (empty card readers and optical drives
 /// without a disc are left out, since they report no size).
 pub fn list() -> Vec<DriveInfo> {

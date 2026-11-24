@@ -8,7 +8,7 @@ mod disk_analyzer;
 mod duplicates;
 pub mod junk;
 pub mod registry_cleaner;
-mod uninstaller;
+pub(crate) mod uninstaller;
 
 use wm_core::Tool;
 

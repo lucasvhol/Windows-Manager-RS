@@ -4,7 +4,7 @@
 //!
 //! Leftover folders go to the Recycle Bin; registry keys are backed up, then deleted.
 
-mod orphans;
+pub(crate) mod orphans;
 mod view;
 
 use std::fmt::Write as _;

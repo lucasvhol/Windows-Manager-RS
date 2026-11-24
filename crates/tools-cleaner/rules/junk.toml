@@ -133,6 +133,87 @@ description = "Store and community page cache used by the Steam client."
 paths = ['%LOCALAPPDATA%\Steam\htmlcache']
 
 [[rule]]
+id = "burn_temp"
+title = "Disc burning staging files"
+group = "Windows"
+description = "Files Windows copied while preparing a CD or DVD that was never burned."
+paths = ['%LOCALAPPDATA%\Microsoft\Windows\Burn\Burn']
+default = true
+
+[[rule]]
+id = "etl_logs"
+title = "Diagnostic trace logs (ETL)"
+group = "Windows"
+description = "Event trace logs Windows writes for troubleshooting. Logs from the last day are kept."
+paths = ['%WINDIR%\Logs\WindowsUpdate\*.etl', '%PROGRAMDATA%\Microsoft\Diagnosis\ETLLogs\*\*.etl', '%WINDIR%\Panther\*.etl']
+min_age_hours = 24
+admin = true
+
+[[rule]]
+id = "cbs_logs"
+title = "Old servicing logs"
+group = "Windows"
+description = "Compressed copies of old component servicing (CBS) and DISM logs."
+paths = ['%WINDIR%\Logs\CBS\CbsPersist_*.cab', '%WINDIR%\Logs\CBS\CbsPersist_*.log', '%WINDIR%\Logs\DISM\*.log']
+min_age_hours = 168
+admin = true
+
+[[rule]]
+id = "update_logs"
+title = "Windows Update backup logs"
+group = "Windows"
+description = "Old Windows Update database logs and setup leftovers kept after updates were installed."
+paths = ['%WINDIR%\SoftwareDistribution\DataStore\Logs\*.jrs', '%WINDIR%\SoftwareDistribution\PostRebootEventCache.V2', '%WINDIR%\SoftwareDistribution\SLS']
+min_age_hours = 168
+admin = true
+
+[[rule]]
+id = "broken_shortcuts"
+title = "Broken shortcuts (your account)"
+group = "Leftovers"
+description = "Shortcuts on your desktop, in your Start Menu and Quick Launch whose program or file no longer exists on this PC's disks. Shortcuts to network or removable drives are kept."
+kind = "broken-shortcuts"
+default = true
+
+[[rule]]
+id = "invalid_start_menu"
+title = "Invalid Start Menu items"
+group = "Leftovers"
+description = "Empty Start Menu folders, and broken shortcuts in the Start Menu and on the desktop shared by all users."
+kind = "invalid-start-menu"
+admin = true
+
+[[rule]]
+id = "empty_program_files"
+title = "Empty Program Files folders"
+group = "Leftovers"
+description = "Folders in Program Files that contain nothing at all, usually left behind by uninstallers."
+kind = "empty-program-files"
+admin = true
+
+[[rule]]
+id = "installer_orphans"
+title = "Orphaned installer packages"
+group = "Leftovers"
+description = 'Installer (.msi) and patch (.msp) files cached in Windows\Installer that no installed program uses any more. Skipped entirely if Windows Installer cannot list its packages.'
+kind = "installer-orphans"
+admin = true
+
+[[rule]]
+id = "empty_folders"
+title = "Empty folders"
+group = "On the selected drives"
+description = "Folders with nothing in them, in your own files on the drives chosen above. Windows, program and app-data folders, a drive's top-level folders and your profile's main folders are never included. Review the list before cleaning."
+kind = "empty-folders"
+
+[[rule]]
+id = "zero_byte"
+title = "Zero-byte files"
+group = "On the selected drives"
+description = "Files with no content, in your own files on the drives chosen above. Marker files programs rely on (such as __init__.py, .gitkeep and lock files) are kept. Review the list before cleaning."
+kind = "zero-byte-files"
+
+[[rule]]
 id = "recycle_bin"
 title = "Empty the Recycle Bin"
 group = "Recycle Bin"

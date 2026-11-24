@@ -43,7 +43,11 @@ pub fn default_junk_rules(elevated: bool) -> Vec<Rule> {
 }
 
 pub fn scan_junk(rules: &[Rule]) -> Vec<(Rule, RuleScan)> {
-    rules.iter().map(|r| (r.clone(), junk::scan_rule(r))).collect()
+    let opts = junk::Options::saved();
+    rules
+        .iter()
+        .map(|r| (r.clone(), junk::scan_rule(r, &opts)))
+        .collect()
 }
 
 pub fn clean_junk(ctx: &AppCtx<'_>, scans: &[(Rule, RuleScan)]) -> Result<String> {
@@ -83,7 +87,7 @@ pub fn run(name: &str, ctx: &AppCtx<'_>) -> Result<String> {
             let Some(rule) = rule else {
                 bail!("recycle bin rule missing")
             };
-            let scan = junk::scan_rule(&rule);
+            let scan = junk::scan_rule(&rule, &junk::Options::default());
             let freed = scan.bytes;
             junk::clean(&[(rule, scan)], false);
             ctx.journal.record(
