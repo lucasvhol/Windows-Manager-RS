@@ -93,6 +93,11 @@ impl<T: Send + 'static> BackgroundTask<T> {
     pub fn cancel(&self) {
         self.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
     }
+
+    /// True once [`Self::cancel`] was called (the result may then be partial).
+    pub fn is_cancelled(&self) -> bool {
+        self.cancel.load(std::sync::atomic::Ordering::Relaxed)
+    }
 }
 
 /// Periodically produces values on a background thread (e.g. live CPU usage).

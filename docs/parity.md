@@ -63,7 +63,7 @@ This file tracks parity between **Win Manager RS** and the features of a commerc
 
 | Tool | Status | Missing | Wave |
 |---|---|---|---|
-| Disk Analyzer | 🟡 | Analyze drives (dropdown) or folder; rescan branch; explore folder; unit selector; export (HTML, CSV, text tree); add to context menu | D |
+| Disk Analyzer | ✅ | Drive picker with type and free space, or any folder; treemap and folder list; largest files (show, recycle); rescan one branch; explore; units (automatic, KB, MB, GB); export as HTML, CSV (every folder) or text tree; "Analyze with Win Manager" on folders and drives in Explorer (per user, journaled) | D |
 | Component Store Cleaner | 🟡 | Superseded-component cleanup; ScanHealth and RestoreHealth | D |
 | Smart Uninstaller | 🟡 | Batch uninstall; remove entry; rename; details; icon or list view; sort; online lookup; hotfixes; Windows apps; unavailable Program Files folders; uninstall OneDrive; export | D |
 | Windows Apps Uninstaller | 🟡 | Icon grid; export; launch; desktop shortcut; re-register; filter (Microsoft, non-Microsoft, built-in); batch uninstall; force delete; background colour | D |

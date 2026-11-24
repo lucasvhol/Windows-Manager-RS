@@ -4,7 +4,9 @@
 
 pub mod acl;
 pub mod config;
+pub mod drives;
 pub mod elevation;
+pub mod explorer_verb;
 pub mod fileinfo;
 pub mod i18n;
 pub mod icons;
