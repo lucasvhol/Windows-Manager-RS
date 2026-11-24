@@ -13,6 +13,7 @@ use wm_core::Tool;
 
 /// Privacy tweak definitions, also used by the Optimization Wizard.
 pub const PRIVACY_TWEAKS: &str = include_str!("../tweaks/privacy.toml");
+pub const LOCKDOWN_TWEAKS: &str = include_str!("../tweaks/lockdown.toml");
 
 pub fn tools() -> Vec<Box<dyn Tool>> {
     vec![

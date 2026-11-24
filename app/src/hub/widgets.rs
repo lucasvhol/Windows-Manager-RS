@@ -5,7 +5,7 @@ use wm_core::egui::{
 };
 
 /// The app's accent colour (used for selection and icons).
-pub const ACCENT: Color32 = Color32::from_rgb(56, 122, 222);
+pub use wm_core::ui::ACCENT;
 
 /// Header/band background for the current theme.
 pub fn band_fill(ui: &Ui) -> Color32 {

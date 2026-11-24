@@ -4690,7 +4690,9 @@ dependencies = [
  "anyhow",
  "eframe",
  "egui_extras",
+ "rfd",
  "sysinfo",
+ "toml",
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
@@ -5042,11 +5044,13 @@ name = "wm-core"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "argon2",
  "chrono",
  "crossbeam-channel",
  "directories",
  "eframe",
  "fluent-bundle",
+ "getrandom",
  "serde",
  "serde_json",
  "tempfile",

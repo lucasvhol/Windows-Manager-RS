@@ -29,6 +29,9 @@ pub struct Shell {
     error: Option<String>,
     summary: Summary,
     about_open: bool,
+    locked: bool,
+    password_input: String,
+    password_wrong: bool,
 }
 
 impl Shell {
@@ -67,6 +70,7 @@ impl Shell {
             .and_then(|w| w[1].parse::<usize>().ok())
             .and_then(|n| Category::ALL.get(n).copied())
             .unwrap_or(Category::Home);
+        let config_locked = config.password_hash.is_some();
         Self {
             i18n: I18n::new(&config.language),
             tools,
@@ -81,6 +85,9 @@ impl Shell {
             error,
             summary: Summary::collect(),
             about_open: false,
+            locked: config_locked,
+            password_input: String::new(),
+            password_wrong: false,
         }
     }
 
@@ -483,9 +490,52 @@ fn apply_theme(ctx: &egui::Context, theme: Theme) {
     }
 }
 
+impl Shell {
+    /// Shown instead of the hub while a program password is set and not yet entered.
+    fn lock_screen(&mut self, root: &mut egui::Ui) {
+        egui::CentralPanel::default().show(root, |ui| {
+            ui.vertical_centered(|ui| {
+                ui.add_space(ui.available_height() * 0.28);
+                ui.label(egui::RichText::new(icons::LOCK).size(48.0).color(widgets::ACCENT));
+                ui.label(egui::RichText::new(APP_NAME).size(22.0).strong());
+                ui.weak("Enter the program password to continue.");
+                ui.add_space(10.0);
+                let resp = ui.add(
+                    egui::TextEdit::singleline(&mut self.password_input)
+                        .password(true)
+                        .desired_width(240.0),
+                );
+                resp.request_focus();
+                let submit = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                if ui.button("Unlock").clicked() || submit {
+                    let ok = self
+                        .config
+                        .password_hash
+                        .as_deref()
+                        .is_none_or(|h| wm_core::password::verify(&self.password_input, h));
+                    self.password_input.clear();
+                    if ok {
+                        self.locked = false;
+                        self.password_wrong = false;
+                    } else {
+                        self.password_wrong = true;
+                    }
+                }
+                if self.password_wrong {
+                    ui.colored_label(ui.visuals().error_fg_color, "Wrong password.");
+                }
+            });
+        });
+    }
+}
+
 impl eframe::App for Shell {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        if self.locked {
+            self.lock_screen(ui);
+            return;
+        }
         self.header(ui);
         self.rail(ui);
         self.central(ui);

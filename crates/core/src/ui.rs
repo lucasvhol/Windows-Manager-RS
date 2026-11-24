@@ -115,6 +115,162 @@ impl<T> Confirm<T> {
     }
 }
 
+/// The app's accent colour (selection, icons, active tabs).
+pub const ACCENT: Color32 = Color32::from_rgb(56, 122, 222);
+
+/// One toolbar button: glyph from [`crate::icons`], label, enabled.
+pub struct ToolButton<'a> {
+    pub icon: &'a str,
+    pub label: &'a str,
+    pub enabled: bool,
+}
+
+impl<'a> ToolButton<'a> {
+    pub fn new(icon: &'a str, label: &'a str) -> Self {
+        Self {
+            icon,
+            label,
+            enabled: true,
+        }
+    }
+
+    pub fn enabled(mut self, on: bool) -> Self {
+        self.enabled = on;
+        self
+    }
+}
+
+/// A row of icon-over-label buttons; `None` entries draw a group separator.
+/// Returns the index (in `buttons`) of the clicked button.
+pub fn toolbar(ui: &mut Ui, buttons: &[Option<ToolButton<'_>>]) -> Option<usize> {
+    let mut clicked = None;
+    ui.horizontal(|ui| {
+        for (i, b) in buttons.iter().enumerate() {
+            let Some(b) = b else {
+                ui.separator();
+                continue;
+            };
+            let width = (b.label.len() as f32 * 6.6).max(44.0) + 10.0;
+            let (rect, resp) = ui.allocate_exact_size(Vec2::new(width, 46.0), Sense::click());
+            let resp = if b.enabled {
+                resp
+            } else {
+                resp.on_hover_cursor(egui::CursorIcon::NotAllowed)
+            };
+            let color = if !b.enabled {
+                ui.visuals().weak_text_color().gamma_multiply(0.6)
+            } else if resp.hovered() {
+                ui.visuals().strong_text_color()
+            } else {
+                ui.visuals().text_color()
+            };
+            if b.enabled && resp.hovered() {
+                ui.painter()
+                    .rect_filled(rect, 4.0, ui.visuals().widgets.hovered.weak_bg_fill);
+            }
+            let icon_color = if b.enabled { ACCENT } else { color };
+            ui.painter().text(
+                rect.center_top() + Vec2::new(0.0, 14.0),
+                egui::Align2::CENTER_CENTER,
+                b.icon,
+                egui::FontId::proportional(20.0),
+                icon_color,
+            );
+            ui.painter().text(
+                rect.center_bottom() - Vec2::new(0.0, 9.0),
+                egui::Align2::CENTER_CENTER,
+                b.label,
+                egui::FontId::proportional(12.0),
+                color,
+            );
+            if b.enabled && resp.clicked() {
+                clicked = Some(i);
+            }
+        }
+    });
+    ui.separator();
+    clicked
+}
+
+/// Left section list (icon + label). The selected entry uses the accent with a notch.
+pub fn section_nav(ui: &mut Ui, items: &[(&str, &str)], selected: &mut usize) -> bool {
+    let mut changed = false;
+    let content = ui.visuals().panel_fill;
+    ui.spacing_mut().item_spacing.y = 2.0;
+    for (i, (icon, label)) in items.iter().enumerate() {
+        if label.is_empty() {
+            ui.separator();
+            continue;
+        }
+        let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 32.0), Sense::click());
+        let sel = *selected == i;
+        let p = ui.painter();
+        if sel {
+            p.rect_filled(rect, 3.0, ACCENT);
+            let (r, cy) = (rect.right(), rect.center().y);
+            p.add(egui::Shape::convex_polygon(
+                vec![
+                    Pos2::new(r, cy - 7.0),
+                    Pos2::new(r - 7.0, cy),
+                    Pos2::new(r, cy + 7.0),
+                ],
+                content,
+                Stroke::NONE,
+            ));
+        } else if resp.hovered() {
+            p.rect_filled(rect, 3.0, ui.visuals().widgets.hovered.weak_bg_fill);
+        }
+        let fg = if sel {
+            Color32::WHITE
+        } else {
+            ui.visuals().text_color()
+        };
+        p.text(
+            rect.left_center() + Vec2::new(10.0, 0.0),
+            egui::Align2::LEFT_CENTER,
+            icon,
+            egui::FontId::proportional(17.0),
+            if sel { fg } else { ACCENT },
+        );
+        p.text(
+            rect.left_center() + Vec2::new(36.0, 0.0),
+            egui::Align2::LEFT_CENTER,
+            label,
+            egui::FontId::proportional(14.0),
+            fg,
+        );
+        if resp.clicked() && !sel {
+            *selected = i;
+            changed = true;
+        }
+    }
+    changed
+}
+
+/// Numbered page tabs ("1 Basics  2 Advanced …").
+pub fn numbered_tabs(ui: &mut Ui, labels: &[&str], selected: &mut usize) {
+    ui.horizontal(|ui| {
+        for (i, label) in labels.iter().enumerate() {
+            let sel = *selected == i;
+            let text = egui::RichText::new(format!("{}  {label}", i + 1));
+            let text = if sel { text.strong().color(ACCENT) } else { text };
+            if ui.add(egui::Button::new(text).selected(sel)).clicked() {
+                *selected = i;
+            }
+        }
+    });
+    ui.add_space(4.0);
+}
+
+/// Bottom status bar: a text on the left and optional widgets on the right.
+pub fn status_bar(ui: &mut Ui, text: &str, right: impl FnOnce(&mut Ui)) {
+    ui.separator();
+    ui.horizontal(|ui| {
+        ui.weak(text);
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), right);
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

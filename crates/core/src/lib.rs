@@ -7,6 +7,7 @@ pub mod config;
 pub mod elevation;
 pub mod i18n;
 pub mod icons;
+pub mod password;
 pub mod paths;
 pub mod process;
 pub mod registry;

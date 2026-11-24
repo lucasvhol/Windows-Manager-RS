@@ -367,6 +367,91 @@ struct File {
     tweak: Vec<Tweak>,
 }
 
+/// The applied state of a set of tweaks, saved to a file so it can be re-applied later
+/// (for example after reinstalling Windows).
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, Deserialize)]
+pub struct SavedTweaks {
+    /// Ids of switches that are on.
+    #[serde(default)]
+    pub on: Vec<String>,
+    /// Number tweaks that differ from the Windows default.
+    #[serde(default)]
+    pub numbers: std::collections::BTreeMap<String, u32>,
+    /// Choice tweaks: id → selected option label.
+    #[serde(default)]
+    pub choices: std::collections::BTreeMap<String, String>,
+}
+
+pub fn capture(tweaks: &[Tweak]) -> SavedTweaks {
+    let mut s = SavedTweaks::default();
+    for t in tweaks {
+        match t.kind {
+            Kind::Toggle if t.state() == State::Applied => s.on.push(t.id.clone()),
+            Kind::Number => {
+                if let (Some(v), Some(n)) = (t.current_number(), &t.number)
+                    && Some(v) != n.default
+                {
+                    s.numbers.insert(t.id.clone(), v);
+                }
+            }
+            Kind::Choice => {
+                if let Some(c) = t.current_choice().filter(|&c| c != 0) {
+                    s.choices.insert(t.id.clone(), t.options[c].label.clone());
+                }
+            }
+            _ => {}
+        }
+    }
+    s
+}
+
+/// Re-applies saved state; returns (changes made, problems). Settings that need
+/// administrator rights are reported, not applied, when `elevated` is false.
+pub fn restore(
+    tweaks: &[Tweak],
+    saved: &SavedTweaks,
+    journal: &ChangeJournal,
+    tool: &str,
+    elevated: bool,
+) -> (usize, Vec<String>) {
+    let (mut done, mut problems) = (0, Vec::new());
+    for t in tweaks {
+        let wanted = match t.kind {
+            Kind::Toggle => saved.on.contains(&t.id) && t.state() != State::Applied,
+            Kind::Number => saved
+                .numbers
+                .get(&t.id)
+                .is_some_and(|v| t.current_number() != Some(*v)),
+            Kind::Choice => saved
+                .choices
+                .get(&t.id)
+                .is_some_and(|l| t.current_choice().map(|c| &t.options[c].label) != Some(l)),
+            Kind::Action => false,
+        };
+        if !wanted {
+            continue;
+        }
+        if t.needs_admin() && !elevated {
+            problems.push(format!("{} (needs administrator)", t.title));
+            continue;
+        }
+        let r = match t.kind {
+            Kind::Toggle => t.apply(journal, tool),
+            Kind::Number => t.set_number(saved.numbers[&t.id], journal, tool),
+            Kind::Choice => match t.options.iter().position(|o| o.label == saved.choices[&t.id]) {
+                Some(k) => t.set_choice(k, journal, tool),
+                None => Err(anyhow::anyhow!("option no longer exists")),
+            },
+            Kind::Action => Ok(()),
+        };
+        match r {
+            Ok(()) => done += 1,
+            Err(e) => problems.push(format!("{}: {e:#}", t.title)),
+        }
+    }
+    (done, problems)
+}
+
 pub fn parse(toml_text: &str) -> Result<Vec<Tweak>> {
     let tweaks = toml::from_str::<File>(toml_text)
         .context("parsing tweak definitions")?
@@ -389,6 +474,9 @@ pub struct TweakPanel {
     numbers: std::collections::HashMap<usize, u32>,
     confirm: crate::ui::Confirm<usize>,
     pending: Option<Op>,
+    /// Switch changes waiting for Save: tweak index → desired on/off.
+    staged: std::collections::BTreeMap<usize, bool>,
+    restore_confirm: crate::ui::Confirm<()>,
 }
 
 impl TweakPanel {
@@ -404,6 +492,8 @@ impl TweakPanel {
             numbers: Default::default(),
             confirm: Default::default(),
             pending: None,
+            staged: Default::default(),
+            restore_confirm: Default::default(),
         }
     }
 
@@ -462,14 +552,23 @@ impl TweakPanel {
                     let hint = ctx.i18n.tr("shell-needs-admin");
                     match t.kind {
                         Kind::Toggle => {
-                            let mut on = state == State::Applied;
-                            let label = match state {
+                            // Switches are staged and applied together with Save.
+                            let current = state == State::Applied;
+                            let mut on = self.staged.get(&i).copied().unwrap_or(current);
+                            let mut label = match state {
                                 State::Partial => format!("{} (partially applied)", t.title),
                                 _ => t.title.clone(),
                             };
+                            if self.staged.contains_key(&i) {
+                                label.push_str("  •");
+                            }
                             let resp = ui.add_enabled(!locked, egui::Checkbox::new(&mut on, label));
                             if resp.changed() {
-                                op = Some(Op::Toggle(i, on));
+                                if on == current {
+                                    self.staged.remove(&i);
+                                } else {
+                                    self.staged.insert(i, on);
+                                }
                             }
                             resp.on_hover_text(&t.description).on_disabled_hover_text(hint);
                         }
@@ -570,6 +669,75 @@ impl TweakPanel {
             ui.add_space(8.0);
         }
 
+        // Footer: Restore defaults / Save, as in the original's tweak pages.
+        let has_toggles = self.tweaks.iter().any(|t| t.kind == Kind::Toggle);
+        let mut batch: Vec<(usize, bool)> = Vec::new();
+        if self.restore_confirm.show(ui.ctx(), ctx.i18n).is_some() {
+            batch = (0..self.tweaks.len())
+                .filter(|&i| self.tweaks[i].kind == Kind::Toggle && self.states[i] != State::NotApplied)
+                .filter(|&i| !self.tweaks[i].needs_admin() || ctx.elevated)
+                .map(|i| (i, false))
+                .collect();
+            self.staged.clear();
+        }
+        if has_toggles {
+            ui.separator();
+            ui.horizontal(|ui| {
+                let n = self.staged.len();
+                if n > 0 {
+                    ui.colored_label(crate::ui::ACCENT, format!("{n} unsaved change{}", if n == 1 { "" } else { "s" }));
+                    if ui.small_button(ctx.i18n.tr("common-cancel")).clicked() {
+                        self.staged.clear();
+                    }
+                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.add_enabled(n > 0, egui::Button::new(format!("{}  Save", crate::icons::FLOPPY_DISK))).clicked() {
+                        batch = std::mem::take(&mut self.staged).into_iter().collect();
+                    }
+                    if ui.button(format!("{}  Restore defaults", crate::icons::ARROW_COUNTER_CLOCKWISE)).clicked() {
+                        self.restore_confirm.ask(
+                            "Turn off every switch on this page, restoring the Windows defaults? Each change is recorded in the Change Journal.",
+                            (),
+                        );
+                    }
+                });
+            });
+        }
+        if !batch.is_empty() {
+            self.message = Some(if ctx.config.dry_run {
+                Ok(ctx.i18n.tr("common-dry-run-skip"))
+            } else {
+                let mut done = 0;
+                let mut errors = Vec::new();
+                for (i, on) in batch {
+                    let t = &self.tweaks[i];
+                    let r = if on {
+                        t.apply(ctx.journal, self.tool)
+                    } else {
+                        t.revert(ctx.journal, self.tool)
+                    };
+                    match r {
+                        Ok(()) => {
+                            done += 1;
+                            if t.effect == Effect::Explorer {
+                                self.explorer_restart_pending = true;
+                            }
+                        }
+                        Err(e) => errors.push(format!("{}: {e:#}", t.title)),
+                    }
+                }
+                if errors.is_empty() {
+                    Ok(format!(
+                        "Saved {done} change{}.",
+                        if done == 1 { "" } else { "s" }
+                    ))
+                } else {
+                    Err(format!("Saved {done}; failed: {}", errors.join("; ")))
+                }
+            });
+            self.refresh();
+        }
+
         if let Some(op) = op.or_else(|| self.pending.take()) {
             let i = op.index();
             let t = &self.tweaks[i];
@@ -578,8 +746,6 @@ impl TweakPanel {
             } else {
                 let (j, tool) = (ctx.journal, self.tool);
                 let r = match op {
-                    Op::Toggle(_, true) => t.apply(j, tool).map(|()| format!("Applied {}.", t.title)),
-                    Op::Toggle(_, false) => t.revert(j, tool).map(|()| format!("Reverted {}.", t.title)),
                     Op::SetNumber(_, v) => t
                         .set_number(v, j, tool)
                         .map(|()| format!("Set {} to {v}.", t.title)),
@@ -605,7 +771,6 @@ impl TweakPanel {
 /// A change requested from the panel.
 #[derive(Debug, Clone, Copy)]
 enum Op {
-    Toggle(usize, bool),
     SetNumber(usize, u32),
     ResetNumber(usize),
     Choice(usize, usize),
@@ -615,7 +780,7 @@ enum Op {
 impl Op {
     fn index(self) -> usize {
         match self {
-            Op::Toggle(i, _) | Op::SetNumber(i, _) | Op::ResetNumber(i) | Op::Choice(i, _) | Op::Run(i) => i,
+            Op::SetNumber(i, _) | Op::ResetNumber(i) | Op::Choice(i, _) | Op::Run(i) => i,
         }
     }
 }
@@ -744,6 +909,31 @@ action = {{ program = "cmd", args = ["/c", "exit", "0"] }}
 
         a.run_action(&journal, "t").unwrap();
         assert_eq!(journal.entries()[0].description, "Echo");
+
+        let (root, sub) = registry::split_path(&key).unwrap();
+        let _ = root.delete_subkey_all(sub);
+    }
+
+    #[test]
+    fn capture_and_restore_roundtrip() {
+        let key = format!(r"HKCU\Software\win-manager-rs-test-saved-{}", std::process::id());
+        let tweaks = parse(&sample(&key)).unwrap();
+        let t = &tweaks[0];
+        let dir = tempfile::tempdir().unwrap();
+        let journal = ChangeJournal::open(&dir.path().join("j.json"), &dir.path().join("b")).unwrap();
+
+        t.apply(&journal, "t").unwrap();
+        let saved = capture(&tweaks);
+        assert_eq!(saved.on, vec!["t1".to_owned()]);
+        let text = toml::to_string(&saved).unwrap();
+
+        t.revert(&journal, "t").unwrap();
+        let back: SavedTweaks = toml::from_str(&text).unwrap();
+        let (done, problems) = restore(&tweaks, &back, &journal, "t", false);
+        assert_eq!((done, problems.len()), (1, 0));
+        assert_eq!(t.state(), State::Applied);
+        let (done, _) = restore(&tweaks, &back, &journal, "t", false);
+        assert_eq!(done, 0, "already in the saved state");
 
         let (root, sub) = registry::split_path(&key).unwrap();
         let _ = root.delete_subkey_all(sub);

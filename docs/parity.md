@@ -14,17 +14,17 @@ This file tracks parity between **Win Manager RS** and the features of a commerc
 
 | Feature | Status | Wave |
 |---|---|---|
-| Header band with app name, version, Update and About | ❌ | B |
-| Left category column with large icons; selected item highlighted with a notch | 🟡 (plain sidebar) | B |
-| Two-column grid of tool tiles (icon, title, one-line description); split tiles with a dropdown | ❌ | B |
-| Each tool opens in its own window; several can be open at once | ❌ | B |
-| Tool window shell: description band with Help, icon-over-label toolbar, left section list or tree, numbered page tabs, footer buttons, status bar with count and search | ❌ | B |
-| Tweak pages: staged changes with Save, plus Restore to Windows defaults | ❌ (changes apply instantly) | B |
-| OS edition and build shown in the hub | ❌ | B |
-| Settings: program password, minimise to tray, UI scale and font, list row height, language, light/dark | 🟡 (language, theme) | B |
-| Settings: save all applied tweaks to a file and restore them later (e.g. after a reinstall) | ❌ | B |
-| Settings: reset a tool's saved settings; back up and restore program settings | ❌ | B |
-| Frequently used tools list | ❌ | B |
+| Header band with app name, version, Update and About | ✅ (Update button arrives with the update checker, E) | B |
+| Left category column with large icons; selected item highlighted with a notch | ✅ | B |
+| Two-column grid of tool tiles (icon, title, one-line description); split tiles with a dropdown | ✅ | B |
+| Each tool opens in its own window; several can be open at once | ✅ | B |
+| Tool window shell: description band with Help, icon-over-label toolbar, left section list or tree, numbered page tabs, footer buttons, status bar with count and search | 🟡 (band on every window; toolbar, section list, numbered tabs and status bar widgets in `wm_core::ui`, adopted per tool as C/D rework each one) | B→C/D |
+| Tweak pages: staged changes with Save, plus Restore to Windows defaults | ✅ (switches; number/choice settings still apply on their own button) | B |
+| OS edition and build shown in the hub | ✅ | B |
+| Settings: program password, minimise to tray, UI scale and font, list row height, language, light/dark | 🟡 (password, UI scale, language, theme; tray moves to D with the My Task background monitor, which needs the same tray icon) | B→D |
+| Settings: save all applied tweaks to a file and restore them later (e.g. after a reinstall) | ✅ | B |
+| Settings: reset a tool's saved settings; back up and restore program settings | 🟡 (back up / restore done; per-tool reset in D) | B→D |
+| Frequently used tools list | ✅ | B |
 | Update check (own releases) | ❌ | E |
 | Licensing, registration, trial countdown | ⛔ the original's business model, not a feature | — |
 

@@ -30,6 +30,8 @@ pub struct Config {
     pub recent_tools: Vec<String>,
     /// Interface zoom (1.0 = 100 %).
     pub ui_scale: f32,
+    /// Argon2id hash of the optional program password (see `password` module).
+    pub password_hash: Option<String>,
 }
 
 impl Config {
@@ -51,6 +53,7 @@ impl Default for Config {
             last_tool: None,
             recent_tools: Vec::new(),
             ui_scale: 1.0,
+            password_hash: None,
         }
     }
 }

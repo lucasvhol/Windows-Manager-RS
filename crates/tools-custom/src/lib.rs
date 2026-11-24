@@ -16,6 +16,8 @@ use wm_core::Tool;
 pub const VISUAL_TWEAKS: &str = include_str!("../tweaks/visual.toml");
 pub const EXPLORER_TWEAKS: &str = include_str!("../tweaks/explorer.toml");
 pub const START_TWEAKS: &str = include_str!("../tweaks/start.toml");
+pub const THISPC_TWEAKS: &str = include_str!("../tweaks/thispc.toml");
+pub const NAVPANE_TWEAKS: &str = include_str!("../tweaks/navpane.toml");
 
 pub fn tools() -> Vec<Box<dyn Tool>> {
     vec![
