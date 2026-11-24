@@ -137,3 +137,300 @@ key = 'HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfil
 name = "NetworkThrottlingIndex"
 on = { dword = 0xFFFFFFFF }
 off = { dword = 10 }
+
+[[tweak]]
+id = "ntfs_memory_usage"
+title = "More memory for the NTFS file cache"
+description = "Raises the paged-pool memory NTFS may use for its cache. Helps with many open files on PCs with plenty of RAM."
+group = "File system"
+effect = "restart"
+[[tweak.set]]
+key = 'HKLM\SYSTEM\CurrentControlSet\Control\FileSystem'
+name = "NtfsMemoryUsage"
+on = { dword = 2 }
+off = { dword = 0 }
+
+[[tweak]]
+id = "paging_executive"
+title = "Keep drivers and the kernel in memory"
+description = "Stops Windows paging kernel-mode code to disk. Only useful with 16 GB of RAM or more."
+group = "Memory"
+effect = "restart"
+[[tweak.set]]
+key = 'HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management'
+name = "DisablePagingExecutive"
+on = { dword = 1 }
+off = { dword = 0 }
+
+[[tweak]]
+id = "prefetcher"
+title = "Prefetcher"
+description = "Which program and boot files Windows preloads to start them faster. Keep the default on most PCs."
+group = "Memory"
+effect = "restart"
+kind = "choice"
+target = { key = 'HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management\PrefetchParameters', name = "EnablePrefetcher" }
+[[tweak.option]]
+label = "Programs and boot (default)"
+value = { dword = 3 }
+[[tweak.option]]
+label = "Programs only"
+value = { dword = 1 }
+[[tweak.option]]
+label = "Boot only"
+value = { dword = 2 }
+[[tweak.option]]
+label = "Off"
+value = { dword = 0 }
+
+[[tweak]]
+id = "power_throttling_off"
+title = "Turn off power throttling"
+description = "Background apps keep full CPU speed. Uses more power on laptops."
+group = "Power"
+effect = "restart"
+[[tweak.set]]
+key = 'HKLM\SYSTEM\CurrentControlSet\Control\Power\PowerThrottling'
+name = "PowerThrottlingOff"
+on = { dword = 1 }
+off = "delete"
+
+[[tweak]]
+id = "fast_startup_off"
+title = "Turn off Fast Startup"
+description = "Shut down fully instead of hibernating the kernel. Fixes dual-boot and driver issues; start-up takes a little longer."
+group = "Power"
+effect = "restart"
+[[tweak.set]]
+key = 'HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Power'
+name = "HiberbootEnabled"
+on = { dword = 0 }
+off = { dword = 1 }
+
+[[tweak]]
+id = "hibernate_off"
+title = "Turn off hibernation"
+description = "Deletes hiberfil.sys and frees disk space about the size of a third of your RAM. Also turns off Fast Startup."
+group = "Power"
+kind = "action"
+admin = true
+action = { program = "powercfg", args = ["/hibernate", "off"], confirm = "Turn off hibernation and delete hiberfil.sys?", undo = ["powercfg", "/hibernate", "on"] }
+
+[[tweak]]
+id = "hibernate_on"
+title = "Turn on hibernation"
+description = "Re-creates hiberfil.sys so Hibernate and Fast Startup are available."
+group = "Power"
+kind = "action"
+admin = true
+action = { program = "powercfg", args = ["/hibernate", "on"], undo = ["powercfg", "/hibernate", "off"] }
+
+[[tweak]]
+id = "ultimate_plan"
+title = "Add the Ultimate Performance power plan"
+description = "Adds Microsoft's highest-performance plan to Power Options; pick it there. Best on desktops."
+group = "Power"
+kind = "action"
+admin = true
+action = { program = "powercfg", args = ["-duplicatescheme", "e9a42b02-d5df-448d-aa00-03f14749eb61"] }
+
+[[tweak]]
+id = "restore_power_plans"
+title = "Restore the default power plans"
+description = "Deletes custom power plans and resets the built-in ones to their defaults."
+group = "Power"
+kind = "action"
+admin = true
+action = { program = "powercfg", args = ["-restoredefaultschemes"], confirm = "Delete all custom power plans and reset the built-in plans to their defaults? This cannot be undone from the journal." }
+
+[[tweak]]
+id = "gp_network_wait"
+title = "Wait for the network at start-up (Group Policy)"
+description = "Seconds Windows waits for the network before applying Group Policy at start-up. Absent means the Windows default."
+group = "Startup and shutdown"
+effect = "restart"
+kind = "number"
+target = { key = 'HKLM\SOFTWARE\Policies\Microsoft\Windows\System', name = "GpNetworkStartTimeoutPolicyValue" }
+number = { min = 0, max = 600, unit = "s" }
+
+[[tweak]]
+id = "autochk_timeout"
+title = "Disk check countdown"
+description = "Seconds you have to cancel a scheduled disk check (chkdsk) at start-up."
+group = "Startup and shutdown"
+effect = "restart"
+kind = "number"
+target = { key = 'HKLM\SYSTEM\CurrentControlSet\Control\Session Manager', name = "AutoChkTimeout" }
+number = { min = 0, max = 259200, default = 8, unit = "s" }
+
+[[tweak]]
+id = "verbose_status"
+title = "Show detailed status messages"
+description = "Shows what Windows is doing during start-up, sign-in and shutdown, which helps find slow steps."
+group = "Startup and shutdown"
+effect = "sign-out"
+[[tweak.set]]
+key = 'HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
+name = "VerboseStatus"
+on = { dword = 1 }
+off = "delete"
+
+[[tweak]]
+id = "last_known_good"
+title = "Offer Last Known Good Configuration"
+description = "Adds the classic recovery option that starts Windows with the last driver and service set that worked."
+group = "Boot and recovery"
+effect = "restart"
+[[tweak.set]]
+key = 'HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Configuration Manager\LastKnownGood'
+name = "Enabled"
+on = { dword = 1 }
+off = "delete"
+
+[[tweak]]
+id = "boot_defrag"
+title = "Optimize boot file placement"
+description = "Lets Windows place boot files together on hard disks during idle optimisation. Has no effect on SSDs."
+group = "Boot and recovery"
+effect = "restart"
+[[tweak.set]]
+key = 'HKLM\SOFTWARE\Microsoft\Dfrg\BootOptimizeFunction'
+name = "Enable"
+on = { sz = "Y" }
+off = "delete"
+
+[[tweak]]
+id = "crash_dump"
+title = "Crash dump"
+description = "What Windows writes to disk when it crashes (blue screen). Small dumps are enough for most troubleshooting."
+group = "Boot and recovery"
+effect = "restart"
+kind = "choice"
+target = { key = 'HKLM\SYSTEM\CurrentControlSet\Control\CrashControl', name = "CrashDumpEnabled" }
+[[tweak.option]]
+label = "Automatic memory dump (default)"
+value = { dword = 7 }
+[[tweak.option]]
+label = "Small memory dump"
+value = { dword = 3 }
+[[tweak.option]]
+label = "Kernel memory dump"
+value = { dword = 2 }
+[[tweak.option]]
+label = "Complete memory dump"
+value = { dword = 1 }
+[[tweak.option]]
+label = "None"
+value = { dword = 0 }
+
+[[tweak]]
+id = "crash_no_reboot"
+title = "Don't restart automatically after a crash"
+description = "Keeps the blue screen visible so you can read the error."
+group = "Boot and recovery"
+effect = "restart"
+[[tweak.set]]
+key = 'HKLM\SYSTEM\CurrentControlSet\Control\CrashControl'
+name = "AutoReboot"
+on = { dword = 0 }
+off = { dword = 1 }
+
+[[tweak]]
+id = "crash_no_event"
+title = "Don't log crashes to the event log"
+description = "Skips the System log entry written after a crash. Not recommended unless you never read the logs."
+group = "Boot and recovery"
+effect = "restart"
+[[tweak.set]]
+key = 'HKLM\SYSTEM\CurrentControlSet\Control\CrashControl'
+name = "LogEvent"
+on = { dword = 0 }
+off = { dword = 1 }
+
+[[tweak]]
+id = "retrim_ssd"
+title = "Optimize (TRIM) all SSDs now"
+description = "Tells every SSD which blocks are free, the same as Optimize Drives. Hard disks are skipped."
+group = "Storage"
+kind = "action"
+admin = true
+action = { program = "defrag", args = ["/C", "/L", "/U"] }
+
+[[tweak]]
+id = "trim_off"
+title = "Turn off TRIM"
+description = "Stops Windows telling SSDs which blocks are free. Only for troubleshooting; it slows SSDs over time."
+group = "Storage"
+effect = "restart"
+warning = "SSDs get slower and wear faster without TRIM."
+[[tweak.set]]
+key = 'HKLM\SYSTEM\CurrentControlSet\Control\FileSystem'
+name = "DisableDeleteNotification"
+on = { dword = 1 }
+off = { dword = 0 }
+
+[[tweak]]
+id = "maintenance_off"
+title = "Turn off Automatic Maintenance"
+description = "Stops Windows running its daily maintenance (updates, scans, optimisation) while the PC is idle. You must then run them yourself."
+group = "Maintenance"
+effect = "restart"
+[[tweak.set]]
+key = 'HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Schedule\Maintenance'
+name = "MaintenanceDisabled"
+on = { dword = 1 }
+off = "delete"
+
+[[tweak]]
+id = "maintenance_no_wake"
+title = "Don't wake the PC for maintenance"
+description = "Automatic Maintenance waits until you use the PC instead of waking it at night."
+group = "Maintenance"
+[[tweak.set]]
+key = 'HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Schedule\Maintenance'
+name = "WakeUp"
+on = { dword = 0 }
+off = "delete"
+
+[[tweak]]
+id = "delivery_optimization"
+title = "Delivery Optimization"
+description = "Whether Windows Update downloads from, and uploads to, other PCs."
+group = "Network"
+kind = "choice"
+target = { key = 'HKLM\SOFTWARE\Policies\Microsoft\Windows\DeliveryOptimization', name = "DODownloadMode" }
+[[tweak.option]]
+label = "Windows default"
+value = "delete"
+[[tweak.option]]
+label = "Microsoft only (no peers)"
+value = { dword = 0 }
+[[tweak.option]]
+label = "PCs on my local network"
+value = { dword = 1 }
+[[tweak.option]]
+label = "Simple downloads, no peering"
+value = { dword = 99 }
+
+[[tweak]]
+id = "hw_gpu_scheduling"
+title = "Hardware-accelerated GPU scheduling"
+description = "Lets the graphics card manage its own memory scheduling. Can lower latency in games on recent GPUs."
+group = "Gaming and media"
+effect = "restart"
+[[tweak.set]]
+key = 'HKLM\SYSTEM\CurrentControlSet\Control\GraphicsDrivers'
+name = "HwSchMode"
+on = { dword = 2 }
+off = "delete"
+
+[[tweak]]
+id = "game_dvr_off"
+title = "Turn off background game recording"
+description = "Stops Game Bar capturing gameplay in the background, which costs a few frames per second."
+group = "Gaming and media"
+[[tweak.set]]
+key = 'HKCU\System\GameConfigStore'
+name = "GameDVR_Enabled"
+on = { dword = 0 }
+off = { dword = 1 }

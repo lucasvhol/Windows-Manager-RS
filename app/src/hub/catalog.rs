@@ -34,6 +34,7 @@ pub const TILES: &[(Category, &[&str])] = &[
     (
         Category::Customization,
         &[
+            "customsystem",
             "explorertweaks",
             "visual",
             "jumplist",
@@ -108,6 +109,7 @@ pub fn tool_icon(id: &str) -> &'static str {
         "explorertweaks" => i::FOLDER_OPEN,
         "navpane" => i::TREE_VIEW,
         "thispc" => i::MONITOR,
+        "customsystem" => i::SLIDERS,
         "visual" => i::PAINT_BRUSH,
         "jumplist" => i::LIST_BULLETS,
         "hotkeys" => i::KEYBOARD,

@@ -25,6 +25,7 @@ pub fn all_tweaks() -> Vec<Tweak> {
         wm_tools_custom::START_TWEAKS,
         wm_tools_custom::THISPC_TWEAKS,
         wm_tools_custom::NAVPANE_TWEAKS,
+        wm_tools_custom::CUSTOM_TWEAKS,
     ]
     .iter()
     .flat_map(|t| tweaks::parse(t).unwrap_or_default())

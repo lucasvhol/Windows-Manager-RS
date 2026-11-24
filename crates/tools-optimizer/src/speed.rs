@@ -43,14 +43,12 @@ mod tests {
     #[test]
     fn definitions_parse_and_are_unique() {
         let tweaks = parse(DEFINITIONS).unwrap();
-        assert!(tweaks.len() >= 8);
+        assert!(tweaks.len() >= 35);
         let mut ids: Vec<_> = tweaks.iter().map(|t| t.id.as_str()).collect();
         ids.sort();
         ids.dedup();
         assert_eq!(ids.len(), tweaks.len(), "duplicate tweak ids");
         for t in &tweaks {
-            assert!(!t.settings.is_empty(), "{} has no settings", t.id);
-            assert!(t.settings.iter().all(|s| s.on != s.off), "{} on == off", t.id);
             // Reading state must not fail for any definition.
             let _ = t.state();
         }

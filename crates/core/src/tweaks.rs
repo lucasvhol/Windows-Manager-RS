@@ -152,6 +152,9 @@ pub struct Tweak {
     pub options: Vec<ChoiceOption>,
     #[serde(default)]
     pub action: Option<ActionSpec>,
+    /// Shown in red; turning such a switch on asks for confirmation (security-weakening options).
+    #[serde(default)]
+    pub warning: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -462,6 +465,47 @@ pub fn parse(toml_text: &str) -> Result<Vec<Tweak>> {
     Ok(tweaks)
 }
 
+/// A tool that is only a [`TweakPanel`], with an optional note above it.
+pub struct TweakTool {
+    id: &'static str,
+    category: crate::Category,
+    note: &'static str,
+    panel: TweakPanel,
+}
+
+impl TweakTool {
+    pub fn new(category: crate::Category, id: &'static str, note: &'static str, definitions: &str) -> Self {
+        Self {
+            id,
+            category,
+            note,
+            panel: TweakPanel::new(id, definitions),
+        }
+    }
+}
+
+impl crate::Tool for TweakTool {
+    fn id(&self) -> &'static str {
+        self.id
+    }
+
+    fn category(&self) -> crate::Category {
+        self.category
+    }
+
+    fn requires_admin(&self) -> bool {
+        false
+    }
+
+    fn ui(&mut self, ui: &mut Ui, ctx: &mut AppCtx<'_>) {
+        if !self.note.is_empty() {
+            ui.label(self.note);
+            ui.add_space(6.0);
+        }
+        self.panel.ui(ui, ctx);
+    }
+}
+
 /// UI listing tweaks grouped, each with an on/off toggle.
 pub struct TweakPanel {
     tool: &'static str,
@@ -477,6 +521,9 @@ pub struct TweakPanel {
     /// Switch changes waiting for Save: tweak index → desired on/off.
     staged: std::collections::BTreeMap<usize, bool>,
     restore_confirm: crate::ui::Confirm<()>,
+    warn_confirm: crate::ui::Confirm<()>,
+    group_sel: usize,
+    filter: String,
 }
 
 impl TweakPanel {
@@ -494,6 +541,9 @@ impl TweakPanel {
             pending: None,
             staged: Default::default(),
             restore_confirm: Default::default(),
+            warn_confirm: Default::default(),
+            group_sel: 0,
+            filter: String::new(),
         }
     }
 
@@ -531,142 +581,206 @@ impl TweakPanel {
         show_message(ui, &self.message);
         ui.add_space(6.0);
 
-        let mut groups: Vec<&str> = Vec::new();
+        let mut groups: Vec<String> = Vec::new();
         for t in &self.tweaks {
-            if !groups.contains(&t.group.as_str()) {
-                groups.push(&t.group);
+            if !groups.contains(&t.group) {
+                groups.push(t.group.clone());
             }
         }
         if let Some(i) = self.confirm.show(ui.ctx(), ctx.i18n) {
             self.pending = Some(Op::Run(i));
         }
         let mut op: Option<Op> = None;
-        for group in groups {
-            if !group.is_empty() {
-                ui.strong(group);
-            }
-            for (i, t) in self.tweaks.iter().enumerate().filter(|(_, t)| t.group == group) {
-                let state = self.states[i];
-                let locked = t.needs_admin() && !ctx.elevated;
-                ui.horizontal(|ui| {
-                    let hint = ctx.i18n.tr("shell-needs-admin");
-                    match t.kind {
-                        Kind::Toggle => {
-                            // Switches are staged and applied together with Save.
-                            let current = state == State::Applied;
-                            let mut on = self.staged.get(&i).copied().unwrap_or(current);
-                            let mut label = match state {
-                                State::Partial => format!("{} (partially applied)", t.title),
-                                _ => t.title.clone(),
-                            };
-                            if self.staged.contains_key(&i) {
-                                label.push_str("  •");
-                            }
-                            let resp = ui.add_enabled(!locked, egui::Checkbox::new(&mut on, label));
-                            if resp.changed() {
-                                if on == current {
-                                    self.staged.remove(&i);
-                                } else {
-                                    self.staged.insert(i, on);
+        let query = self.filter.trim().to_lowercase();
+        // Many groups: left section list (one group at a time), as in the original's pages.
+        let use_nav = groups.len() > 3;
+        self.group_sel = self.group_sel.min(groups.len().saturating_sub(1));
+        let shown: Vec<String> = if use_nav && query.is_empty() {
+            groups.get(self.group_sel).cloned().into_iter().collect()
+        } else {
+            groups.clone()
+        };
+        let matches = |t: &Tweak| {
+            query.is_empty()
+                || t.title.to_lowercase().contains(&query)
+                || t.description.to_lowercase().contains(&query)
+        };
+        let mut draw = |ui: &mut Ui, this: &mut Self| {
+            for group in &shown {
+                if !this.tweaks.iter().any(|t| t.group == *group && matches(t)) {
+                    continue;
+                }
+                if !group.is_empty() {
+                    ui.strong(group);
+                }
+                for (i, t) in this
+                    .tweaks
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, t)| t.group == *group && matches(t))
+                {
+                    let state = this.states[i];
+                    let locked = t.needs_admin() && !ctx.elevated;
+                    ui.horizontal(|ui| {
+                        let hint = ctx.i18n.tr("shell-needs-admin");
+                        match t.kind {
+                            Kind::Toggle => {
+                                // Switches are staged and applied together with Save.
+                                let current = state == State::Applied;
+                                let mut on = this.staged.get(&i).copied().unwrap_or(current);
+                                let mut label = match state {
+                                    State::Partial => format!("{} (partially applied)", t.title),
+                                    _ => t.title.clone(),
+                                };
+                                if this.staged.contains_key(&i) {
+                                    label.push_str("  •");
                                 }
+                                let resp = ui.add_enabled(!locked, egui::Checkbox::new(&mut on, label));
+                                if resp.changed() {
+                                    if on == current {
+                                        this.staged.remove(&i);
+                                    } else {
+                                        this.staged.insert(i, on);
+                                    }
+                                }
+                                resp.on_hover_text(&t.description).on_disabled_hover_text(hint);
                             }
-                            resp.on_hover_text(&t.description).on_disabled_hover_text(hint);
-                        }
-                        Kind::Number => {
-                            let n = t.number.as_ref().expect("validated");
-                            let current = t.current_number();
-                            let edit = self
-                                .numbers
-                                .entry(i)
-                                .or_insert_with(|| current.or(n.default).unwrap_or(n.min));
-                            ui.label(&t.title);
-                            ui.add_enabled(
-                                !locked,
-                                egui::DragValue::new(edit)
-                                    .range(n.min..=n.max)
-                                    .suffix(format!(" {}", n.unit).trim_end().to_owned()),
-                            )
-                            .on_hover_text(&t.description)
-                            .on_disabled_hover_text(hint);
-                            let edit = *edit;
-                            if Some(edit) != current
-                                && ui
-                                    .add_enabled(!locked, egui::Button::new("Apply").small())
-                                    .clicked()
-                            {
-                                op = Some(Op::SetNumber(i, edit));
-                            }
-                            let is_default = match n.default {
-                                Some(d) => current == Some(d),
-                                None => t
-                                    .target
-                                    .as_ref()
-                                    .is_some_and(|tg| registry::read_raw(&tg.key, &tg.name).is_none()),
-                            };
-                            if !is_default
-                                && ui
-                                    .add_enabled(!locked, egui::Button::new("Default").small())
-                                    .clicked()
-                            {
-                                op = Some(Op::ResetNumber(i));
-                            }
-                        }
-                        Kind::Choice => {
-                            ui.label(&t.title);
-                            let current = t.current_choice();
-                            let shown = current.map_or("(custom)", |c| t.options[c].label.as_str());
-                            ui.add_enabled_ui(!locked, |ui| {
-                                egui::ComboBox::from_id_salt(&t.id)
-                                    .selected_text(shown)
-                                    .show_ui(ui, |ui| {
-                                        for (k, o) in t.options.iter().enumerate() {
-                                            if ui.selectable_label(current == Some(k), &o.label).clicked()
-                                                && current != Some(k)
-                                            {
-                                                op = Some(Op::Choice(i, k));
-                                            }
-                                        }
-                                    });
-                            })
-                            .response
-                            .on_hover_text(&t.description);
-                        }
-                        Kind::Action => {
-                            if ui
-                                .add_enabled(!locked, egui::Button::new(&t.title))
+                            Kind::Number => {
+                                let n = t.number.as_ref().expect("validated");
+                                let current = t.current_number();
+                                let edit = this
+                                    .numbers
+                                    .entry(i)
+                                    .or_insert_with(|| current.or(n.default).unwrap_or(n.min));
+                                ui.label(&t.title);
+                                ui.add_enabled(
+                                    !locked,
+                                    egui::DragValue::new(edit)
+                                        .range(n.min..=n.max)
+                                        .suffix(format!(" {}", n.unit).trim_end().to_owned()),
+                                )
                                 .on_hover_text(&t.description)
-                                .on_disabled_hover_text(hint)
-                                .clicked()
-                            {
-                                match t.action.as_ref().and_then(|a| a.confirm.clone()) {
-                                    Some(q) => self.confirm.ask(q, i),
-                                    None => op = Some(Op::Run(i)),
+                                .on_disabled_hover_text(hint);
+                                let edit = *edit;
+                                if Some(edit) != current
+                                    && ui
+                                        .add_enabled(!locked, egui::Button::new("Apply").small())
+                                        .clicked()
+                                {
+                                    op = Some(Op::SetNumber(i, edit));
+                                }
+                                let is_default = match n.default {
+                                    Some(d) => current == Some(d),
+                                    None => t
+                                        .target
+                                        .as_ref()
+                                        .is_some_and(|tg| registry::read_raw(&tg.key, &tg.name).is_none()),
+                                };
+                                if !is_default
+                                    && ui
+                                        .add_enabled(!locked, egui::Button::new("Default").small())
+                                        .clicked()
+                                {
+                                    op = Some(Op::ResetNumber(i));
+                                }
+                            }
+                            Kind::Choice => {
+                                ui.label(&t.title);
+                                let current = t.current_choice();
+                                let shown = current.map_or("(custom)", |c| t.options[c].label.as_str());
+                                ui.add_enabled_ui(!locked, |ui| {
+                                    egui::ComboBox::from_id_salt(&t.id).selected_text(shown).show_ui(
+                                        ui,
+                                        |ui| {
+                                            for (k, o) in t.options.iter().enumerate() {
+                                                if ui.selectable_label(current == Some(k), &o.label).clicked()
+                                                    && current != Some(k)
+                                                {
+                                                    op = Some(Op::Choice(i, k));
+                                                }
+                                            }
+                                        },
+                                    );
+                                })
+                                .response
+                                .on_hover_text(&t.description);
+                            }
+                            Kind::Action => {
+                                if ui
+                                    .add_enabled(!locked, egui::Button::new(&t.title))
+                                    .on_hover_text(&t.description)
+                                    .on_disabled_hover_text(hint)
+                                    .clicked()
+                                {
+                                    match t.action.as_ref().and_then(|a| a.confirm.clone()) {
+                                        Some(q) => this.confirm.ask(q, i),
+                                        None => op = Some(Op::Run(i)),
+                                    }
                                 }
                             }
                         }
-                    }
-                    match t.effect {
-                        Effect::Immediate => {}
-                        Effect::SignOut => {
-                            ui.weak("· after sign-out");
+                        match t.effect {
+                            Effect::Immediate => {}
+                            Effect::SignOut => {
+                                ui.weak("· after sign-out");
+                            }
+                            Effect::Restart => {
+                                ui.weak("· after restart");
+                            }
+                            Effect::Explorer => {
+                                ui.weak("· after Explorer restart");
+                            }
                         }
-                        Effect::Restart => {
-                            ui.weak("· after restart");
+                        if t.needs_admin() {
+                            ui.weak("· admin");
                         }
-                        Effect::Explorer => {
-                            ui.weak("· after Explorer restart");
+                    });
+                    ui.indent(&t.id, |ui| {
+                        ui.weak(&t.description);
+                        if let Some(w) = &t.warning {
+                            ui.colored_label(
+                                ui.visuals().error_fg_color,
+                                format!("{}  {w}", crate::icons::WARNING),
+                            );
                         }
-                    }
-                    if t.needs_admin() {
-                        ui.weak("· admin");
+                    });
+                    ui.add_space(4.0);
+                }
+                ui.add_space(8.0);
+            }
+        };
+        let many = self.tweaks.len() > 12;
+        if use_nav {
+            ui.horizontal_top(|ui| {
+                ui.vertical(|ui| {
+                    ui.set_width(210.0);
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.filter)
+                            .hint_text(format!("{}  Find a setting", crate::icons::MAGNIFYING_GLASS))
+                            .desired_width(200.0),
+                    );
+                    ui.add_space(4.0);
+                    let items: Vec<(&str, &str)> = groups
+                        .iter()
+                        .map(|g| (crate::icons::SLIDERS, g.as_str()))
+                        .collect();
+                    if crate::ui::section_nav(ui, &items, &mut self.group_sel) {
+                        self.filter.clear();
                     }
                 });
-                ui.indent(&t.id, |ui| {
-                    ui.weak(&t.description);
-                });
+                ui.add_space(14.0);
+                ui.vertical(|ui| draw(ui, self));
+            });
+        } else {
+            if many {
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.filter)
+                        .hint_text(format!("{}  Find a setting", crate::icons::MAGNIFYING_GLASS))
+                        .desired_width(240.0),
+                );
                 ui.add_space(4.0);
             }
-            ui.add_space(8.0);
+            draw(ui, self);
         }
 
         // Footer: Restore defaults / Save, as in the original's tweak pages.
@@ -680,6 +794,9 @@ impl TweakPanel {
                 .collect();
             self.staged.clear();
         }
+        if self.warn_confirm.show(ui.ctx(), ctx.i18n).is_some() {
+            batch = std::mem::take(&mut self.staged).into_iter().collect();
+        }
         if has_toggles {
             ui.separator();
             ui.horizontal(|ui| {
@@ -692,7 +809,23 @@ impl TweakPanel {
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui.add_enabled(n > 0, egui::Button::new(format!("{}  Save", crate::icons::FLOPPY_DISK))).clicked() {
-                        batch = std::mem::take(&mut self.staged).into_iter().collect();
+                        let risky: Vec<&str> = self
+                            .staged
+                            .iter()
+                            .filter(|(i, on)| **on && self.tweaks[**i].warning.is_some())
+                            .map(|(i, _)| self.tweaks[*i].title.as_str())
+                            .collect();
+                        if risky.is_empty() {
+                            batch = std::mem::take(&mut self.staged).into_iter().collect();
+                        } else {
+                            self.warn_confirm.ask(
+                                format!(
+                                    "These settings lower your PC's protection:\n\n• {}\n\nSave anyway? You can undo them from the Change Journal.",
+                                    risky.join("\n• ")
+                                ),
+                                (),
+                            );
+                        }
                     }
                     if ui.button(format!("{}  Restore defaults", crate::icons::ARROW_COUNTER_CLOCKWISE)).clicked() {
                         self.restore_confirm.ask(

@@ -1,0 +1,409 @@
+# Custom System: desktop, taskbar, Start, multitasking, notifications, colours,
+# lock screen and keyboard. Every `off` is the Windows 11 default ("delete" = absent),
+# checked against a clean profile before adding.
+
+# --- Desktop ---------------------------------------------------------------
+
+[[tweak]]
+id = "desktop_version"
+title = "Show the Windows version on the desktop"
+description = "Prints the edition and build number in the bottom-right corner of the desktop."
+group = "Desktop"
+effect = "sign-out"
+[[tweak.set]]
+key = 'HKCU\Control Panel\Desktop'
+name = "PaintDesktopVersion"
+on = { dword = 1 }
+off = { dword = 0 }
+
+[[tweak]]
+id = "desktop_this_pc"
+title = "Show This PC on the desktop"
+description = "Adds the This PC icon to the desktop."
+group = "Desktop"
+effect = "explorer"
+[[tweak.set]]
+key = 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\HideDesktopIcons\NewStartPanel'
+name = "{20D04FE0-3AEA-1069-A2D8-08002B30309D}"
+on = { dword = 0 }
+off = "delete"
+
+[[tweak]]
+id = "desktop_user_folder"
+title = "Show your user folder on the desktop"
+description = "Adds the icon for your personal folder (Documents, Downloads, …)."
+group = "Desktop"
+effect = "explorer"
+[[tweak.set]]
+key = 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\HideDesktopIcons\NewStartPanel'
+name = "{59031a47-3f72-44a7-89c5-5595fe6b30ee}"
+on = { dword = 0 }
+off = "delete"
+
+[[tweak]]
+id = "desktop_network"
+title = "Show Network on the desktop"
+description = "Adds the Network icon to the desktop."
+group = "Desktop"
+effect = "explorer"
+[[tweak.set]]
+key = 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\HideDesktopIcons\NewStartPanel'
+name = "{F02C1A0D-BE21-4350-88B0-7367FC96EF3C}"
+on = { dword = 0 }
+off = "delete"
+
+[[tweak]]
+id = "desktop_control_panel"
+title = "Show Control Panel on the desktop"
+description = "Adds the classic Control Panel icon to the desktop."
+group = "Desktop"
+effect = "explorer"
+[[tweak.set]]
+key = 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\HideDesktopIcons\NewStartPanel'
+name = "{5399E694-6CE5-4D6C-8FCE-1D8870FDCBA0}"
+on = { dword = 0 }
+off = "delete"
+
+[[tweak]]
+id = "no_shortcut_arrow"
+title = "Remove the arrow from shortcut icons"
+description = "Hides the small arrow overlay on shortcut icons for all users."
+group = "Desktop"
+effect = "explorer"
+[[tweak.set]]
+key = 'HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\Shell Icons'
+name = "29"
+on = { sz = 'C:\Windows\System32\shell32.dll,-50' }
+off = "delete"
+
+[[tweak]]
+id = "wallpaper_quality"
+title = "Full-quality JPEG wallpapers"
+description = "Stops Windows recompressing JPEG wallpapers to 85 % quality. Takes effect the next time you set a wallpaper."
+group = "Desktop"
+[[tweak.set]]
+key = 'HKCU\Control Panel\Desktop'
+name = "JPEGImportQuality"
+on = { dword = 100 }
+off = "delete"
+
+# --- Taskbar ---------------------------------------------------------------
+
+[[tweak]]
+id = "taskbar_combine"
+title = "Combine taskbar buttons"
+description = "When taskbar buttons of the same app are grouped into one and labels hidden."
+group = "Taskbar"
+effect = "explorer"
+kind = "choice"
+target = { key = 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced', name = "TaskbarGlomLevel" }
+[[tweak.option]]
+label = "Always, hide labels (default)"
+value = "delete"
+[[tweak.option]]
+label = "When the taskbar is full"
+value = { dword = 1 }
+[[tweak.option]]
+label = "Never"
+value = { dword = 2 }
+
+[[tweak]]
+id = "taskbar_all_displays"
+title = "Show the taskbar on all displays"
+description = "Extends the taskbar to every monitor."
+group = "Taskbar"
+effect = "explorer"
+[[tweak.set]]
+key = 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced'
+name = "MMTaskbarEnabled"
+on = { dword = 1 }
+off = "delete"
+
+[[tweak]]
+id = "taskbar_last_active"
+title = "Click a grouped app to open its last window"
+description = "Clicking a taskbar button with several windows switches to the one you used last instead of showing thumbnails."
+group = "Taskbar"
+effect = "explorer"
+[[tweak.set]]
+key = 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced'
+name = "LastActiveClick"
+on = { dword = 1 }
+off = "delete"
+
+[[tweak]]
+id = "taskbar_thumb_delay"
+title = "Thumbnail preview delay"
+description = "How long you hover a taskbar button before its window previews appear."
+group = "Taskbar"
+effect = "explorer"
+kind = "number"
+target = { key = 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced', name = "ExtendedUIHoverTime" }
+number = { min = 0, max = 5000, unit = "ms" }
+
+[[tweak]]
+id = "taskbar_no_animations"
+title = "Turn off taskbar animations"
+description = "Taskbar buttons appear and disappear without animating."
+group = "Taskbar"
+effect = "explorer"
+[[tweak.set]]
+key = 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced'
+name = "TaskbarAnimations"
+on = { dword = 0 }
+off = { dword = 1 }
+
+[[tweak]]
+id = "no_widgets"
+title = "Turn off Widgets"
+description = "Removes the Widgets board and its taskbar button for all users."
+group = "Taskbar"
+effect = "explorer"
+[[tweak.set]]
+key = 'HKLM\SOFTWARE\Policies\Microsoft\Dsh'
+name = "AllowNewsAndInterests"
+on = { dword = 0 }
+off = "delete"
+
+[[tweak]]
+id = "search_mode"
+title = "Search on the taskbar"
+description = "How the search box appears on the taskbar."
+group = "Taskbar"
+kind = "choice"
+target = { key = 'HKCU\Software\Microsoft\Windows\CurrentVersion\Search', name = "SearchboxTaskbarMode" }
+[[tweak.option]]
+label = "Search box (default)"
+value = { dword = 2 }
+[[tweak.option]]
+label = "Search icon only"
+value = { dword = 1 }
+[[tweak.option]]
+label = "Search icon and label"
+value = { dword = 3 }
+[[tweak.option]]
+label = "Hidden"
+value = { dword = 0 }
+
+# --- Start menu ------------------------------------------------------------
+
+[[tweak]]
+id = "start_no_account_notifications"
+title = "No account notifications in Start"
+description = "Hides Microsoft account reminders and offers on the Start menu profile picture."
+group = "Start menu"
+[[tweak.set]]
+key = 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced'
+name = "Start_AccountNotifications"
+on = { dword = 0 }
+off = "delete"
+
+[[tweak]]
+id = "no_web_search"
+title = "No web results in Windows search"
+description = "Search in Start only finds files, apps and settings on this PC."
+group = "Start menu"
+[[tweak.set]]
+key = 'HKCU\Software\Microsoft\Windows\CurrentVersion\Search'
+name = "BingSearchEnabled"
+on = { dword = 0 }
+off = "delete"
+
+# --- Multitasking ----------------------------------------------------------
+
+[[tweak]]
+id = "snap_off"
+title = "Turn off window snapping"
+description = "Dragging a window to the screen edge no longer resizes it."
+group = "Multitasking"
+effect = "sign-out"
+[[tweak.set]]
+key = 'HKCU\Control Panel\Desktop'
+name = "WindowArrangementActive"
+on = { sz = "0" }
+off = { sz = "1" }
+
+[[tweak]]
+id = "snap_assist_off"
+title = "Don't suggest windows to snap next to"
+description = "After snapping a window, Windows no longer offers the others to fill the rest of the screen."
+group = "Multitasking"
+[[tweak.set]]
+key = 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced'
+name = "SnapAssist"
+on = { dword = 0 }
+off = "delete"
+
+[[tweak]]
+id = "alt_tab_windows_only"
+title = "Alt+Tab shows windows only"
+description = "Browser tabs no longer appear as separate entries in Alt+Tab."
+group = "Multitasking"
+[[tweak.set]]
+key = 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced'
+name = "MultiTaskingAltTabFilter"
+on = { dword = 3 }
+off = "delete"
+
+[[tweak]]
+id = "auto_end_tasks"
+title = "Close unresponsive apps at shutdown without asking"
+description = "Windows ends apps that block shutdown instead of showing the 'This app is preventing shutdown' screen. Unsaved work in those apps is lost."
+group = "Multitasking"
+effect = "sign-out"
+[[tweak.set]]
+key = 'HKCU\Control Panel\Desktop'
+name = "AutoEndTasks"
+on = { sz = "1" }
+off = "delete"
+
+# --- Notifications ---------------------------------------------------------
+
+[[tweak]]
+id = "toasts_off"
+title = "Turn off notification banners"
+description = "Apps can no longer show pop-up notifications. They still appear in the notification centre."
+group = "Notifications"
+[[tweak.set]]
+key = 'HKCU\Software\Microsoft\Windows\CurrentVersion\PushNotifications'
+name = "ToastEnabled"
+on = { dword = 0 }
+off = "delete"
+
+[[tweak]]
+id = "no_notification_center"
+title = "Turn off the notification centre"
+description = "Removes the notification centre and its calendar flyout for this account."
+group = "Notifications"
+effect = "sign-out"
+[[tweak.set]]
+key = 'HKCU\Software\Policies\Microsoft\Windows\Explorer'
+name = "DisableNotificationCenter"
+on = { dword = 1 }
+off = "delete"
+
+# --- Colours ---------------------------------------------------------------
+
+[[tweak]]
+id = "accent_start_taskbar"
+title = "Accent colour on Start and the taskbar"
+description = "Colours Start, the taskbar and the notification centre with your accent colour (dark mode only)."
+group = "Colours"
+[[tweak.set]]
+key = 'HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize'
+name = "ColorPrevalence"
+on = { dword = 1 }
+off = { dword = 0 }
+
+# --- Lock screen and sign-in -----------------------------------------------
+
+[[tweak]]
+id = "no_lock_screen"
+title = "Skip the lock screen"
+description = "Goes straight to the sign-in screen without the picture and clock first. Works on Pro, Enterprise and Education."
+group = "Lock screen and sign-in"
+[[tweak.set]]
+key = 'HKLM\SOFTWARE\Policies\Microsoft\Windows\Personalization'
+name = "NoLockScreen"
+on = { dword = 1 }
+off = "delete"
+
+[[tweak]]
+id = "no_logon_blur"
+title = "Sharp sign-in background"
+description = "Shows the sign-in background picture without the blur effect."
+group = "Lock screen and sign-in"
+[[tweak.set]]
+key = 'HKLM\SOFTWARE\Policies\Microsoft\Windows\System'
+name = "DisableAcrylicBackgroundOnLogon"
+on = { dword = 1 }
+off = "delete"
+
+# --- Keyboard --------------------------------------------------------------
+
+[[tweak]]
+id = "numlock_at_signin"
+title = "Num Lock on at the sign-in screen"
+description = "Turns Num Lock on before you sign in, so PIN entry on the number pad works."
+group = "Keyboard"
+effect = "restart"
+[[tweak.set]]
+key = 'HKU\.DEFAULT\Control Panel\Keyboard'
+name = "InitialKeyboardIndicators"
+on = { sz = "2147483650" }
+off = { sz = "2147483648" }
+
+[[tweak]]
+id = "numlock_user"
+title = "Num Lock on after you sign in"
+description = "Turns Num Lock on when your session starts."
+group = "Keyboard"
+effect = "sign-out"
+[[tweak.set]]
+key = 'HKCU\Control Panel\Keyboard'
+name = "InitialKeyboardIndicators"
+on = { sz = "2" }
+off = { sz = "0" }
+
+[[tweak]]
+id = "no_win_hotkeys"
+title = "Turn off Windows key shortcuts"
+description = "Windows-key combinations such as Win+E and Win+R stop working. The Windows key alone still opens Start."
+group = "Keyboard"
+effect = "explorer"
+[[tweak.set]]
+key = 'HKCU\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer'
+name = "NoWinKeys"
+on = { dword = 1 }
+off = "delete"
+
+[[tweak]]
+id = "no_sticky_keys_prompt"
+title = "Don't offer Sticky Keys after pressing Shift five times"
+description = "Pressing Shift five times no longer opens the Sticky Keys prompt (handy in games)."
+group = "Keyboard"
+[[tweak.set]]
+key = 'HKCU\Control Panel\Accessibility\StickyKeys'
+name = "Flags"
+on = { sz = "506" }
+off = { sz = "510" }
+
+[[tweak]]
+id = "no_filter_keys_prompt"
+title = "Don't offer Filter Keys after holding Shift"
+description = "Holding right Shift for eight seconds no longer opens the Filter Keys prompt."
+group = "Keyboard"
+[[tweak.set]]
+key = 'HKCU\Control Panel\Accessibility\Keyboard Response'
+name = "Flags"
+on = { sz = "122" }
+off = { sz = "126" }
+
+[[tweak]]
+id = "no_toggle_keys_prompt"
+title = "Don't offer Toggle Keys after holding Num Lock"
+description = "Holding Num Lock for five seconds no longer opens the Toggle Keys prompt."
+group = "Keyboard"
+[[tweak.set]]
+key = 'HKCU\Control Panel\Accessibility\ToggleKeys'
+name = "Flags"
+on = { sz = "58" }
+off = { sz = "62" }
+
+# --- Reset -----------------------------------------------------------------
+
+[[tweak]]
+id = "reset_feature_usage"
+title = "Reset taskbar usage tracking"
+description = "Clears the counts Windows keeps of how often you click taskbar and tray items (used to order jump lists and overflow icons)."
+group = "Reset"
+kind = "action"
+action = { program = "reg", args = ["delete", 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\FeatureUsage', "/f"], confirm = "Clear Windows' taskbar usage counts? This cannot be undone." }
+
+[[tweak]]
+id = "reset_icon_cache"
+title = "Rebuild the icon cache"
+description = "Fixes blank or wrong icons by having Windows rebuild its icon cache. Explorer restarts."
+group = "Reset"
+kind = "action"
+action = { program = "ie4uinit.exe", args = ["-show"] }

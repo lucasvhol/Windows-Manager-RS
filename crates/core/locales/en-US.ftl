@@ -82,6 +82,7 @@ regclean-title = Registry Cleaner
 
 ## Customization tools
 visual-title = Visual Customizer
+customsystem-title = Custom System
 explorertweaks-title = File Explorer Tweaker
 thispc-title = This PC Manager
 navpane-title = Navigation Pane
@@ -150,6 +151,7 @@ desktop-desc = Tidy up desktop items you rarely use.
 junk-desc = Remove temporary files, caches, logs and other junk.
 duplicates-desc = Find identical files and reclaim the space they use.
 regclean-desc = Remove registry entries that point to things that no longer exist.
+customsystem-desc = Desktop, taskbar, Start, notifications, sign-in and keyboard options.
 explorertweaks-desc = Adjust how File Explorer looks and behaves.
 navpane-desc = Choose what appears in File Explorer's navigation pane.
 thispc-desc = Choose which folders appear in This PC.

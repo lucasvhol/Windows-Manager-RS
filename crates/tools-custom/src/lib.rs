@@ -6,11 +6,10 @@ mod hotkeys;
 mod jumplist;
 mod run_shortcuts;
 mod start_menu;
-mod tweak_tool;
 mod winx;
 
-use tweak_tool::TweakTool;
-use wm_core::Tool;
+use wm_core::tweaks::TweakTool;
+use wm_core::{Category, Tool};
 
 /// Tweak definitions, also used by the Optimization Wizard.
 pub const VISUAL_TWEAKS: &str = include_str!("../tweaks/visual.toml");
@@ -18,28 +17,39 @@ pub const EXPLORER_TWEAKS: &str = include_str!("../tweaks/explorer.toml");
 pub const START_TWEAKS: &str = include_str!("../tweaks/start.toml");
 pub const THISPC_TWEAKS: &str = include_str!("../tweaks/thispc.toml");
 pub const NAVPANE_TWEAKS: &str = include_str!("../tweaks/navpane.toml");
+pub const CUSTOM_TWEAKS: &str = include_str!("../tweaks/custom.toml");
 
 pub fn tools() -> Vec<Box<dyn Tool>> {
     vec![
         Box::new(TweakTool::new(
+            Category::Customization,
             "visual",
             "Theme, taskbar and window appearance. Each switch restores the Windows default when turned off.",
             include_str!("../tweaks/visual.toml"),
         )),
         Box::new(TweakTool::new(
+            Category::Customization,
             "explorertweaks",
-            "File Explorer options that are otherwise spread across several dialogs.",
+            "",
             include_str!("../tweaks/explorer.toml"),
         )),
         Box::new(TweakTool::new(
+            Category::Customization,
             "thispc",
             "Choose which personal folders appear in This PC. Applies to all users (administrator required).",
             include_str!("../tweaks/thispc.toml"),
         )),
         Box::new(TweakTool::new(
+            Category::Customization,
             "navpane",
             "Choose what the File Explorer navigation pane shows.",
             include_str!("../tweaks/navpane.toml"),
+        )),
+        Box::new(TweakTool::new(
+            Category::Customization,
+            "customsystem",
+            "",
+            CUSTOM_TWEAKS,
         )),
         Box::new(context_menu::ContextMenuManager::default()),
         Box::new(winx::WinXEditor::default()),
@@ -63,9 +73,13 @@ mod tests {
             include_str!("../tweaks/thispc.toml"),
             include_str!("../tweaks/navpane.toml"),
             include_str!("../tweaks/start.toml"),
+            include_str!("../tweaks/custom.toml"),
         ] {
             for t in parse(text).unwrap() {
-                assert!(!t.settings.is_empty());
+                if t.kind != wm_core::tweaks::Kind::Toggle {
+                    ids.push(t.id);
+                    continue;
+                }
                 assert!(t.settings.iter().all(|s| s.on != s.off), "{}", t.id);
                 let _ = t.state();
                 ids.push(t.id);
