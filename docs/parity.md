@@ -88,7 +88,7 @@ This file tracks parity between **Win Manager RS** and the features of a commerc
 | Start Menu Manager | ✅ | Folder tree with owner, availability and target columns; add; Pin Any (files, folders, web addresses as All apps entries); launch; rename; remove; remove broken; back up and restore taskbar pins and Start layout (undoable). Pinning on behalf of the user is ⛔: Windows blocks it for other programs. Live restore awaits the manual test pass | D |
 | Win+X Menu Editor | ✅ | Hide/show; add a program, file, folder, Start item or one of 22 Windows tools (arguments, run as administrator); rename; move up/down and between groups; add/remove groups; restore defaults. Entries carry the WinX hash (verified against Windows' own shortcuts) | D |
 | Navigation Pane Manager | ✅ | Add folders (name, target, icon) as per-user shell folders; show or hide Windows items (Home, Gallery, Libraries, Control Panel, Recycle Bin, user folder) and other programs' items; order, place on top; edit pane; open; restart Explorer; behaviour options | D |
-| This PC Manager | 🟡 (tweaks) | Add file, folder, utility or app; rename; icon; enable/disable; Desktop Icon Settings | D |
+| This PC Manager | ✅ | Add folders, files and programs (with arguments) as per-user shell items; 12 Windows tools (Control Panel, All Tasks, Recycle Bin, Network…); rename, icon, turn off/on, remove, open; Desktop Icon Settings; personal folders tab; restart Explorer | D |
 
 ## Security
 

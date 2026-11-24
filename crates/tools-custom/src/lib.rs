@@ -7,6 +7,7 @@ mod jumplist;
 mod navpane;
 mod run_shortcuts;
 mod start_menu;
+mod thispc;
 mod winx;
 
 use wm_core::tweaks::TweakTool;
@@ -37,12 +38,6 @@ pub fn tools() -> Vec<Box<dyn Tool>> {
         )),
         Box::new(TweakTool::new(
             Category::Customization,
-            "thispc",
-            "Choose which personal folders appear in This PC. Applies to all users (administrator required).",
-            include_str!("../tweaks/thispc.toml"),
-        )),
-        Box::new(TweakTool::new(
-            Category::Customization,
             "customsystem",
             "",
             CUSTOM_TWEAKS,
@@ -60,6 +55,7 @@ pub fn tools() -> Vec<Box<dyn Tool>> {
         Box::new(run_shortcuts::RunShortcuts::default()),
         Box::new(jumplist::JumpListLauncher::default()),
         Box::new(navpane::NavPaneManager::default()),
+        Box::new(thispc::ThisPcManager::default()),
     ]
 }
 

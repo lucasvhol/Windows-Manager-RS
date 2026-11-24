@@ -26,7 +26,7 @@ use wm_core::{
 };
 
 const TOOL: &str = "navpane";
-const CLASSES: &str = r"HKCU\Software\Classes\CLSID";
+pub(crate) const CLASSES: &str = r"HKCU\Software\Classes\CLSID";
 const NAMESPACE: &str = r"Software\Microsoft\Windows\CurrentVersion\Explorer\Desktop\NameSpace";
 const HIDE_ON_DESKTOP: &str =
     r"HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\HideDesktopIcons\NewStartPanel";
@@ -36,7 +36,7 @@ const ORDER: &str = "SortOrderIndex";
 const MARKER: &str = "WinManagerRS";
 /// The shell's folder-shortcut object, which shows a file system folder as a shell folder.
 const FOLDER_SHORTCUT: &str = "{0E5AAE11-A475-4c5b-AB00-C66DE400274E}";
-const FOLDER_ICON: &str = r"%SystemRoot%\system32\imageres.dll,-3";
+pub(crate) const FOLDER_ICON: &str = r"%SystemRoot%\system32\imageres.dll,-3";
 /// Where new folders go: after Home (0x40) and Gallery (0x41), next to OneDrive (0x42).
 const DEFAULT_ORDER: u32 = 0x42;
 
@@ -84,25 +84,25 @@ impl NavItem {
     }
 }
 
-fn own_key(clsid: &str) -> String {
+pub(crate) fn own_key(clsid: &str) -> String {
     format!(r"{CLASSES}\{clsid}")
 }
 
-fn merged_key(clsid: &str) -> String {
+pub(crate) fn merged_key(clsid: &str) -> String {
     format!(r"HKCR\CLSID\{clsid}")
 }
 
-fn dword_of(key: &str, name: &str) -> Option<u32> {
+pub(crate) fn dword_of(key: &str, name: &str) -> Option<u32> {
     registry::read_raw(key, name).and_then(|v| registry::decode_dword(&v))
 }
 
-fn string_of(key: &str, name: &str) -> Option<String> {
+pub(crate) fn string_of(key: &str, name: &str) -> Option<String> {
     registry::read_raw(key, name)
         .map(|v| registry::decode_string(&v))
         .filter(|s| !s.trim().is_empty())
 }
 
-fn expand_sz(s: &str) -> RawValue {
+pub(crate) fn expand_sz(s: &str) -> RawValue {
     RawValue {
         vtype: 2,
         ..registry::string(s)
@@ -110,7 +110,7 @@ fn expand_sz(s: &str) -> RawValue {
 }
 
 /// Resolves `@dll,-id` strings; anything else is returned unchanged.
-fn resolve(s: &str) -> String {
+pub(crate) fn resolve(s: &str) -> String {
     if !s.starts_with('@') {
         return s.to_owned();
     }
@@ -194,7 +194,7 @@ fn sort(items: &mut [NavItem]) {
 }
 
 /// Tells Explorer the namespace changed (open windows pick it up when reopened).
-fn notify() {
+pub(crate) fn notify() {
     unsafe { SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, None, None) };
 }
 
@@ -262,12 +262,44 @@ pub fn reorder(ctx: &AppCtx<'_>, shown: &[NavItem], from: usize, to: usize, what
     set_values(ctx, what, &values)
 }
 
-fn valid_name(name: &str) -> Result<String> {
+pub(crate) fn valid_name(name: &str) -> Result<String> {
     let n = name.trim();
     if n.is_empty() {
         bail!("Enter a name");
     }
     Ok(n.to_owned())
+}
+
+/// Writes the parts of a per-user shell folder class that show `target` (a folder
+/// shortcut object), with `icon` or the default folder icon. The name is set by
+/// the caller.
+pub(crate) fn write_folder_class(key: &str, target: &Path, icon: &str) -> Result<()> {
+    let icon = if icon.trim().is_empty() {
+        FOLDER_ICON
+    } else {
+        icon.trim()
+    };
+    registry::write_raw(&format!(r"{key}\DefaultIcon"), "", &expand_sz(icon))?;
+    let server = format!(r"{key}\InProcServer32");
+    registry::write_raw(&server, "", &expand_sz(r"%SystemRoot%\system32\shell32.dll"))?;
+    registry::write_raw(&server, "ThreadingModel", &registry::string("Both"))?;
+    registry::write_raw(
+        &format!(r"{key}\Instance"),
+        "CLSID",
+        &registry::string(FOLDER_SHORTCUT),
+    )?;
+    let bag = format!(r"{key}\Instance\InitPropertyBag");
+    // FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_READONLY, as the documented sample.
+    registry::write_raw(&bag, "Attributes", &registry::dword(0x11))?;
+    registry::write_raw(
+        &bag,
+        "TargetFolderPath",
+        &expand_sz(&target.display().to_string()),
+    )?;
+    let folder = format!(r"{key}\ShellFolder");
+    registry::write_raw(&folder, "FolderValueFlags", &registry::dword(0x28))?;
+    registry::write_raw(&folder, "Attributes", &registry::dword(0xF080_004D))?;
+    Ok(())
 }
 
 /// Adds a folder to the navigation pane. Returns its CLSID.
@@ -294,31 +326,7 @@ pub fn add_folder(ctx: &AppCtx<'_>, name: &str, target: &Path, icon: &str) -> Re
         registry::write_raw(&key, MARKER, &registry::dword(1))?;
         registry::write_raw(&key, PINNED, &registry::dword(1))?;
         registry::write_raw(&key, ORDER, &registry::dword(DEFAULT_ORDER))?;
-        let icon = if icon.trim().is_empty() {
-            FOLDER_ICON
-        } else {
-            icon.trim()
-        };
-        registry::write_raw(&format!(r"{key}\DefaultIcon"), "", &expand_sz(icon))?;
-        let server = format!(r"{key}\InProcServer32");
-        registry::write_raw(&server, "", &expand_sz(r"%SystemRoot%\system32\shell32.dll"))?;
-        registry::write_raw(&server, "ThreadingModel", &registry::string("Both"))?;
-        registry::write_raw(
-            &format!(r"{key}\Instance"),
-            "CLSID",
-            &registry::string(FOLDER_SHORTCUT),
-        )?;
-        let bag = format!(r"{key}\Instance\InitPropertyBag");
-        // FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_READONLY, as the documented sample.
-        registry::write_raw(&bag, "Attributes", &registry::dword(0x11))?;
-        registry::write_raw(
-            &bag,
-            "TargetFolderPath",
-            &expand_sz(&target.display().to_string()),
-        )?;
-        let folder = format!(r"{key}\ShellFolder");
-        registry::write_raw(&folder, "FolderValueFlags", &registry::dword(0x28))?;
-        registry::write_raw(&folder, "Attributes", &registry::dword(0xF080_004D))?;
+        write_folder_class(&key, target, icon)?;
         registry::write_raw(&ns, "", &registry::string(&name))?;
         // Keep it off the desktop itself.
         registry::write_raw(HIDE_ON_DESKTOP, &clsid, &registry::dword(1))?;
@@ -334,7 +342,7 @@ pub fn add_folder(ctx: &AppCtx<'_>, name: &str, target: &Path, icon: &str) -> Re
     Ok(clsid)
 }
 
-fn delete_key(path: &str) -> Result<()> {
+pub(crate) fn delete_key(path: &str) -> Result<()> {
     let (root, sub) = registry::split_path(path)?;
     match root.delete_subkey_all(sub) {
         Ok(()) => Ok(()),
