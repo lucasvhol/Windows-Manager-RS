@@ -87,7 +87,7 @@ This file tracks parity between **Win Manager RS** and the features of a commerc
 | Context Menu Manager | ✅ | 14 sections (10 shell locations, any file type, Open with, New menu, Send To); type, Shift, position, company, signature and scope columns; properties; open in registry; Shift/position switches; delete with backup; editor with 41 built-in commands or any program (elevated, Shift-only, position, per user or all users); repair (re-enable, remove broken); classic Windows 11 menu switch | D |
 | Start Menu Manager | ✅ | Folder tree with owner, availability and target columns; add; Pin Any (files, folders, web addresses as All apps entries); launch; rename; remove; remove broken; back up and restore taskbar pins and Start layout (undoable). Pinning on behalf of the user is ⛔: Windows blocks it for other programs. Live restore awaits the manual test pass | D |
 | Win+X Menu Editor | ✅ | Hide/show; add a program, file, folder, Start item or one of 22 Windows tools (arguments, run as administrator); rename; move up/down and between groups; add/remove groups; restore defaults. Entries carry the WinX hash (verified against Windows' own shortcuts) | D |
-| Navigation Pane Manager | 🟡 (tweaks) | Add folders and utilities as items; order; enable/disable; place on top; edit pane | D |
+| Navigation Pane Manager | ✅ | Add folders (name, target, icon) as per-user shell folders; show or hide Windows items (Home, Gallery, Libraries, Control Panel, Recycle Bin, user folder) and other programs' items; order, place on top; edit pane; open; restart Explorer; behaviour options | D |
 | This PC Manager | 🟡 (tweaks) | Add file, folder, utility or app; rename; icon; enable/disable; Desktop Icon Settings | D |
 
 ## Security

@@ -4,6 +4,7 @@
 mod context_menu;
 mod hotkeys;
 mod jumplist;
+mod navpane;
 mod run_shortcuts;
 mod start_menu;
 mod winx;
@@ -42,12 +43,6 @@ pub fn tools() -> Vec<Box<dyn Tool>> {
         )),
         Box::new(TweakTool::new(
             Category::Customization,
-            "navpane",
-            "Choose what the File Explorer navigation pane shows.",
-            include_str!("../tweaks/navpane.toml"),
-        )),
-        Box::new(TweakTool::new(
-            Category::Customization,
             "customsystem",
             "",
             CUSTOM_TWEAKS,
@@ -64,6 +59,7 @@ pub fn tools() -> Vec<Box<dyn Tool>> {
         Box::new(hotkeys::HotkeyManager::default()),
         Box::new(run_shortcuts::RunShortcuts::default()),
         Box::new(jumplist::JumpListLauncher::default()),
+        Box::new(navpane::NavPaneManager::default()),
     ]
 }
 
