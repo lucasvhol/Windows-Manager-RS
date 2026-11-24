@@ -137,6 +137,8 @@ pub struct ShortcutSpec {
     pub description: String,
     /// `HOTKEYF_*` modifiers in the high byte, virtual-key code in the low byte; 0 = none.
     pub hotkey: u16,
+    /// Window state: 1 normal, 3 maximized, 7 minimized; 0 = Windows' default.
+    pub show_cmd: i32,
 }
 
 /// Builds an in-memory shell link (also used for jump list tasks).
@@ -161,6 +163,11 @@ pub fn make_link(spec: &ShortcutSpec) -> Result<IShellLinkW> {
         link.SetIconLocation(&HSTRING::from(spec.target.as_os_str()), 0)?;
         if spec.hotkey != 0 {
             link.SetHotkey(spec.hotkey)?;
+        }
+        if spec.show_cmd != 0 {
+            link.SetShowCmd(windows::Win32::UI::WindowsAndMessaging::SHOW_WINDOW_CMD(
+                spec.show_cmd,
+            ))?;
         }
         Ok(link)
     }
@@ -225,6 +232,7 @@ pub fn read_shortcut(lnk: &Path) -> Result<ShortcutSpec> {
             working_dir: None,
             description: String::new(),
             hotkey: link.GetHotkey().unwrap_or(0),
+            show_cmd: link.GetShowCmd().map(|s| s.0).unwrap_or(0),
         })
     }
 }
@@ -277,6 +285,7 @@ mod tests {
             target: PathBuf::from(r"C:\Windows\notepad.exe"),
             args: "/A test.txt".into(),
             hotkey: (6 << 8) | u16::from(b'N'),
+            show_cmd: 3,
             ..Default::default()
         };
         create_shortcut(&lnk, &spec).unwrap();
@@ -284,5 +293,6 @@ mod tests {
         assert_eq!(back.target, spec.target);
         assert_eq!(back.args, spec.args);
         assert_eq!(back.hotkey, spec.hotkey);
+        assert_eq!(back.show_cmd, 3);
     }
 }

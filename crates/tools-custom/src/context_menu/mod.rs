@@ -714,10 +714,7 @@ pub fn add_send_to(ctx: &AppCtx<'_>, target: &Path, name: &str) -> Result<PathBu
         &lnk,
         &wm_core::shell::ShortcutSpec {
             target: target.to_owned(),
-            args: String::new(),
-            working_dir: None,
-            description: String::new(),
-            hotkey: 0,
+            ..Default::default()
         },
     )?;
     ctx.journal.record(
