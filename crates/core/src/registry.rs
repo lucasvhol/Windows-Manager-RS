@@ -25,12 +25,45 @@ pub fn split_path(path: &str) -> Result<(RegKey, &str)> {
     Ok((RegKey::predef(hkey), sub))
 }
 
-/// True for keys under HKLM / HKCR / HKU, which normally need administrator rights to write.
+/// Per-user policy roots: Windows lets standard accounts read them but usually not
+/// write them (only administrators and Group Policy may).
+const USER_POLICY_ROOTS: [&str; 2] = [
+    r"software\microsoft\windows\currentversion\policies",
+    r"software\policies",
+];
+
+/// True for keys that need administrator rights to write: everything outside HKCU, and
+/// the per-user policy keys when this account may not write them.
 pub fn needs_admin(path: &str) -> bool {
-    !matches!(
-        path.split('\\').next().map(|r| r.to_ascii_uppercase()).as_deref(),
-        Some("HKCU" | "HKEY_CURRENT_USER")
-    )
+    let (root, sub) = path.split_once('\\').unwrap_or((path, ""));
+    if !matches!(root.to_ascii_uppercase().as_str(), "HKCU" | "HKEY_CURRENT_USER") {
+        return true;
+    }
+    let sub = sub.to_ascii_lowercase();
+    let is_policy = USER_POLICY_ROOTS
+        .iter()
+        .any(|r| sub == *r || sub.starts_with(&format!(r"{r}\")));
+    is_policy && !writable(path)
+}
+
+/// Whether `path` can be written (its values set, or it created) by this process: checks
+/// the key itself, or its nearest existing parent.
+pub fn writable(path: &str) -> bool {
+    let Ok((root, sub)) = split_path(path) else {
+        return false;
+    };
+    let mut sub = sub;
+    loop {
+        match root.open_subkey_with_flags(sub, KEY_SET_VALUE | KEY_CREATE_SUB_KEY) {
+            Ok(_) => return true,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => match sub.rsplit_once('\\') {
+                Some((parent, _)) => sub = parent,
+                None if !sub.is_empty() => sub = "",
+                None => return false,
+            },
+            Err(_) => return false,
+        }
+    }
 }
 
 pub fn open_read(path: &str) -> Result<RegKey> {
@@ -255,6 +288,11 @@ mod tests {
         assert!(split_path(r"HKXX\Foo").is_err());
         assert!(!needs_admin(r"HKCU\Software"));
         assert!(needs_admin(r"HKLM\SOFTWARE"));
+        // A missing key falls back to its nearest existing parent (HKCU\Software).
+        assert!(writable(r"HKCU\Software\WM-does-not-exist\child"));
+        let policy = r"HKCU\Software\Policies\WM-test";
+        assert_eq!(needs_admin(policy), !writable(policy));
+        assert!(!needs_admin(r"HKCU\Software\PoliciesNot"));
     }
 
     #[test]

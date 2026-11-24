@@ -282,21 +282,7 @@ pub fn read_cpl() -> Option<(Mode, Vec<String>)> {
 /// accounts read `HKCU…Policies` but not create keys there, so the first policy
 /// usually needs an administrator.
 pub fn user_policy_writable() -> bool {
-    const KEY_SET_VALUE: u32 = 0x0002;
-    const KEY_CREATE_SUB_KEY: u32 = 0x0004;
-    let Ok((root, sub)) = registry::split_path(USER_POLICY) else {
-        return false;
-    };
-    match root.open_subkey_with_flags(sub, KEY_SET_VALUE | KEY_CREATE_SUB_KEY) {
-        Ok(_) => true,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => root
-            .open_subkey_with_flags(
-                r"SoftwareMicrosoftWindowsCurrentVersionPolicies",
-                KEY_CREATE_SUB_KEY,
-            )
-            .is_ok(),
-        Err(_) => false,
-    }
+    registry::writable(USER_POLICY)
 }
 
 fn delete_key(path: &str) -> Result<()> {
