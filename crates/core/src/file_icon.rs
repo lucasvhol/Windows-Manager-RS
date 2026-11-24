@@ -20,9 +20,14 @@ pub struct IconImage {
     pub rgba: Vec<u8>,
 }
 
-/// Splits `"C:\x\app.exe",2` / `C:\x\app.exe,-101` into a path and an icon index.
+/// Splits `"C:\x\app.exe",2` / `C:\x\app.exe,-101` / `"C:\x\app.exe,1"` into a path
+/// and an icon index.
 pub fn split_icon_location(spec: &str) -> (String, i32) {
-    let spec = spec.trim();
+    let mut spec = spec.trim();
+    // Some programs quote the whole "path,index".
+    if spec.len() > 1 && spec.starts_with('"') && spec.ends_with('"') && spec.matches('"').count() == 2 {
+        spec = &spec[1..spec.len() - 1];
+    }
     let (path, index) = match spec.rsplit_once(',') {
         Some((p, i)) if i.trim().parse::<i32>().is_ok() => (p, i.trim().parse().unwrap_or(0)),
         _ => (spec, 0),
@@ -157,6 +162,10 @@ mod tests {
             (r"C:\x\app.exe".into(), -101)
         );
         assert_eq!(split_icon_location(r"C:\x\a,b.ico"), (r"C:\x\a,b.ico".into(), 0));
+        assert_eq!(
+            split_icon_location(r#""C:\x\app.exe,1""#),
+            (r"C:\x\app.exe".into(), 1)
+        );
     }
 
     #[test]
