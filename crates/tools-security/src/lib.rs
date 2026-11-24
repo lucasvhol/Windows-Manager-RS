@@ -4,12 +4,15 @@
 pub mod crypto;
 mod file_security;
 pub mod ntfs;
-mod privacy;
+pub mod privacy;
 mod security_lock;
 mod settings_security;
 mod undelete;
 
 use wm_core::Tool;
+
+/// Privacy tweak definitions, also used by the Optimization Wizard.
+pub const PRIVACY_TWEAKS: &str = include_str!("../tweaks/privacy.toml");
 
 pub fn tools() -> Vec<Box<dyn Tool>> {
     vec![

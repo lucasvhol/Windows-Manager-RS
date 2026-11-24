@@ -51,10 +51,32 @@ pub struct Entry {
     pub undone: bool,
 }
 
+/// Entries plus the file timestamp they were loaded from.
+struct State {
+    entries: Vec<Entry>,
+    mtime: Option<std::time::SystemTime>,
+}
+
+/// The journal file can also be written by other processes (scheduled `--run` tasks),
+/// so every access first reloads it if it changed on disk.
 pub struct ChangeJournal {
     file: PathBuf,
     backups: PathBuf,
-    entries: Mutex<Vec<Entry>>,
+    state: Mutex<State>,
+}
+
+fn read_entries(file: &Path) -> Result<Vec<Entry>> {
+    match std::fs::read_to_string(file) {
+        Ok(text) => {
+            serde_json::from_str(&text).with_context(|| format!("parsing journal {}", file.display()))
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+        Err(e) => Err(e).context("reading journal"),
+    }
+}
+
+fn mtime(file: &Path) -> Option<std::time::SystemTime> {
+    std::fs::metadata(file).and_then(|m| m.modified()).ok()
 }
 
 impl ChangeJournal {
@@ -68,36 +90,52 @@ impl ChangeJournal {
 
     pub fn open(file: &Path, backups: &Path) -> Result<Self> {
         std::fs::create_dir_all(backups)?;
-        let entries = match std::fs::read_to_string(file) {
-            Ok(text) => {
-                serde_json::from_str(&text).with_context(|| format!("parsing journal {}", file.display()))?
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
-            Err(e) => return Err(e).context("reading journal"),
-        };
+        let entries = read_entries(file)?;
         Ok(Self {
             file: file.to_owned(),
             backups: backups.to_owned(),
-            entries: Mutex::new(entries),
+            state: Mutex::new(State {
+                entries,
+                mtime: mtime(file),
+            }),
         })
+    }
+
+    /// Locks the state, reloading it first if another process changed the file.
+    fn lock(&self) -> std::sync::MutexGuard<'_, State> {
+        let mut s = self.state.lock().unwrap();
+        let now = mtime(&self.file);
+        if now != s.mtime {
+            match read_entries(&self.file) {
+                Ok(entries) => {
+                    s.entries = entries;
+                    s.mtime = now;
+                }
+                Err(e) => tracing::warn!("journal changed on disk but could not be read: {e:#}"),
+            }
+        }
+        s
     }
 
     /// Snapshot of all entries, newest first.
     pub fn entries(&self) -> Vec<Entry> {
-        let mut v = self.entries.lock().unwrap().clone();
+        let mut v = self.lock().entries.clone();
         v.reverse();
         v
     }
 
-    fn persist(&self, entries: &[Entry]) -> Result<()> {
+    fn persist(&self, s: &mut State) -> Result<()> {
         let tmp = self.file.with_extension("json.tmp");
-        std::fs::write(&tmp, serde_json::to_vec_pretty(entries)?)?;
-        std::fs::rename(&tmp, &self.file).context("saving journal")
+        std::fs::write(&tmp, serde_json::to_vec_pretty(&s.entries)?)?;
+        std::fs::rename(&tmp, &self.file).context("saving journal")?;
+        s.mtime = mtime(&self.file);
+        Ok(())
     }
 
     /// Records a change that has already been applied.
     pub fn record(&self, tool: &str, description: impl Into<String>, undo: UndoAction) -> Result<Entry> {
-        let mut entries = self.entries.lock().unwrap();
+        let mut s = self.lock();
+        let entries = &mut s.entries;
         let entry = Entry {
             id: entries.iter().map(|e| e.id).max().map_or(1, |m| m + 1),
             time: Local::now(),
@@ -107,7 +145,7 @@ impl ChangeJournal {
             undone: false,
         };
         entries.push(entry.clone());
-        self.persist(&entries)?;
+        self.persist(&mut s)?;
         tracing::info!(tool, id = entry.id, "journaled: {}", entry.description);
         Ok(entry)
     }
@@ -158,8 +196,8 @@ impl ChangeJournal {
     /// Reverts the change with the given id.
     pub fn undo(&self, id: u64) -> Result<()> {
         let entry = {
-            let entries = self.entries.lock().unwrap();
-            entries
+            let s = self.lock();
+            s.entries
                 .iter()
                 .find(|e| e.id == id)
                 .cloned()
@@ -169,11 +207,11 @@ impl ChangeJournal {
             bail!("change #{id} was already undone");
         }
         execute_undo(&entry.undo)?;
-        let mut entries = self.entries.lock().unwrap();
-        if let Some(e) = entries.iter_mut().find(|e| e.id == id) {
+        let mut s = self.lock();
+        if let Some(e) = s.entries.iter_mut().find(|e| e.id == id) {
             e.undone = true;
         }
-        self.persist(&entries)
+        self.persist(&mut s)
     }
 }
 
@@ -244,6 +282,29 @@ mod tests {
 
     fn journal(dir: &Path) -> ChangeJournal {
         ChangeJournal::open(&dir.join("journal.json"), &dir.join("backups")).unwrap()
+    }
+
+    #[test]
+    fn two_instances_do_not_lose_each_others_entries() {
+        // Simulates the GUI and a scheduled `--run` process sharing the journal file.
+        let dir = tempfile::tempdir().unwrap();
+        let gui = journal(dir.path());
+        let task = journal(dir.path());
+        gui.record("gui", "one", UndoAction::None).unwrap();
+        // Make sure the file timestamp visibly changes between writers.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        task.record("task", "two", UndoAction::None).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        gui.record("gui", "three", UndoAction::None).unwrap();
+
+        let all: Vec<String> = journal(dir.path())
+            .entries()
+            .into_iter()
+            .map(|e| e.description)
+            .collect();
+        assert_eq!(all, ["three", "two", "one"]);
+        let ids: Vec<u64> = gui.entries().into_iter().map(|e| e.id).collect();
+        assert_eq!(ids, [3, 2, 1], "ids stay unique across writers");
     }
 
     #[test]

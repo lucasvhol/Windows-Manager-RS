@@ -6,8 +6,8 @@ mod component_store;
 mod desktop;
 mod disk_analyzer;
 mod duplicates;
-mod junk;
-mod registry_cleaner;
+pub mod junk;
+pub mod registry_cleaner;
 mod uninstaller;
 
 use wm_core::Tool;

@@ -1,0 +1,18 @@
+[package]
+name = "wm-tools-oneclick"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+anyhow = "1.0.105"
+chrono = "0.4.45"
+tracing = "0.1.44"
+wm-core = { version = "0.1.0", path = "../core" }
+wm-tools-cleaner = { version = "0.1.0", path = "../tools-cleaner" }
+wm-tools-custom = { version = "0.1.0", path = "../tools-custom" }
+wm-tools-optimizer = { version = "0.1.0", path = "../tools-optimizer" }
+wm-tools-security = { version = "0.1.0", path = "../tools-security" }
+
+[dev-dependencies]
+tempfile = "3.27.0"

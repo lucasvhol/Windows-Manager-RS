@@ -110,3 +110,14 @@ wifi-title = Wi-Fi Manager
 hosts-title = URL Manager
 nettools-title = Network Tools
 netmonitor-title = Network Monitor
+
+## Misc and 1-Click tools
+splitter-title = File Splitter
+supercopy-title = Super Copy
+regtools-title = Registry Tools
+utilities-title = Windows Utilities
+mytask-title = My Task
+oneclickclean-title = 1-Click Cleaner
+fixer-title = 1-Click Fixer
+wizard-title = Optimization Wizard
+repair-title = Repair Center

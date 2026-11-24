@@ -3,9 +3,9 @@
 
 mod boot;
 mod services;
-mod speed;
+pub mod speed;
 mod startup;
-mod tasks;
+pub mod tasks;
 
 use wm_core::Tool;
 

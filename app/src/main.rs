@@ -27,8 +27,48 @@ fn init_logging() -> Option<tracing_appender::non_blocking::WorkerGuard> {
     Some(guard)
 }
 
+/// `win-manager.exe --run <action>`: performs a maintenance action without a window
+/// (used by scheduled tasks created in My Task). Returns the process exit code.
+fn run_headless(action: &str) -> i32 {
+    use wm_core::{AppCtx, config::Config, elevation, i18n::I18n, safety::ChangeJournal};
+    let mut config = Config::default_path()
+        .map(|p| Config::load_or_default(&p))
+        .unwrap_or_default();
+    let journal = match ChangeJournal::open_default() {
+        Ok(j) => j,
+        Err(e) => {
+            tracing::error!("cannot open journal: {e:#}");
+            return 2;
+        }
+    };
+    let i18n = I18n::new(&config.language);
+    let ctx = AppCtx {
+        config: &mut config,
+        journal: &journal,
+        i18n: &i18n,
+        elevated: elevation::is_elevated(),
+    };
+    match wm_tools_oneclick::actions::run(action, &ctx) {
+        Ok(msg) => {
+            tracing::info!("--run {action}: {msg}");
+            0
+        }
+        Err(e) => {
+            tracing::error!("--run {action} failed: {e:#}");
+            1
+        }
+    }
+}
+
 fn main() -> eframe::Result {
     let _guard = init_logging();
+    let args: Vec<String> = std::env::args().collect();
+    if let Some(i) = args.iter().position(|a| a == "--run") {
+        let action = args.get(i + 1).map(String::as_str).unwrap_or_default();
+        let code = run_headless(action);
+        drop(_guard); // flush the log before exiting
+        std::process::exit(code);
+    }
     tracing::info!("starting {APP_NAME} {}", env!("CARGO_PKG_VERSION"));
 
     let options = eframe::NativeOptions {

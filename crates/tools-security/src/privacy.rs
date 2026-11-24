@@ -82,7 +82,7 @@ pub fn count(t: Trace) -> usize {
         .count()
 }
 
-fn clear(ctx: &AppCtx<'_>, t: Trace) -> Result<usize> {
+pub fn clear(ctx: &AppCtx<'_>, t: Trace) -> Result<usize> {
     if let Some(key) = history_key(t) {
         let names: Vec<String> = registry::open_read(&key)
             .map(|k| {

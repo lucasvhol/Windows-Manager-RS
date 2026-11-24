@@ -4698,7 +4698,9 @@ dependencies = [
  "wm-tools-cleaner",
  "wm-tools-custom",
  "wm-tools-info",
+ "wm-tools-misc",
  "wm-tools-network",
+ "wm-tools-oneclick",
  "wm-tools-optimizer",
  "wm-tools-security",
 ]
@@ -5108,6 +5110,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "wm-tools-misc"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "blake3",
+ "rayon",
+ "rfd",
+ "serde",
+ "tempfile",
+ "toml",
+ "tracing",
+ "walkdir",
+ "winreg",
+ "wm-core",
+]
+
+[[package]]
 name = "wm-tools-network"
 version = "0.1.0"
 dependencies = [
@@ -5121,6 +5140,21 @@ dependencies = [
  "tracing",
  "windows",
  "wm-core",
+]
+
+[[package]]
+name = "wm-tools-oneclick"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "tempfile",
+ "tracing",
+ "wm-core",
+ "wm-tools-cleaner",
+ "wm-tools-custom",
+ "wm-tools-optimizer",
+ "wm-tools-security",
 ]
 
 [[package]]

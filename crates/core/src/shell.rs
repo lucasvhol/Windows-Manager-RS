@@ -9,8 +9,9 @@ use windows::Win32::System::Com::{
 };
 use windows::Win32::UI::Shell::{
     FOLDERID_Desktop, FOLDERID_Documents, FOLDERID_PublicDesktop, IShellLinkW, KF_FLAG_DEFAULT,
-    SHGetKnownFolderPath, ShellLink,
+    SHGetKnownFolderPath, ShellExecuteW, ShellLink,
 };
+use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
 use windows::core::{GUID, HSTRING, Interface};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -63,6 +64,25 @@ pub fn ensure_com() {
     unsafe {
         let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
     }
+}
+
+/// Opens a program, document, `.msc`/`.cpl` file or URI (e.g. `ms-settings:display`)
+/// the way Explorer would.
+pub fn shell_open(target: &str, args: &str) -> Result<()> {
+    let r = unsafe {
+        ShellExecuteW(
+            None,
+            windows::core::w!("open"),
+            &HSTRING::from(target),
+            &HSTRING::from(args),
+            windows::core::PCWSTR::null(),
+            SW_SHOWNORMAL,
+        )
+    };
+    if r.0 as isize <= 32 {
+        anyhow::bail!("could not open {target} (code {})", r.0 as isize);
+    }
+    Ok(())
 }
 
 /// What a shortcut should launch.

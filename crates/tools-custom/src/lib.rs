@@ -12,6 +12,11 @@ mod winx;
 use tweak_tool::TweakTool;
 use wm_core::Tool;
 
+/// Tweak definitions, also used by the Optimization Wizard.
+pub const VISUAL_TWEAKS: &str = include_str!("../tweaks/visual.toml");
+pub const EXPLORER_TWEAKS: &str = include_str!("../tweaks/explorer.toml");
+pub const START_TWEAKS: &str = include_str!("../tweaks/start.toml");
+
 pub fn tools() -> Vec<Box<dyn Tool>> {
     vec![
         Box::new(TweakTool::new(
