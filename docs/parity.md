@@ -57,7 +57,7 @@ This file tracks parity between **Win Manager RS** and the features of a commerc
 | Boot Configuration | 🟡 | Add entry; boot order; back up and restore boot data; Safe Mode with Command Prompt; disable driver signing; restart into advanced startup | D |
 | Startup Manager | ✅ | Run/RunOnce keys (per user and machine), Startup folders and Windows apps with Task Manager-compatible enable flags; move, edit, delete (journaled), open location, online lookup, batch "disable others"; company, signature and running columns; advanced auto-start locations (read-only); block Run keys per scope | D |
 | Service Manager | ✅ | Services and Drivers tabs; Non-Microsoft filter (catalog-aware signatures, svchost ServiceDll resolved); log-on, company and command-line details; file properties, open folder, online lookup; delete third-party services (registry backed up, optional file to Recycle Bin); back up / restore startup types (JSON, plus a first-run snapshot); restore Windows defaults for common services; Optimize questionnaire. Drivers are read-only | D |
-| Task Scheduler Manager | 🟡 | Tree by folder; create task with all trigger types; Optimize Task questionnaire; description, author and trigger columns | D |
+| Task Scheduler Manager | ✅ | Folder tree with counts; trigger, next/last run, last result, author and description columns; create tasks (one time, daily, weekly, monthly, log on, startup, idle, event, lock/unlock; as SYSTEM / highest privileges) through locale-independent XML; import/export task XML; run, end, enable, disable, delete with XML backup; Optimize questionnaire for optional Windows tasks; open Task Scheduler | D |
 
 ## Cleaner
 
