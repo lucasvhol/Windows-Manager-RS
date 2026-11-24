@@ -211,6 +211,35 @@ pub fn decode_dword(v: &RawValue) -> Option<u32> {
     Some(u32::from_le_bytes(v.bytes.get(..4)?.try_into().ok()?))
 }
 
+/// `HKCU\Software` → `Computer\HKEY_CURRENT_USER\Software` (Registry Editor's address format).
+pub fn regedit_path(key: &str) -> String {
+    let (root, rest) = key.split_once('\\').unwrap_or((key, ""));
+    let upper = root.to_ascii_uppercase();
+    let long = match upper.as_str() {
+        "HKCU" => "HKEY_CURRENT_USER",
+        "HKLM" => "HKEY_LOCAL_MACHINE",
+        "HKCR" => "HKEY_CLASSES_ROOT",
+        "HKU" => "HKEY_USERS",
+        "HKCC" => "HKEY_CURRENT_CONFIG",
+        other => other,
+    };
+    if rest.is_empty() {
+        format!(r"Computer\{long}")
+    } else {
+        format!(r"Computer\{long}\{rest}")
+    }
+}
+
+/// Opens Registry Editor at `key` (sets the key it remembers, then starts it).
+pub fn open_in_regedit(key: &str) -> Result<()> {
+    write_raw(
+        r"HKCU\Software\Microsoft\Windows\CurrentVersion\Applets\Regedit",
+        "LastKey",
+        &string(&regedit_path(key)),
+    )?;
+    crate::shell::shell_open("regedit.exe", "-m")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -275,33 +304,4 @@ mod tests {
         let (root, sub) = split_path(&other).unwrap();
         root.delete_subkey_all(sub).unwrap();
     }
-}
-
-/// `HKCU\Software` → `Computer\HKEY_CURRENT_USER\Software` (Registry Editor's address format).
-pub fn regedit_path(key: &str) -> String {
-    let (root, rest) = key.split_once('\\').unwrap_or((key, ""));
-    let upper = root.to_ascii_uppercase();
-    let long = match upper.as_str() {
-        "HKCU" => "HKEY_CURRENT_USER",
-        "HKLM" => "HKEY_LOCAL_MACHINE",
-        "HKCR" => "HKEY_CLASSES_ROOT",
-        "HKU" => "HKEY_USERS",
-        "HKCC" => "HKEY_CURRENT_CONFIG",
-        other => other,
-    };
-    if rest.is_empty() {
-        format!(r"Computer\{long}")
-    } else {
-        format!(r"Computer\{long}\{rest}")
-    }
-}
-
-/// Opens Registry Editor at `key` (sets the key it remembers, then starts it).
-pub fn open_in_regedit(key: &str) -> Result<()> {
-    write_raw(
-        r"HKCU\Software\Microsoft\Windows\CurrentVersion\Applets\Regedit",
-        "LastKey",
-        &string(&regedit_path(key)),
-    )?;
-    crate::shell::shell_open("regedit.exe", "-m")
 }

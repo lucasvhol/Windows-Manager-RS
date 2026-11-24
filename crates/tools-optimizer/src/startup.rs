@@ -69,7 +69,10 @@ impl Source {
     }
 
     pub fn needs_admin(self) -> bool {
-        !matches!(self, Source::UserRegistry | Source::UserRunOnce | Source::UserFolder | Source::WindowsApp)
+        !matches!(
+            self,
+            Source::UserRegistry | Source::UserRunOnce | Source::UserFolder | Source::WindowsApp
+        )
     }
 
     /// Registry key holding the entries (registry sources only).
@@ -87,8 +90,12 @@ impl Source {
     fn folder(self) -> Option<PathBuf> {
         let base = |var: &str| std::env::var_os(var).map(PathBuf::from);
         match self {
-            Source::UserFolder => Some(base("APPDATA")?.join(r"Microsoft\Windows\Start Menu\Programs\Startup")),
-            Source::CommonFolder => Some(base("ProgramData")?.join(r"Microsoft\Windows\Start Menu\Programs\StartUp")),
+            Source::UserFolder => {
+                Some(base("APPDATA")?.join(r"Microsoft\Windows\Start Menu\Programs\Startup"))
+            }
+            Source::CommonFolder => {
+                Some(base("ProgramData")?.join(r"Microsoft\Windows\Start Menu\Programs\StartUp"))
+            }
             _ => None,
         }
     }
@@ -138,7 +145,9 @@ impl StartupItem {
             return None;
         }
         let p = match &self.file {
-            Some(f) if f.extension().is_some_and(|e| e.eq_ignore_ascii_case("lnk")) => return Some(f.clone()),
+            Some(f) if f.extension().is_some_and(|e| e.eq_ignore_ascii_case("lnk")) => {
+                return Some(f.clone());
+            }
             Some(f) => f.clone(),
             None => PathBuf::from(expand_env(&exe_from_command(&self.command)?)),
         };
@@ -191,7 +200,9 @@ pub fn approved_bytes(enabled: bool, now: SystemTime) -> Vec<u8> {
 }
 
 fn approved(source: Source, name: &str) -> bool {
-    let Some(key) = source.approved_key() else { return true };
+    let Some(key) = source.approved_key() else {
+        return true;
+    };
     let data = registry::read_raw(&key, name);
     approved_is_enabled(data.as_ref().map(|v| v.bytes.as_slice()))
 }
@@ -203,12 +214,17 @@ pub fn app_state_enabled(state: u32) -> bool {
 
 fn app_tasks() -> Vec<StartupItem> {
     let mut out = Vec::new();
-    let Ok(root) = registry::open_read(APP_TASKS) else { return out };
+    let Ok(root) = registry::open_read(APP_TASKS) else {
+        return out;
+    };
     for pkg in root.enum_keys().flatten() {
         let Ok(pk) = root.open_subkey(&pkg) else { continue };
         for task in pk.enum_keys().flatten() {
             let key = format!(r"{APP_TASKS}\{pkg}\{task}");
-            let Some(state) = registry::read_raw(&key, "State").as_ref().and_then(registry::decode_dword) else {
+            let Some(state) = registry::read_raw(&key, "State")
+                .as_ref()
+                .and_then(registry::decode_dword)
+            else {
                 continue;
             };
             let short = pkg.split('_').next().unwrap_or(&pkg).to_owned();
@@ -235,7 +251,10 @@ pub fn enumerate() -> Vec<StartupItem> {
                 if name.is_empty() {
                     continue;
                 }
-                let raw = registry::RawValue { vtype: value.vtype.clone() as u32, bytes: value.bytes.into_owned() };
+                let raw = registry::RawValue {
+                    vtype: value.vtype.clone() as u32,
+                    bytes: value.bytes.into_owned(),
+                };
                 items.push(StartupItem {
                     source,
                     enabled: approved(source, &name),
@@ -276,19 +295,31 @@ fn set_enabled(item: &StartupItem, enabled: bool) -> Result<ValueSnapshot> {
         registry::write_raw(key, "State", &registry::dword(if enabled { 2 } else { 1 }))?;
         return Ok(snap);
     }
-    let Some(key) = item.source.approved_key() else { bail!("run-once entries can't be disabled, only removed") };
+    let Some(key) = item.source.approved_key() else {
+        bail!("run-once entries can't be disabled, only removed")
+    };
     let snap = registry::snapshot(&key, &item.name);
-    registry::write_raw(&key, &item.name, &registry::binary(&approved_bytes(enabled, SystemTime::now())))?;
+    registry::write_raw(
+        &key,
+        &item.name,
+        &registry::binary(&approved_bytes(enabled, SystemTime::now())),
+    )?;
     Ok(snap)
 }
 
 /// Removes a registry entry (journaled exactly) or recycles a Startup-folder file.
 fn delete(ctx: &AppCtx<'_>, item: &StartupItem) -> Result<()> {
     if let Some(file) = &item.file {
-        ctx.journal.recycle("startup", format!("Removed startup item {}", item.name), vec![file.clone()])?;
+        ctx.journal.recycle(
+            "startup",
+            format!("Removed startup item {}", item.name),
+            vec![file.clone()],
+        )?;
         return Ok(());
     }
-    let Some(key) = item.source.run_key() else { bail!("Windows apps can only be turned off, not removed") };
+    let Some(key) = item.source.run_key() else {
+        bail!("Windows apps can only be turned off, not removed")
+    };
     let mut snaps = vec![registry::snapshot(&key, &item.name)];
     if let Some(ak) = item.source.approved_key() {
         snaps.push(registry::snapshot(&ak, &item.name));
@@ -306,12 +337,18 @@ fn delete(ctx: &AppCtx<'_>, item: &StartupItem) -> Result<()> {
 
 /// Moves a Run entry between the current-user and all-users keys (with its enabled flag).
 fn move_entry(ctx: &AppCtx<'_>, item: &StartupItem, to: Source) -> Result<()> {
-    let (Some(from_key), Some(to_key)) = (item.source.run_key(), to.run_key()) else { bail!("this entry can't be moved") };
+    let (Some(from_key), Some(to_key)) = (item.source.run_key(), to.run_key()) else {
+        bail!("this entry can't be moved")
+    };
     if registry::read_raw(&to_key, &item.name).is_some() {
         bail!("{} already has an entry named \"{}\"", to.label(), item.name);
     }
-    let mut snaps = vec![registry::snapshot(&from_key, &item.name), registry::snapshot(&to_key, &item.name)];
-    let value = registry::read_raw(&from_key, &item.name).ok_or_else(|| anyhow::anyhow!("the entry no longer exists"))?;
+    let mut snaps = vec![
+        registry::snapshot(&from_key, &item.name),
+        registry::snapshot(&to_key, &item.name),
+    ];
+    let value = registry::read_raw(&from_key, &item.name)
+        .ok_or_else(|| anyhow::anyhow!("the entry no longer exists"))?;
     registry::write_raw(&to_key, &item.name, &value)?;
     registry::delete_value(&from_key, &item.name)?;
     if let (Some(fa), Some(ta)) = (item.source.approved_key(), to.approved_key()) {
@@ -319,7 +356,11 @@ fn move_entry(ctx: &AppCtx<'_>, item: &StartupItem, to: Source) -> Result<()> {
         snaps.push(registry::snapshot(&ta, &item.name));
         registry::delete_value(&fa, &item.name)?;
         if !item.enabled {
-            registry::write_raw(&ta, &item.name, &registry::binary(&approved_bytes(false, SystemTime::now())))?;
+            registry::write_raw(
+                &ta,
+                &item.name,
+                &registry::binary(&approved_bytes(false, SystemTime::now())),
+            )?;
         }
     }
     ctx.journal.record(
@@ -331,7 +372,9 @@ fn move_entry(ctx: &AppCtx<'_>, item: &StartupItem, to: Source) -> Result<()> {
 }
 
 fn edit_command(ctx: &AppCtx<'_>, item: &StartupItem, command: &str) -> Result<()> {
-    let Some(key) = item.source.run_key() else { bail!("only registry entries can be edited here") };
+    let Some(key) = item.source.run_key() else {
+        bail!("only registry entries can be edited here")
+    };
     let snap = registry::snapshot(&key, &item.name);
     registry::write_raw(&key, &item.name, &registry::string(command))?;
     ctx.journal.record(
@@ -344,7 +387,9 @@ fn edit_command(ctx: &AppCtx<'_>, item: &StartupItem, command: &str) -> Result<(
 
 fn open_location(item: &StartupItem) {
     if let Some(t) = item.program().or_else(|| item.file.clone()) {
-        let _ = std::process::Command::new("explorer").arg(format!("/select,{}", t.display())).spawn();
+        let _ = std::process::Command::new("explorer")
+            .arg(format!("/select,{}", t.display()))
+            .spawn();
     }
 }
 
@@ -357,14 +402,22 @@ fn block_key(machine: bool) -> String {
 }
 
 pub fn auto_start_blocked(machine: bool) -> bool {
-    BLOCK_VALUES
-        .iter()
-        .all(|v| registry::read_raw(&block_key(machine), v).as_ref().and_then(registry::decode_dword) == Some(1))
+    BLOCK_VALUES.iter().all(|v| {
+        registry::read_raw(&block_key(machine), v)
+            .as_ref()
+            .and_then(registry::decode_dword)
+            == Some(1)
+    })
 }
 
 fn set_auto_start_blocked(ctx: &AppCtx<'_>, machine: bool, block: bool) -> Result<()> {
     let key = block_key(machine);
-    let names = ["DisableCurrentUserRun", "DisableCurrentUserRunOnce", "DisableLocalMachineRun", "DisableLocalMachineRunOnce"];
+    let names = [
+        "DisableCurrentUserRun",
+        "DisableCurrentUserRunOnce",
+        "DisableLocalMachineRun",
+        "DisableLocalMachineRunOnce",
+    ];
     let snaps: Vec<ValueSnapshot> = names.iter().map(|n| registry::snapshot(&key, n)).collect();
     for n in names {
         if block {
@@ -422,11 +475,22 @@ pub fn advanced_locations() -> Vec<Advanced> {
         }
     }
     for (key, label) in [
-        (r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Windows", "AppInit DLLs"),
-        (r"HKLM\SOFTWARE\WOW6432Node\Microsoft\Windows NT\CurrentVersion\Windows", "AppInit DLLs (32-bit)"),
+        (
+            r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Windows",
+            "AppInit DLLs",
+        ),
+        (
+            r"HKLM\SOFTWARE\WOW6432Node\Microsoft\Windows NT\CurrentVersion\Windows",
+            "AppInit DLLs (32-bit)",
+        ),
     ] {
-        let dlls = registry::read_raw(key, "AppInit_DLLs").map(|v| registry::decode_string(&v)).unwrap_or_default();
-        let load = registry::read_raw(key, "LoadAppInit_DLLs").as_ref().and_then(registry::decode_dword).unwrap_or(0);
+        let dlls = registry::read_raw(key, "AppInit_DLLs")
+            .map(|v| registry::decode_string(&v))
+            .unwrap_or_default();
+        let load = registry::read_raw(key, "LoadAppInit_DLLs")
+            .as_ref()
+            .and_then(registry::decode_dword)
+            .unwrap_or(0);
         if !dlls.trim().is_empty() || load != 0 {
             out.push(Advanced {
                 location: label.into(),
@@ -441,7 +505,10 @@ pub fn advanced_locations() -> Vec<Advanced> {
         let key = format!(r"{scope}\{POLICY}\Run");
         if let Ok(k) = registry::open_read(&key) {
             for (name, value) in k.enum_values().flatten() {
-                let raw = registry::RawValue { vtype: value.vtype.clone() as u32, bytes: value.bytes.into_owned() };
+                let raw = registry::RawValue {
+                    vtype: value.vtype.clone() as u32,
+                    bytes: value.bytes.into_owned(),
+                };
                 out.push(Advanced {
                     location: format!("Policy Run ({scope})"),
                     name,
@@ -456,12 +523,23 @@ pub fn advanced_locations() -> Vec<Advanced> {
     if let Ok(k) = registry::open_read(active) {
         for id in k.enum_keys().flatten() {
             let sub = format!(r"{active}\{id}");
-            let stub = registry::read_raw(&sub, "StubPath").map(|v| registry::decode_string(&v)).unwrap_or_default();
+            let stub = registry::read_raw(&sub, "StubPath")
+                .map(|v| registry::decode_string(&v))
+                .unwrap_or_default();
             if stub.trim().is_empty() {
                 continue;
             }
-            let name = registry::read_raw(&sub, "").map(|v| registry::decode_string(&v)).filter(|s| !s.is_empty()).unwrap_or(id);
-            out.push(Advanced { location: "Active Setup".into(), name, value: stub, unusual: false, key: sub });
+            let name = registry::read_raw(&sub, "")
+                .map(|v| registry::decode_string(&v))
+                .filter(|s| !s.is_empty())
+                .unwrap_or(id);
+            out.push(Advanced {
+                location: "Active Setup".into(),
+                name,
+                value: stub,
+                unusual: false,
+                key: sub,
+            });
         }
     }
     let ifeo = r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options";
@@ -534,18 +612,27 @@ impl Default for StartupManager {
 
 /// Lower-cased full paths of running programs.
 fn running_programs() -> HashSet<String> {
-    let Ok(mut sys) = sysinfo::System::new() else { return HashSet::new() };
+    let Ok(mut sys) = sysinfo::System::new() else {
+        return HashSet::new();
+    };
     sys.refresh_processes_specifics(
         sysinfo::ProcessesToUpdate::All,
         true,
         sysinfo::ProcessRefreshKind::nothing().with_exe(sysinfo::UpdateKind::Always),
     );
-    sys.processes().values().filter_map(|p| p.exe()).map(|e| e.to_string_lossy().to_ascii_lowercase()).collect()
+    sys.processes()
+        .values()
+        .filter_map(|p| p.exe())
+        .map(|e| e.to_string_lossy().to_ascii_lowercase())
+        .collect()
 }
 
 impl StartupManager {
     fn add_entry(&mut self, ctx: &AppCtx<'_>) {
-        let (name, command) = (self.new_name.trim().to_owned(), self.new_command.trim().to_owned());
+        let (name, command) = (
+            self.new_name.trim().to_owned(),
+            self.new_command.trim().to_owned(),
+        );
         if name.is_empty() || command.is_empty() {
             self.message = Some(Err("Enter both a name and a command.".into()));
             return;
@@ -600,7 +687,11 @@ impl StartupManager {
             }
             return;
         }
-        let new: Vec<PathBuf> = items.iter().filter_map(StartupItem::program).filter(|p| !self.asked.contains(p)).collect();
+        let new: Vec<PathBuf> = items
+            .iter()
+            .filter_map(StartupItem::program)
+            .filter(|p| !self.asked.contains(p))
+            .collect();
         if !new.is_empty() {
             self.asked.extend(new.iter().cloned());
             self.info_task = Some(BackgroundTask::spawn(ctx, move |_| fileinfo::describe(&new)));
@@ -608,7 +699,8 @@ impl StartupManager {
     }
 
     fn is_microsoft(&self, item: &StartupItem) -> bool {
-        self.info_of(item).is_some_and(|i| i.signature == Signature::Valid && i.signer.contains("Microsoft"))
+        self.info_of(item)
+            .is_some_and(|i| i.signature == Signature::Valid && i.signer.contains("Microsoft"))
     }
 
     fn items_page(&mut self, ui: &mut egui::Ui, ctx: &mut AppCtx<'_>, items: &[StartupItem]) {
@@ -617,16 +709,33 @@ impl StartupManager {
             .as_ref()
             .and_then(|(s, n)| items.iter().find(|i| i.source == *s && &i.name == n))
             .cloned();
-        let locked = selected.as_ref().is_some_and(|i| i.source.needs_admin() && !ctx.elevated);
+        let locked = selected
+            .as_ref()
+            .is_some_and(|i| i.source.needs_admin() && !ctx.elevated);
         let has = selected.is_some() && !locked;
-        let can_move = selected.as_ref().and_then(|i| i.source.move_target()).is_some_and(|t| !t.needs_admin() || ctx.elevated);
+        let can_move = selected
+            .as_ref()
+            .and_then(|i| i.source.move_target())
+            .is_some_and(|t| !t.needs_admin() || ctx.elevated);
         let buttons = [
             Some(ToolButton::new(icons::ARROWS_CLOCKWISE, "Refresh")),
             None,
-            Some(ToolButton::new(icons::TRASH, "Remove").enabled(has && selected.as_ref().is_some_and(|i| i.source != Source::WindowsApp))),
-            Some(ToolButton::new(icons::PENCIL_SIMPLE, "Edit").enabled(has && selected.as_ref().is_some_and(|i| i.source.run_key().is_some()))),
+            Some(
+                ToolButton::new(icons::TRASH, "Remove")
+                    .enabled(has && selected.as_ref().is_some_and(|i| i.source != Source::WindowsApp)),
+            ),
+            Some(
+                ToolButton::new(icons::PENCIL_SIMPLE, "Edit")
+                    .enabled(has && selected.as_ref().is_some_and(|i| i.source.run_key().is_some())),
+            ),
             Some(ToolButton::new(icons::SWAP, "Move").enabled(has && can_move)),
-            Some(ToolButton::new(icons::FOLDER_OPEN, "Open folder").enabled(selected.as_ref().is_some_and(|i| i.program().is_some() || i.file.is_some()))),
+            Some(
+                ToolButton::new(icons::FOLDER_OPEN, "Open folder").enabled(
+                    selected
+                        .as_ref()
+                        .is_some_and(|i| i.program().is_some() || i.file.is_some()),
+                ),
+            ),
             Some(ToolButton::new(icons::MAGNIFYING_GLASS, "Look up").enabled(selected.is_some())),
             None,
             Some(ToolButton::new(icons::STOP_CIRCLE, "Disable others")),
@@ -655,7 +764,9 @@ impl StartupManager {
                     self.message = Some(if ctx.config.dry_run {
                         Ok(ctx.i18n.tr("common-dry-run-skip"))
                     } else {
-                        move_entry(ctx, item, to).map(|()| format!("Moved {} to {}.", item.name, to.label())).map_err(|e| format!("{e:#}"))
+                        move_entry(ctx, item, to)
+                            .map(|()| format!("Moved {} to {}.", item.name, to.label()))
+                            .map_err(|e| format!("{e:#}"))
                     });
                     self.selected = Some((to, item.name.clone()));
                     self.items = None;
@@ -668,14 +779,22 @@ impl StartupManager {
             }
             Some(6) => {
                 if let Some(item) = &selected {
-                    let q: String = item.name.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '+' }).collect();
-                    let _ = std::process::Command::new("explorer").arg(format!("https://www.bing.com/search?q={q}+startup")).spawn();
+                    let q: String = item
+                        .name
+                        .chars()
+                        .map(|c| if c.is_ascii_alphanumeric() { c } else { '+' })
+                        .collect();
+                    let _ = std::process::Command::new("explorer")
+                        .arg(format!("https://www.bing.com/search?q={q}+startup"))
+                        .spawn();
                 }
             }
             Some(8) => {
                 let targets: Vec<StartupItem> = items
                     .iter()
-                    .filter(|i| i.enabled && i.source.can_toggle() && (!i.source.needs_admin() || ctx.elevated))
+                    .filter(|i| {
+                        i.enabled && i.source.can_toggle() && (!i.source.needs_admin() || ctx.elevated)
+                    })
                     .filter(|i| !self.is_microsoft(i))
                     .cloned()
                     .collect();
@@ -684,7 +803,11 @@ impl StartupManager {
                 } else {
                     let names: Vec<&str> = targets.iter().map(|t| t.name.as_str()).collect();
                     self.confirm.ask(
-                        format!("Disable these {} startup items that are not signed by Microsoft?\n\n{}", targets.len(), names.join("\n")),
+                        format!(
+                            "Disable these {} startup items that are not signed by Microsoft?\n\n{}",
+                            targets.len(),
+                            names.join("\n")
+                        ),
                         Ask::DisableAll(targets),
                     );
                 }
@@ -706,7 +829,9 @@ impl StartupManager {
                 self.message = Some(if ctx.config.dry_run {
                     Ok(ctx.i18n.tr("common-dry-run-skip"))
                 } else {
-                    edit_command(ctx, item, &cmd).map(|()| format!("Saved {}.", item.name)).map_err(|e| format!("{e:#}"))
+                    edit_command(ctx, item, &cmd)
+                        .map(|()| format!("Saved {}.", item.name))
+                        .map_err(|e| format!("{e:#}"))
                 });
                 self.editing = None;
                 self.items = None;
@@ -741,7 +866,15 @@ impl StartupManager {
             .column(Column::initial(60.0))
             .column(Column::remainder().clip(true))
             .header(22.0, |mut h| {
-                for t in ["Enabled", "Name", "Location", "Company", "Signature", "Running", "Command"] {
+                for t in [
+                    "Enabled",
+                    "Name",
+                    "Location",
+                    "Company",
+                    "Signature",
+                    "Running",
+                    "Command",
+                ] {
                     h.col(|ui| {
                         ui.strong(t);
                     });
@@ -751,12 +884,18 @@ impl StartupManager {
                 body.rows(22.0, items.len(), |mut row| {
                     let item = &items[row.index()];
                     let info = self.info_of(item);
-                    let is_sel = self.selected.as_ref().is_some_and(|(s, n)| *s == item.source && n == &item.name);
+                    let is_sel = self
+                        .selected
+                        .as_ref()
+                        .is_some_and(|(s, n)| *s == item.source && n == &item.name);
                     row.set_selected(is_sel);
                     let locked = item.source.needs_admin() && !ctx.elevated;
                     row.col(|ui| {
                         let mut on = item.enabled;
-                        let r = ui.add_enabled(!locked && item.source.can_toggle(), egui::Checkbox::without_text(&mut on));
+                        let r = ui.add_enabled(
+                            !locked && item.source.can_toggle(),
+                            egui::Checkbox::without_text(&mut on),
+                        );
                         if r.changed() {
                             toggle = Some((item.clone(), on));
                         }
@@ -782,9 +921,9 @@ impl StartupManager {
                         }
                     });
                     row.col(|ui| {
-                        let running = item
-                            .program()
-                            .is_some_and(|p| self.running.contains(&p.to_string_lossy().to_ascii_lowercase()));
+                        let running = item.program().is_some_and(|p| {
+                            self.running.contains(&p.to_string_lossy().to_ascii_lowercase())
+                        });
                         ui.weak(if running { "Yes" } else { "" });
                     });
                     row.col(|ui| {
@@ -822,14 +961,25 @@ impl StartupManager {
         ui.separator();
         ui.horizontal(|ui| {
             ui.label("Add for current user:");
-            ui.add(egui::TextEdit::singleline(&mut self.new_name).hint_text("Name").desired_width(140.0));
-            ui.add(egui::TextEdit::singleline(&mut self.new_command).hint_text(r#""C:\Path\App.exe" --args"#).desired_width(320.0));
+            ui.add(
+                egui::TextEdit::singleline(&mut self.new_name)
+                    .hint_text("Name")
+                    .desired_width(140.0),
+            );
+            ui.add(
+                egui::TextEdit::singleline(&mut self.new_command)
+                    .hint_text(r#""C:\Path\App.exe" --args"#)
+                    .desired_width(320.0),
+            );
             if ui.button("Browse…").clicked()
                 && let Some(p) = rfd_pick_exe()
             {
                 self.new_command = format!("\"{}\"", p.display());
                 if self.new_name.is_empty() {
-                    self.new_name = p.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+                    self.new_name = p
+                        .file_stem()
+                        .map(|s| s.to_string_lossy().into_owned())
+                        .unwrap_or_default();
                 }
             }
             if ui.button("Add").clicked() {
@@ -870,25 +1020,30 @@ impl StartupManager {
         }
         let list = self.advanced.get_or_insert_with(advanced_locations).clone();
         let warn = ui.visuals().warn_fg_color;
-        egui::Grid::new("advanced").striped(true).spacing([14.0, 4.0]).show(ui, |ui| {
-            for h in ["Location", "Name", "Value", ""] {
-                ui.strong(h);
-            }
-            ui.end_row();
-            for a in &list {
-                if a.unusual {
-                    ui.colored_label(warn, format!("{}  {}", icons::WARNING, a.location));
-                } else {
-                    ui.label(&a.location);
-                }
-                ui.label(&a.name);
-                ui.label(&a.value);
-                if ui.small_button("Registry Editor").clicked() {
-                    self.message = registry::open_in_regedit(&a.key).err().map(|e| Err(format!("{e:#}")));
+        egui::Grid::new("advanced")
+            .striped(true)
+            .spacing([14.0, 4.0])
+            .show(ui, |ui| {
+                for h in ["Location", "Name", "Value", ""] {
+                    ui.strong(h);
                 }
                 ui.end_row();
-            }
-        });
+                for a in &list {
+                    if a.unusual {
+                        ui.colored_label(warn, format!("{}  {}", icons::WARNING, a.location));
+                    } else {
+                        ui.label(&a.location);
+                    }
+                    ui.label(&a.name);
+                    ui.label(&a.value);
+                    if ui.small_button("Registry Editor").clicked() {
+                        self.message = registry::open_in_regedit(&a.key)
+                            .err()
+                            .map(|e| Err(format!("{e:#}")));
+                    }
+                    ui.end_row();
+                }
+            });
         show_message(ui, &self.message);
     }
 }
@@ -914,7 +1069,9 @@ impl Tool for StartupManager {
                 self.message = Some(if ctx.config.dry_run {
                     Ok(ctx.i18n.tr("common-dry-run-skip"))
                 } else {
-                    delete(ctx, &item).map(|()| format!("Removed {}.", item.name)).map_err(|e| format!("{e:#}"))
+                    delete(ctx, &item)
+                        .map(|()| format!("Removed {}.", item.name))
+                        .map_err(|e| format!("{e:#}"))
                 });
                 self.items = None;
             }
@@ -936,7 +1093,11 @@ impl Tool for StartupManager {
                         format!("Disabled {n} startup items not from Microsoft"),
                         UndoAction::RestoreRegValues { values: snaps },
                     );
-                    if errors.is_empty() { Ok(format!("Disabled {n} items.")) } else { Err(errors.join("; ")) }
+                    if errors.is_empty() {
+                        Ok(format!("Disabled {n} items."))
+                    } else {
+                        Err(errors.join("; "))
+                    }
                 });
                 self.items = None;
             }
@@ -953,8 +1114,16 @@ impl Tool for StartupManager {
         }
 
         ui.horizontal(|ui| {
-            ui.selectable_value(&mut self.page, Page::Items, format!("{}  Startup items", icons::ROCKET));
-            ui.selectable_value(&mut self.page, Page::Advanced, format!("{}  Advanced locations", icons::TREE_STRUCTURE));
+            ui.selectable_value(
+                &mut self.page,
+                Page::Items,
+                format!("{}  Startup items", icons::ROCKET),
+            );
+            ui.selectable_value(
+                &mut self.page,
+                Page::Advanced,
+                format!("{}  Advanced locations", icons::TREE_STRUCTURE),
+            );
         });
         ui.add_space(4.0);
         match self.page {
@@ -965,7 +1134,9 @@ impl Tool for StartupManager {
 }
 
 fn rfd_pick_exe() -> Option<PathBuf> {
-    rfd::FileDialog::new().add_filter("Programs", &["exe", "bat", "cmd", "lnk"]).pick_file()
+    rfd::FileDialog::new()
+        .add_filter("Programs", &["exe", "bat", "cmd", "lnk"])
+        .pick_file()
 }
 
 #[cfg(test)]
@@ -985,14 +1156,25 @@ mod tests {
         assert!(approved_is_enabled(Some(&on)));
         assert!(!approved_is_enabled(Some(&off)));
         assert_ne!(&off[4..], &[0u8; 8], "disabled entries carry a timestamp");
-        assert!(app_state_enabled(2) && app_state_enabled(4) && !app_state_enabled(1) && !app_state_enabled(0));
+        assert!(
+            app_state_enabled(2) && app_state_enabled(4) && !app_state_enabled(1) && !app_state_enabled(0)
+        );
     }
 
     #[test]
     fn command_parsing_and_env() {
-        assert_eq!(exe_from_command(r#""C:\Program Files\X\x.exe" -min"#).as_deref(), Some(r"C:\Program Files\X\x.exe"));
-        assert_eq!(exe_from_command(r"C:\Program Files\Y\y.EXE /background").as_deref(), Some(r"C:\Program Files\Y\y.EXE"));
-        assert_eq!(exe_from_command("rundll32 foo.dll,Bar").as_deref(), Some("rundll32"));
+        assert_eq!(
+            exe_from_command(r#""C:\Program Files\X\x.exe" -min"#).as_deref(),
+            Some(r"C:\Program Files\X\x.exe")
+        );
+        assert_eq!(
+            exe_from_command(r"C:\Program Files\Y\y.EXE /background").as_deref(),
+            Some(r"C:\Program Files\Y\y.EXE")
+        );
+        assert_eq!(
+            exe_from_command("rundll32 foo.dll,Bar").as_deref(),
+            Some("rundll32")
+        );
         assert_eq!(exe_from_command("  ").as_deref(), None);
         let windir = std::env::var("WINDIR").unwrap();
         assert_eq!(expand_env(r"%WINDIR%\x.exe"), format!(r"{windir}\x.exe"));
@@ -1004,8 +1186,14 @@ mod tests {
     fn winlogon_checks() {
         assert!(winlogon_expected("Shell", "explorer.exe"));
         assert!(!winlogon_expected("Shell", "explorer.exe, evil.exe"));
-        assert!(winlogon_expected("Userinit", r"C:\WINDOWS\system32\userinit.exe,"));
-        assert!(!winlogon_expected("Userinit", r"C:\WINDOWS\system32\userinit.exe,C:\x\bad.exe,"));
+        assert!(winlogon_expected(
+            "Userinit",
+            r"C:\WINDOWS\system32\userinit.exe,"
+        ));
+        assert!(!winlogon_expected(
+            "Userinit",
+            r"C:\WINDOWS\system32\userinit.exe,C:\x\bad.exe,"
+        ));
     }
 
     #[test]
@@ -1030,6 +1218,9 @@ mod tests {
         assert!(!approved(item.source, &item.name));
         registry::restore(&snap).unwrap();
         assert!(approved(item.source, &item.name));
-        assert_eq!(registry::read_raw(&item.source.approved_key().unwrap(), &item.name), None);
+        assert_eq!(
+            registry::read_raw(&item.source.approved_key().unwrap(), &item.name),
+            None
+        );
     }
 }

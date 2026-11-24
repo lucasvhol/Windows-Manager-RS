@@ -85,6 +85,32 @@ pub fn shell_open(target: &str, args: &str) -> Result<()> {
     Ok(())
 }
 
+/// Shows Explorer's Properties dialog for a file or folder (non-blocking).
+pub fn show_properties(path: &Path) -> Result<()> {
+    ensure_com();
+    let ok = unsafe {
+        windows::Win32::UI::Shell::SHObjectProperties(
+            None,
+            windows::Win32::UI::Shell::SHOP_FILEPATH,
+            &HSTRING::from(path.as_os_str()),
+            windows::core::PCWSTR::null(),
+        )
+    };
+    if !ok.as_bool() {
+        anyhow::bail!("could not show the properties of {}", path.display());
+    }
+    Ok(())
+}
+
+/// Selects `path` in a new Explorer window.
+pub fn reveal_in_explorer(path: &Path) {
+    use std::os::windows::process::CommandExt;
+    // Explorer wants `/select,"C:\a b\c"`; std's quoting of the whole argument breaks it.
+    let _ = std::process::Command::new("explorer")
+        .raw_arg(format!("/select,\"{}\"", path.display()))
+        .spawn();
+}
+
 /// What a shortcut should launch.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ShortcutSpec {

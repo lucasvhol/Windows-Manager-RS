@@ -5396,6 +5396,7 @@ dependencies = [
  "chrono",
  "egui_extras",
  "rfd",
+ "serde_json",
  "sysinfo",
  "tempfile",
  "tracing",

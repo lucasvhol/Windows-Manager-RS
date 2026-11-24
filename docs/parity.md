@@ -55,8 +55,8 @@ This file tracks parity between **Win Manager RS** and the features of a commerc
 |---|---|---|---|
 | System Speed | ✅ (35 settings) | NTFS cache, kernel paging, Prefetcher, power throttling, Fast Startup, hibernation, power plans (Ultimate Performance, restore defaults), Group Policy network wait, disk-check countdown, verbose status, Last Known Good, boot file placement, crash dump type and options, TRIM, Automatic Maintenance, Delivery Optimization, GPU scheduling, game recording. Power-plan editor goes to D | C |
 | Boot Configuration | 🟡 | Add entry; boot order; back up and restore boot data; Safe Mode with Command Prompt; disable driver signing; restart into advanced startup | D |
-| Startup Manager | 🟡 | Location tree (startup folders and Run keys per scope and bitness, Windows apps, advanced locations); move between locations; edit; online lookup; batch actions; signature and running columns; details pane; block all auto-start | D |
-| Service Manager | 🟡 | Drivers tab; Non-Microsoft grouping; log-on and command-line columns; file properties; delete (also the file); back up and restore startup types; Optimize questionnaire; restore defaults | D |
+| Startup Manager | ✅ | Run/RunOnce keys (per user and machine), Startup folders and Windows apps with Task Manager-compatible enable flags; move, edit, delete (journaled), open location, online lookup, batch "disable others"; company, signature and running columns; advanced auto-start locations (read-only); block Run keys per scope | D |
+| Service Manager | ✅ | Services and Drivers tabs; Non-Microsoft filter (catalog-aware signatures, svchost ServiceDll resolved); log-on, company and command-line details; file properties, open folder, online lookup; delete third-party services (registry backed up, optional file to Recycle Bin); back up / restore startup types (JSON, plus a first-run snapshot); restore Windows defaults for common services; Optimize questionnaire. Drivers are read-only | D |
 | Task Scheduler Manager | 🟡 | Tree by folder; create task with all trigger types; Optimize Task questionnaire; description, author and trigger columns | D |
 
 ## Cleaner
