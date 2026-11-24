@@ -35,6 +35,8 @@ pub enum UndoAction {
     Sequence { steps: Vec<UndoAction> },
     /// Re-apply a file's permissions saved as SDDL (see [`crate::acl`]).
     RestoreAcl { path: PathBuf, sddl: String },
+    /// Re-apply a registry key's permissions saved as SDDL (`HKCU…` style key).
+    RestoreRegAcl { key: String, sddl: String },
     /// Run a command to revert (e.g. `sc config … start= auto`).
     RunCommand { program: String, args: Vec<String> },
     /// The change cannot be reverted automatically (recorded for the audit trail only).
@@ -246,6 +248,7 @@ fn execute_undo(action: &UndoAction) -> Result<()> {
             }
         }
         UndoAction::RestoreAcl { path, sddl } => crate::acl::set_dacl_sddl(path, sddl)?,
+        UndoAction::RestoreRegAcl { key, sddl } => crate::acl::set_reg_dacl_sddl(key, sddl)?,
         UndoAction::Sequence { steps } => {
             for step in steps {
                 execute_undo(step)?;

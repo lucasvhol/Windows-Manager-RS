@@ -276,6 +276,7 @@ impl Shell {
                 }
             });
         });
+        to_open.extend(wm_core::ui::take_open_requests(&ctx));
         for id in to_open {
             self.open_tool(&ctx, &id);
         }

@@ -319,8 +319,37 @@ pub fn drive_picker(ui: &mut Ui, selected: &mut Vec<char>) -> bool {
     changed
 }
 
+fn open_requests_id() -> Id {
+    Id::unique("wm-open-tool-requests")
+}
+
+/// Asks the main window to open another tool (by id) after this frame.
+pub fn request_open_tool(ctx: &egui::Context, id: &str) {
+    ctx.data_mut(|d| {
+        d.get_temp_mut_or_default::<Vec<String>>(open_requests_id())
+            .push(id.to_owned())
+    });
+}
+
+/// Tool ids requested with [`request_open_tool`] since the last call (used by the shell).
+pub fn take_open_requests(ctx: &egui::Context) -> Vec<String> {
+    ctx.data_mut(|d| std::mem::take(d.get_temp_mut_or_default::<Vec<String>>(open_requests_id())))
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn open_requests_queue() {
+        let ctx = crate::egui::Context::default();
+        super::request_open_tool(&ctx, "repair");
+        super::request_open_tool(&ctx, "fixer");
+        assert_eq!(
+            super::take_open_requests(&ctx),
+            vec!["repair".to_owned(), "fixer".to_owned()]
+        );
+        assert!(super::take_open_requests(&ctx).is_empty());
+    }
+
     use super::*;
 
     #[test]

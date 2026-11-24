@@ -8,8 +8,9 @@ use windows::Win32::System::Com::{
     IPersistFile, STGM_READ,
 };
 use windows::Win32::UI::Shell::{
-    FOLDERID_Desktop, FOLDERID_Documents, FOLDERID_PublicDesktop, IShellLinkW, KF_FLAG_DEFAULT,
-    SHGetKnownFolderPath, ShellExecuteW, ShellLink,
+    FOLDERID_Desktop, FOLDERID_Documents, FOLDERID_Downloads, FOLDERID_Music, FOLDERID_Pictures,
+    FOLDERID_PublicDesktop, FOLDERID_Videos, IShellLinkW, KF_FLAG_DEFAULT, SHGetKnownFolderPath,
+    ShellExecuteW, ShellLink,
 };
 use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
 use windows::core::{GUID, HSTRING, Interface};
@@ -19,6 +20,10 @@ pub enum KnownFolder {
     Desktop,
     PublicDesktop,
     Documents,
+    Downloads,
+    Music,
+    Pictures,
+    Videos,
 }
 
 pub fn known_folder(folder: KnownFolder) -> Result<PathBuf> {
@@ -26,6 +31,10 @@ pub fn known_folder(folder: KnownFolder) -> Result<PathBuf> {
         KnownFolder::Desktop => FOLDERID_Desktop,
         KnownFolder::PublicDesktop => FOLDERID_PublicDesktop,
         KnownFolder::Documents => FOLDERID_Documents,
+        KnownFolder::Downloads => FOLDERID_Downloads,
+        KnownFolder::Music => FOLDERID_Music,
+        KnownFolder::Pictures => FOLDERID_Pictures,
+        KnownFolder::Videos => FOLDERID_Videos,
     };
     known_folder_by_id(id)
 }
