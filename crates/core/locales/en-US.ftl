@@ -83,6 +83,8 @@ regclean-title = Registry Cleaner
 ## Customization tools
 visual-title = Visual Customizer
 customsystem-title = Custom System
+appsettings-title = Windows App Settings
+systemnetwork-title = System Network
 explorertweaks-title = File Explorer Tweaker
 thispc-title = This PC Manager
 navpane-title = Navigation Pane
@@ -95,6 +97,8 @@ jumplist-title = JumpList Quick Launcher
 
 ## Security tools
 privacy-title = Privacy Protector
+systemsecurity-title = System Security
+othersecurity-title = Other Security
 lockdown-title = Settings Security
 filesecurity-title = File Security
 securitylock-title = Security Lock
@@ -152,6 +156,8 @@ junk-desc = Remove temporary files, caches, logs and other junk.
 duplicates-desc = Find identical files and reclaim the space they use.
 regclean-desc = Remove registry entries that point to things that no longer exist.
 customsystem-desc = Desktop, taskbar, Start, notifications, sign-in and keyboard options.
+appsettings-desc = Where apps install from, background apps, suggested apps and Windows' app pages.
+systemnetwork-desc = Remote Desktop, sharing, name resolution, internet time and network resets.
 explorertweaks-desc = Adjust how File Explorer looks and behaves.
 navpane-desc = Choose what appears in File Explorer's navigation pane.
 thispc-desc = Choose which folders appear in This PC.
@@ -162,6 +168,8 @@ runshortcuts-desc = Short names for the Run dialog (Win+R).
 contextmenu-desc = Clean up and extend right-click menus.
 startmenu-desc = Manage Start menu shortcuts and options.
 winx-desc = Edit the Win+X (right-click on Start) menu.
+systemsecurity-desc = User Account Control, sign-in screen, restrictions, components, Group Policy and firewall.
+othersecurity-desc = App permissions, Windows Update, OneDrive, registry backup and shutdown tracking.
 lockdown-desc = Restrict what this account can change, and harden Windows.
 filesecurity-desc = File and folder ownership and permissions.
 privacy-desc = Limit tracking and clear activity history.

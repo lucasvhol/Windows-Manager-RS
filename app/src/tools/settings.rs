@@ -20,12 +20,16 @@ pub fn all_tweaks() -> Vec<Tweak> {
         wm_tools_optimizer::speed::DEFINITIONS,
         wm_tools_security::PRIVACY_TWEAKS,
         wm_tools_security::LOCKDOWN_TWEAKS,
+        wm_tools_security::SYSTEM_SECURITY_TWEAKS,
+        wm_tools_security::OTHER_SECURITY_TWEAKS,
         wm_tools_custom::VISUAL_TWEAKS,
         wm_tools_custom::EXPLORER_TWEAKS,
         wm_tools_custom::START_TWEAKS,
         wm_tools_custom::THISPC_TWEAKS,
         wm_tools_custom::NAVPANE_TWEAKS,
         wm_tools_custom::CUSTOM_TWEAKS,
+        wm_tools_custom::APP_SETTINGS_TWEAKS,
+        wm_tools_network::NETWORK_TWEAKS,
     ]
     .iter()
     .flat_map(|t| tweaks::parse(t).unwrap_or_default())
@@ -337,5 +341,45 @@ mod tests {
         let n = ids.len();
         ids.dedup();
         assert_eq!(ids.len(), n, "duplicate tweak ids across tools");
+    }
+}
+
+#[cfg(test)]
+mod sandbox_tests {
+    use wm_core::{
+        registry,
+        safety::ChangeJournal,
+        tweaks::{Kind, State},
+    };
+
+    /// Applies and reverts every switch in the app against a scratch HKCU key, checking
+    /// that each one reads back as applied and that turning it off restores the off state.
+    #[test]
+    fn every_switch_applies_and_reverts_in_a_sandbox() {
+        let sandbox = format!(
+            r"HKCU\Software\win-manager-rs-test-sandbox-{}",
+            std::process::id()
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let journal = ChangeJournal::open(&dir.path().join("j.json"), &dir.path().join("b")).unwrap();
+        let mut checked = 0;
+        for mut t in super::all_tweaks().into_iter().filter(|t| t.kind == Kind::Toggle) {
+            for s in &mut t.settings {
+                // HKLM\X, HKCU\X, HKU\.DEFAULT\X  ->  <sandbox>\HKLM\X …
+                let (root, rest) = s.key.split_once('\\').unwrap();
+                s.key = format!(r"{sandbox}\{root}\{rest}");
+            }
+            // Start from the documented off state.
+            t.revert(&journal, "test").unwrap();
+            assert_eq!(t.state(), State::NotApplied, "{}: off state", t.id);
+            t.apply(&journal, "test").unwrap();
+            assert_eq!(t.state(), State::Applied, "{}: on state", t.id);
+            t.revert(&journal, "test").unwrap();
+            assert_eq!(t.state(), State::NotApplied, "{}: back off", t.id);
+            checked += 1;
+        }
+        let (root, sub) = registry::split_path(&sandbox).unwrap();
+        let _ = root.delete_subkey_all(sub);
+        assert!(checked > 150, "{checked}");
     }
 }

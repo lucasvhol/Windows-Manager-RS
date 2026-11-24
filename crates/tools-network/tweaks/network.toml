@@ -1,0 +1,234 @@
+# System Network: Remote Desktop and Assistance, sharing, name resolution, time
+# synchronisation and network resets. `off` is the Windows 11 default
+# ("delete" = value absent). Firewall groups are addressed by their resource id
+# ('@FirewallAPI.dll,-N'), which is the same in every Windows language.
+
+# --- Remote Desktop --------------------------------------------------------
+
+[[tweak]]
+id = "rdp_allow"
+title = "Allow Remote Desktop connections to this PC"
+description = "Lets other PCs connect with Remote Desktop (Pro, Enterprise and Education). Also enable the firewall rule below."
+group = "Remote Desktop"
+[[tweak.set]]
+key = 'HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server'
+name = "fDenyTSConnections"
+on = { dword = 0 }
+off = { dword = 1 }
+
+[[tweak]]
+id = "rdp_firewall"
+title = "Open the firewall for Remote Desktop"
+description = "Enables Windows' built-in Remote Desktop firewall rules."
+group = "Remote Desktop"
+kind = "action"
+admin = true
+action = { program = "powershell", args = ["-NoProfile", "-Command", "Enable-NetFirewallRule -Group '@FirewallAPI.dll,-28752'"], undo = ["powershell", "-NoProfile", "-Command", "Disable-NetFirewallRule -Group '@FirewallAPI.dll,-28752'"] }
+
+[[tweak]]
+id = "rdp_port"
+title = "Remote Desktop port"
+description = "The TCP port Remote Desktop listens on. If you change it, allow the new port in the firewall and connect with pc-name:port."
+group = "Remote Desktop"
+effect = "restart"
+kind = "number"
+target = { key = 'HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp', name = "PortNumber" }
+number = { min = 1, max = 65535, default = 3389 }
+
+[[tweak]]
+id = "rdp_no_nla"
+title = "Allow connections without Network Level Authentication"
+description = "Lets older Remote Desktop clients connect before signing in."
+group = "Remote Desktop"
+warning = "Exposes the sign-in screen to anyone who can reach the PC, which makes attacks easier."
+[[tweak.set]]
+key = 'HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp'
+name = "UserAuthentication"
+on = { dword = 0 }
+off = { dword = 1 }
+
+[[tweak]]
+id = "rdp_idle_limit"
+title = "End idle Remote Desktop sessions after"
+description = "Disconnects a session nobody has used for this long."
+group = "Remote Desktop"
+kind = "choice"
+target = { key = 'HKLM\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services', name = "MaxIdleTime" }
+[[tweak.option]]
+label = "Never (default)"
+value = "delete"
+[[tweak.option]]
+label = "15 minutes"
+value = { dword = 900000 }
+[[tweak.option]]
+label = "1 hour"
+value = { dword = 3600000 }
+[[tweak.option]]
+label = "8 hours"
+value = { dword = 28800000 }
+
+[[tweak]]
+id = "rdp_disconnected_limit"
+title = "Sign out disconnected sessions after"
+description = "Ends sessions that were disconnected but left running, freeing their memory."
+group = "Remote Desktop"
+kind = "choice"
+target = { key = 'HKLM\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services', name = "MaxDisconnectionTime" }
+[[tweak.option]]
+label = "Never (default)"
+value = "delete"
+[[tweak.option]]
+label = "1 minute"
+value = { dword = 60000 }
+[[tweak.option]]
+label = "1 hour"
+value = { dword = 3600000 }
+[[tweak.option]]
+label = "1 day"
+value = { dword = 86400000 }
+
+[[tweak]]
+id = "remote_assistance_off"
+title = "Turn off Remote Assistance"
+description = "Nobody can be invited to view or control this PC through Remote Assistance."
+group = "Remote Desktop"
+[[tweak.set]]
+key = 'HKLM\SYSTEM\CurrentControlSet\Control\Remote Assistance'
+name = "fAllowToGetHelp"
+on = { dword = 0 }
+off = { dword = 1 }
+
+# --- Sharing ---------------------------------------------------------------
+
+[[tweak]]
+id = "network_discovery_on"
+title = "Turn on network discovery (private networks)"
+description = "Lets this PC see, and be seen by, other PCs on private networks."
+group = "Sharing"
+kind = "action"
+admin = true
+action = { program = "powershell", args = ["-NoProfile", "-Command", "Get-NetFirewallRule -Group '@FirewallAPI.dll,-32752' | Where-Object { $_.Profile -match 'Private' } | Enable-NetFirewallRule"], undo = ["powershell", "-NoProfile", "-Command", "Get-NetFirewallRule -Group '@FirewallAPI.dll,-32752' | Where-Object { $_.Profile -match 'Private' } | Disable-NetFirewallRule"] }
+
+[[tweak]]
+id = "file_sharing_on"
+title = "Turn on file and printer sharing (private networks)"
+description = "Lets other PCs on private networks open the folders and printers you share."
+group = "Sharing"
+kind = "action"
+admin = true
+action = { program = "powershell", args = ["-NoProfile", "-Command", "Get-NetFirewallRule -Group '@FirewallAPI.dll,-28502' | Where-Object { $_.Profile -match 'Private' } | Enable-NetFirewallRule"], undo = ["powershell", "-NoProfile", "-Command", "Get-NetFirewallRule -Group '@FirewallAPI.dll,-28502' | Where-Object { $_.Profile -match 'Private' } | Disable-NetFirewallRule"] }
+
+[[tweak]]
+id = "no_admin_shares"
+title = "Don't create administrative shares"
+description = "Stops Windows sharing C$, ADMIN$ and the other hidden drive shares. Some remote management tools need them."
+group = "Sharing"
+effect = "restart"
+[[tweak.set]]
+key = 'HKLM\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters'
+name = "AutoShareWks"
+on = { dword = 0 }
+off = "delete"
+
+[[tweak]]
+id = "restrict_anonymous"
+title = "Block anonymous listing of shares and accounts"
+description = "Visitors who are not signed in can no longer list this PC's shared folders."
+group = "Sharing"
+effect = "restart"
+[[tweak.set]]
+key = 'HKLM\SYSTEM\CurrentControlSet\Control\Lsa'
+name = "RestrictAnonymous"
+on = { dword = 1 }
+off = { dword = 0 }
+
+[[tweak]]
+id = "open_shared_folders"
+title = "Manage shared folders…"
+description = "Opens Windows' Shared Folders console to view, stop or add shares."
+group = "Sharing"
+kind = "action"
+action = { program = "mmc.exe", args = ["fsmgmt.msc"], open = true }
+
+# --- Name resolution -------------------------------------------------------
+
+[[tweak]]
+id = "llmnr_off"
+title = "Turn off multicast name resolution (LLMNR)"
+description = "Stops answering and sending local name broadcasts, a common target on public networks. DNS keeps working."
+group = "Name resolution"
+[[tweak.set]]
+key = 'HKLM\SOFTWARE\Policies\Microsoft\Windows NT\DNSClient'
+name = "EnableMulticast"
+on = { dword = 0 }
+off = "delete"
+
+# --- Internet time ---------------------------------------------------------
+
+[[tweak]]
+id = "time_server"
+title = "Internet time server"
+description = "Where Windows gets the time from. Applies after the Windows Time service restarts or the PC restarts."
+group = "Internet time"
+effect = "restart"
+kind = "choice"
+target = { key = 'HKLM\SYSTEM\CurrentControlSet\Services\W32Time\Parameters', name = "NtpServer" }
+[[tweak.option]]
+label = "time.windows.com (default)"
+value = { sz = "time.windows.com,0x9" }
+[[tweak.option]]
+label = "pool.ntp.org"
+value = { sz = "pool.ntp.org,0x9" }
+[[tweak.option]]
+label = "time.cloudflare.com"
+value = { sz = "time.cloudflare.com,0x9" }
+[[tweak.option]]
+label = "time.google.com"
+value = { sz = "time.google.com,0x9" }
+
+[[tweak]]
+id = "time_interval"
+title = "Synchronise the clock every"
+description = "Seconds between time synchronisations (default one week)."
+group = "Internet time"
+effect = "restart"
+kind = "number"
+target = { key = 'HKLM\SYSTEM\CurrentControlSet\Services\W32Time\TimeProviders\NtpClient', name = "SpecialPollInterval" }
+number = { min = 60, max = 2592000, default = 604800, unit = "s" }
+
+[[tweak]]
+id = "time_sync_now"
+title = "Synchronise the clock now"
+description = "Asks the Windows Time service to synchronise immediately."
+group = "Internet time"
+kind = "action"
+admin = true
+action = { program = "w32tm", args = ["/resync", "/force"] }
+
+# --- Reset -----------------------------------------------------------------
+
+[[tweak]]
+id = "reset_winsock"
+title = "Reset the Winsock catalogue"
+description = "Fixes connection problems caused by broken network add-ons (LSPs). Restart afterwards."
+group = "Reset"
+kind = "action"
+admin = true
+action = { program = "netsh", args = ["winsock", "reset"], confirm = "Reset the Winsock catalogue? Some VPN or security software may need reinstalling. Restart afterwards." }
+
+[[tweak]]
+id = "reset_tcpip"
+title = "Reset TCP/IP settings"
+description = "Restores the TCP/IP stack's settings to defaults. Static IP addresses are kept. Restart afterwards."
+group = "Reset"
+kind = "action"
+admin = true
+action = { program = "netsh", args = ["int", "ip", "reset"], confirm = "Reset TCP/IP settings to their defaults? Restart afterwards." }
+
+[[tweak]]
+id = "network_reset"
+title = "Network reset…"
+description = "Opens Windows' network reset, which removes and reinstalls every network adapter."
+group = "Reset"
+kind = "action"
+action = { program = "explorer.exe", args = ["ms-settings:network-advancedsettings"], open = true }

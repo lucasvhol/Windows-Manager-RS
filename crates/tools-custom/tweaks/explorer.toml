@@ -112,3 +112,219 @@ key = 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer'
 name = "ShowFrequent"
 on = { dword = 0 }
 off = "delete"
+
+[[tweak]]
+id = "separate_process"
+title = "Open folder windows in a separate process"
+description = "A crash in one folder window no longer takes down the taskbar and desktop. Uses a little more memory."
+group = "Windows and views"
+effect = "explorer"
+[[tweak.set]]
+key = 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced'
+name = "SeparateProcess"
+on = { dword = 1 }
+off = { dword = 0 }
+
+[[tweak]]
+id = "restore_folder_windows"
+title = "Reopen folder windows after signing in"
+description = "Folder windows that were open when you signed out open again."
+group = "Windows and views"
+[[tweak.set]]
+key = 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced'
+name = "PersistBrowsers"
+on = { dword = 1 }
+off = "delete"
+
+[[tweak]]
+id = "hide_status_bar"
+title = "Hide the status bar"
+description = "Removes the item count and view buttons at the bottom of File Explorer."
+group = "Windows and views"
+effect = "explorer"
+[[tweak.set]]
+key = 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced'
+name = "ShowStatusBar"
+on = { dword = 0 }
+off = { dword = 1 }
+
+[[tweak]]
+id = "no_info_tips"
+title = "No pop-up descriptions for files and folders"
+description = "Hovering an item no longer shows a tooltip with its details."
+group = "Windows and views"
+[[tweak.set]]
+key = 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced'
+name = "ShowInfoTip"
+on = { dword = 0 }
+off = { dword = 1 }
+
+[[tweak]]
+id = "keep_path_case"
+title = "Show folder names exactly as stored"
+description = "Stops File Explorer changing the capitalisation of all-caps names (e.g. shows 'DOCS' instead of 'Docs')."
+group = "Windows and views"
+[[tweak.set]]
+key = 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced'
+name = "DontPrettyPath"
+on = { dword = 1 }
+off = { dword = 0 }
+
+[[tweak]]
+id = "multi_open_limit"
+title = "Open more than 15 files at once"
+description = "How many selected files you can open with Enter before the Open command disappears from the menu."
+group = "Windows and views"
+kind = "number"
+target = { key = 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer', name = "MultipleInvokePromptMinimum" }
+number = { min = 1, max = 1000, default = 15, unit = "files" }
+
+[[tweak]]
+id = "icons_only"
+title = "Always show icons, never thumbnails"
+description = "Folders with many pictures or videos open faster because no previews are generated."
+group = "Icons and thumbnails"
+[[tweak.set]]
+key = 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced'
+name = "IconsOnly"
+on = { dword = 1 }
+off = { dword = 0 }
+
+[[tweak]]
+id = "no_type_overlay"
+title = "Don't put the app icon on thumbnails"
+description = "Thumbnails no longer carry the small icon of the app that opens the file."
+group = "Icons and thumbnails"
+[[tweak.set]]
+key = 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced'
+name = "ShowTypeOverlay"
+on = { dword = 0 }
+off = { dword = 1 }
+
+[[tweak]]
+id = "no_network_thumbnails"
+title = "No thumbnails on network folders"
+description = "Network folders list faster because no previews are downloaded."
+group = "Icons and thumbnails"
+[[tweak.set]]
+key = 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced'
+name = "DisableThumbnailsOnNetworkFolders"
+on = { dword = 1 }
+off = "delete"
+
+[[tweak]]
+id = "no_preview_handlers"
+title = "No file contents in the preview pane"
+description = "The preview pane only shows details, never the file itself."
+group = "Icons and thumbnails"
+[[tweak.set]]
+key = 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced'
+name = "ShowPreviewHandlers"
+on = { dword = 0 }
+off = "delete"
+
+[[tweak]]
+id = "no_label_shadow"
+title = "No shadow under desktop icon labels"
+description = "Desktop icon names are drawn without a drop shadow."
+group = "Icons and thumbnails"
+effect = "explorer"
+[[tweak.set]]
+key = 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced'
+name = "ListviewShadow"
+on = { dword = 0 }
+off = { dword = 1 }
+
+[[tweak]]
+id = "compressed_color"
+title = "Show encrypted and compressed files in colour"
+description = "NTFS-compressed items are shown in blue and encrypted ones in green."
+group = "Icons and thumbnails"
+[[tweak.set]]
+key = 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced'
+name = "ShowEncryptCompressedColor"
+on = { dword = 1 }
+off = "delete"
+
+[[tweak]]
+id = "show_empty_drives"
+title = "Show empty drives"
+description = "Card readers and optical drives without media still appear in This PC."
+group = "Drives"
+[[tweak.set]]
+key = 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced'
+name = "HideDrivesWithNoMedia"
+on = { dword = 0 }
+off = "delete"
+
+[[tweak]]
+id = "drive_letter_position"
+title = "Drive letters"
+description = "Where This PC shows each drive's letter."
+group = "Drives"
+effect = "explorer"
+kind = "choice"
+target = { key = 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer', name = "ShowDriveLettersFirst" }
+[[tweak.option]]
+label = "After the name (default)"
+value = "delete"
+[[tweak.option]]
+label = "Before the name"
+value = { dword = 4 }
+[[tweak.option]]
+label = "Before network drive names only"
+value = { dword = 1 }
+[[tweak.option]]
+label = "Hidden"
+value = { dword = 2 }
+
+[[tweak]]
+id = "no_sync_ads"
+title = "No sync-provider notifications"
+description = "Hides OneDrive and other sync-provider offers shown inside File Explorer."
+group = "Privacy"
+effect = "explorer"
+[[tweak.set]]
+key = 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced'
+name = "ShowSyncProviderNotifications"
+on = { dword = 0 }
+off = "delete"
+
+[[tweak]]
+id = "no_sharing_wizard"
+title = "Turn off the Sharing Wizard"
+description = "The Share tab in Properties shows the full permission editor instead of the simplified wizard."
+group = "Behaviour"
+[[tweak.set]]
+key = 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced'
+name = "SharingWizardOn"
+on = { dword = 0 }
+off = "delete"
+
+[[tweak]]
+id = "show_merge_conflicts"
+title = "Ask before merging folders with the same name"
+description = "Copying a folder onto one with the same name asks first instead of merging silently."
+group = "Behaviour"
+[[tweak.set]]
+key = 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced'
+name = "HideMergeConflicts"
+on = { dword = 0 }
+off = "delete"
+
+[[tweak]]
+id = "folder_view_memory"
+title = "Folders whose view settings are remembered"
+description = "How many folders keep their own view, sort and column settings before the oldest are forgotten."
+group = "Folder views"
+kind = "number"
+target = { key = 'HKCU\Software\Classes\Local Settings\Software\Microsoft\Windows\Shell', name = "BagMRU Size" }
+number = { min = 1000, max = 20000, default = 5000, unit = "folders" }
+
+[[tweak]]
+id = "reset_folder_views"
+title = "Reset all folder views"
+description = "Forgets the view, sort and column settings of every folder, so each uses its default again. Explorer restarts."
+group = "Folder views"
+kind = "action"
+action = { program = "powershell", args = ["-NoProfile", "-Command", '''Remove-Item -Recurse -Force -ErrorAction SilentlyContinue -LiteralPath 'HKCU:\Software\Classes\Local Settings\Software\Microsoft\Windows\Shell\Bags','HKCU:\Software\Classes\Local Settings\Software\Microsoft\Windows\Shell\BagMRU'; Stop-Process -Name explorer -Force'''], confirm = "Forget the view settings of every folder and restart Explorer? This cannot be undone." }

@@ -1,0 +1,330 @@
+# Other Security: app permissions, Windows Update, OneDrive, registry backup and
+# shutdown tracking. `off` is the Windows 11 default ("delete" = value absent).
+
+[[tweak]]
+id = "deny_camera"
+title = "Block apps from using the camera"
+description = "Apps can no longer use the camera for this account."
+group = "App permissions"
+[[tweak.set]]
+key = 'HKCU\Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\webcam'
+name = "Value"
+on = { sz = "Deny" }
+off = { sz = "Allow" }
+
+[[tweak]]
+id = "deny_microphone"
+title = "Block apps from using the microphone"
+description = "Apps can no longer record sound for this account."
+group = "App permissions"
+[[tweak.set]]
+key = 'HKCU\Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\microphone'
+name = "Value"
+on = { sz = "Deny" }
+off = { sz = "Allow" }
+
+[[tweak]]
+id = "deny_location"
+title = "Block apps from using your location"
+description = "Apps can no longer read this PC's location for this account."
+group = "App permissions"
+[[tweak.set]]
+key = 'HKCU\Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\location'
+name = "Value"
+on = { sz = "Deny" }
+off = { sz = "Allow" }
+
+[[tweak]]
+id = "deny_contacts"
+title = "Block apps from reading contacts"
+description = "Apps can no longer read your contact list."
+group = "App permissions"
+[[tweak.set]]
+key = 'HKCU\Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\contacts'
+name = "Value"
+on = { sz = "Deny" }
+off = { sz = "Allow" }
+
+[[tweak]]
+id = "deny_calendar"
+title = "Block apps from reading your calendar"
+description = "Apps can no longer read your appointments."
+group = "App permissions"
+[[tweak.set]]
+key = 'HKCU\Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\appointments'
+name = "Value"
+on = { sz = "Deny" }
+off = { sz = "Allow" }
+
+[[tweak]]
+id = "deny_email"
+title = "Block apps from reading email"
+description = "Apps can no longer read your email."
+group = "App permissions"
+[[tweak.set]]
+key = 'HKCU\Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\email'
+name = "Value"
+on = { sz = "Deny" }
+off = { sz = "Allow" }
+
+[[tweak]]
+id = "deny_phone_calls"
+title = "Block apps from making phone calls"
+description = "Apps can no longer place calls through a linked phone."
+group = "App permissions"
+[[tweak.set]]
+key = 'HKCU\Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\phoneCall'
+name = "Value"
+on = { sz = "Deny" }
+off = { sz = "Allow" }
+
+[[tweak]]
+id = "deny_call_history"
+title = "Block apps from reading call history"
+description = "Apps can no longer read the call history of a linked phone."
+group = "App permissions"
+[[tweak.set]]
+key = 'HKCU\Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\phoneCallHistory'
+name = "Value"
+on = { sz = "Deny" }
+off = { sz = "Allow" }
+
+[[tweak]]
+id = "deny_messaging"
+title = "Block apps from reading messages"
+description = "Apps can no longer read or send text messages."
+group = "App permissions"
+[[tweak.set]]
+key = 'HKCU\Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\chat'
+name = "Value"
+on = { sz = "Deny" }
+off = { sz = "Allow" }
+
+[[tweak]]
+id = "deny_account_info"
+title = "Block apps from reading your account information"
+description = "Apps can no longer read your name, picture and account details."
+group = "App permissions"
+[[tweak.set]]
+key = 'HKCU\Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\userAccountInformation'
+name = "Value"
+on = { sz = "Deny" }
+off = { sz = "Allow" }
+
+[[tweak]]
+id = "deny_notifications_access"
+title = "Block apps from reading notifications"
+description = "Apps can no longer read the notifications you receive."
+group = "App permissions"
+[[tweak.set]]
+key = 'HKCU\Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\userNotificationListener'
+name = "Value"
+on = { sz = "Deny" }
+off = { sz = "Allow" }
+
+[[tweak]]
+id = "deny_tasks"
+title = "Block apps from reading tasks"
+description = "Apps can no longer read your task lists."
+group = "App permissions"
+[[tweak.set]]
+key = 'HKCU\Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\userDataTasks'
+name = "Value"
+on = { sz = "Deny" }
+off = { sz = "Allow" }
+
+[[tweak]]
+id = "deny_radios"
+title = "Block apps from controlling radios"
+description = "Apps can no longer turn Bluetooth or Wi-Fi on or off."
+group = "App permissions"
+[[tweak.set]]
+key = 'HKCU\Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\radios'
+name = "Value"
+on = { sz = "Deny" }
+off = { sz = "Allow" }
+
+[[tweak]]
+id = "deny_bluetooth_sync"
+title = "Block apps from syncing with unpaired devices"
+description = "Apps can no longer exchange data with nearby devices that are not paired."
+group = "App permissions"
+[[tweak.set]]
+key = 'HKCU\Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\bluetoothSync'
+name = "Value"
+on = { sz = "Deny" }
+off = { sz = "Allow" }
+
+[[tweak]]
+id = "deny_app_diagnostics"
+title = "Block apps from reading diagnostics of other apps"
+description = "Apps can no longer list the other apps you run."
+group = "App permissions"
+[[tweak.set]]
+key = 'HKCU\Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\appDiagnostics'
+name = "Value"
+on = { sz = "Deny" }
+off = { sz = "Allow" }
+
+[[tweak]]
+id = "deny_documents"
+title = "Block apps from your Documents folder"
+description = "Store apps can no longer read Documents."
+group = "App permissions"
+[[tweak.set]]
+key = 'HKCU\Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\documentsLibrary'
+name = "Value"
+on = { sz = "Deny" }
+off = { sz = "Allow" }
+
+[[tweak]]
+id = "deny_pictures"
+title = "Block apps from your Pictures folder"
+description = "Store apps can no longer read Pictures."
+group = "App permissions"
+[[tweak.set]]
+key = 'HKCU\Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\picturesLibrary'
+name = "Value"
+on = { sz = "Deny" }
+off = { sz = "Allow" }
+
+[[tweak]]
+id = "deny_videos"
+title = "Block apps from your Videos folder"
+description = "Store apps can no longer read Videos."
+group = "App permissions"
+[[tweak.set]]
+key = 'HKCU\Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\videosLibrary'
+name = "Value"
+on = { sz = "Deny" }
+off = { sz = "Allow" }
+
+[[tweak]]
+id = "deny_music"
+title = "Block apps from your Music folder"
+description = "Store apps can no longer read Music."
+group = "App permissions"
+[[tweak.set]]
+key = 'HKCU\Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\musicLibrary'
+name = "Value"
+on = { sz = "Deny" }
+off = { sz = "Allow" }
+
+[[tweak]]
+id = "deny_file_system"
+title = "Block apps from the whole file system"
+description = "Store apps that ask for access to all your files no longer get it."
+group = "App permissions"
+[[tweak.set]]
+key = 'HKCU\Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\broadFileSystemAccess'
+name = "Value"
+on = { sz = "Deny" }
+off = { sz = "Allow" }
+
+[[tweak]]
+id = "wu_no_auto_update"
+title = "Turn off automatic Windows Update"
+description = "Windows no longer downloads or installs updates by itself; you check for them manually."
+group = "Windows Update"
+warning = "Security fixes will not be installed until you check for updates yourself."
+[[tweak.set]]
+key = 'HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU'
+name = "NoAutoUpdate"
+on = { dword = 1 }
+off = "delete"
+
+[[tweak]]
+id = "wu_mode"
+title = "How updates are installed"
+description = "Whether Windows Update downloads and installs updates automatically or asks first."
+group = "Windows Update"
+kind = "choice"
+target = { key = 'HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU', name = "AUOptions" }
+[[tweak.option]]
+label = "Windows default"
+value = "delete"
+[[tweak.option]]
+label = "Notify before downloading"
+value = { dword = 2 }
+[[tweak.option]]
+label = "Download automatically, ask before installing"
+value = { dword = 3 }
+[[tweak.option]]
+label = "Download and install automatically"
+value = { dword = 4 }
+
+[[tweak]]
+id = "wu_no_auto_restart"
+title = "Never restart automatically while someone is signed in"
+description = "Windows waits for you to restart after installing updates."
+group = "Windows Update"
+[[tweak.set]]
+key = 'HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU'
+name = "NoAutoRebootWithLoggedOnUsers"
+on = { dword = 1 }
+off = "delete"
+
+[[tweak]]
+id = "wu_no_drivers"
+title = "Don't install drivers through Windows Update"
+description = "Keeps the drivers you installed yourself, e.g. from your graphics card maker."
+group = "Windows Update"
+[[tweak.set]]
+key = 'HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate'
+name = "ExcludeWUDriversInQualityUpdate"
+on = { dword = 1 }
+off = "delete"
+
+[[tweak]]
+id = "store_no_auto_update"
+title = "Don't update Store apps automatically"
+description = "Microsoft Store apps are only updated when you open the Store's library."
+group = "Windows Update"
+[[tweak.set]]
+key = 'HKLM\SOFTWARE\Policies\Microsoft\WindowsStore'
+name = "AutoDownload"
+on = { dword = 2 }
+off = "delete"
+
+[[tweak]]
+id = "onedrive_off"
+title = "Turn off OneDrive"
+description = "OneDrive stops syncing and can't be started for any user. Files already on this PC stay where they are."
+group = "OneDrive"
+effect = "sign-out"
+[[tweak.set]]
+key = 'HKLM\SOFTWARE\Policies\Microsoft\Windows\OneDrive'
+name = "DisableFileSyncNGSC"
+on = { dword = 1 }
+off = "delete"
+
+[[tweak]]
+id = "onedrive_uninstall"
+title = "Uninstall OneDrive"
+description = "Removes the OneDrive app for this account with Microsoft's own uninstaller. Your files stay in the OneDrive folder."
+group = "OneDrive"
+kind = "action"
+action = { program = "winget", args = ["uninstall", "--id", "Microsoft.OneDrive", "--silent", "--accept-source-agreements"], confirm = "Uninstall OneDrive for this account? You can reinstall it from Microsoft." }
+
+[[tweak]]
+id = "regback"
+title = "Back up the registry automatically"
+description = "Windows again keeps a copy of the registry hives in System32\\config\\RegBack, refreshed during maintenance."
+group = "Registry and shutdown"
+effect = "restart"
+[[tweak.set]]
+key = 'HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Configuration Manager'
+name = "EnablePeriodicBackup"
+on = { dword = 1 }
+off = "delete"
+
+[[tweak]]
+id = "shutdown_tracker"
+title = "Ask why the PC is shut down"
+description = "Shows the Shutdown Event Tracker, which records a reason for each shutdown or restart in the event log."
+group = "Registry and shutdown"
+[[tweak.set]]
+key = 'HKLM\SOFTWARE\Policies\Microsoft\Windows NT\Reliability'
+name = "ShutdownReasonOn"
+on = { dword = 1 }
+off = "delete"

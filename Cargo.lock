@@ -4692,6 +4692,7 @@ dependencies = [
  "egui_extras",
  "rfd",
  "sysinfo",
+ "tempfile",
  "toml",
  "tracing",
  "tracing-appender",

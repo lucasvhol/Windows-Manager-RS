@@ -1,0 +1,111 @@
+# Windows app Settings: Store, background apps, suggested apps and shortcuts to
+# Windows' app pages. `off` is the Windows 11 default ("delete" = value absent).
+
+[[tweak]]
+id = "app_install_source"
+title = "Where apps can be installed from"
+description = "Limits installing desktop apps to the Microsoft Store, or warns first. Store apps are unaffected."
+group = "Installing apps"
+kind = "choice"
+target = { key = 'HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer', name = "AicEnabled" }
+[[tweak.option]]
+label = "Anywhere (default)"
+value = "delete"
+[[tweak.option]]
+label = "Anywhere, mention Store alternatives"
+value = { sz = "Recommendations" }
+[[tweak.option]]
+label = "Anywhere, warn before non-Store apps"
+value = { sz = "PreferStore" }
+[[tweak.option]]
+label = "Microsoft Store only"
+value = { sz = "StoreOnly" }
+
+[[tweak]]
+id = "no_suggested_app_reinstall"
+title = "Don't reinstall suggested apps"
+description = "Stops Windows bringing back promoted apps and games after you remove them or after big updates."
+group = "Installing apps"
+[[tweak.set]]
+key = 'HKCU\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager'
+name = "PreInstalledAppsEnabled"
+on = { dword = 0 }
+off = { dword = 1 }
+[[tweak.set]]
+key = 'HKCU\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager'
+name = "OemPreInstalledAppsEnabled"
+on = { dword = 0 }
+off = { dword = 1 }
+
+[[tweak]]
+id = "no_background_apps"
+title = "Don't let Store apps run in the background"
+description = "Store apps only run while open. Mail, calendar and similar apps then stop syncing in the background."
+group = "Background apps"
+[[tweak.set]]
+key = 'HKLM\SOFTWARE\Policies\Microsoft\Windows\AppPrivacy'
+name = "LetAppsRunInBackground"
+on = { dword = 2 }
+off = "delete"
+
+[[tweak]]
+id = "no_welcome_experience"
+title = "No 'welcome' pages after updates"
+description = "Skips the Windows welcome experience that shows new features after updates and sign-ins."
+group = "Suggestions"
+[[tweak.set]]
+key = 'HKCU\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager'
+name = "SubscribedContent-310093Enabled"
+on = { dword = 0 }
+off = "delete"
+
+[[tweak]]
+id = "no_finish_setup"
+title = "Don't suggest ways to finish setting up"
+description = "Stops the full-screen 'Let's finish setting up your device' prompts."
+group = "Suggestions"
+[[tweak.set]]
+key = 'HKCU\Software\Microsoft\Windows\CurrentVersion\UserProfileEngagement'
+name = "ScoobeSystemSettingEnabled"
+on = { dword = 0 }
+off = "delete"
+
+[[tweak]]
+id = "open_default_apps"
+title = "Default apps…"
+description = "Opens Windows' page for choosing which app opens each file type and link."
+group = "Windows pages"
+kind = "action"
+action = { program = "explorer.exe", args = ["ms-settings:defaultapps"], open = true }
+
+[[tweak]]
+id = "open_installed_apps"
+title = "Installed apps…"
+description = "Opens Windows' list of installed apps."
+group = "Windows pages"
+kind = "action"
+action = { program = "explorer.exe", args = ["ms-settings:appsfeatures"], open = true }
+
+[[tweak]]
+id = "open_startup_apps"
+title = "Startup apps…"
+description = "Opens Windows' page of apps that start when you sign in."
+group = "Windows pages"
+kind = "action"
+action = { program = "explorer.exe", args = ["ms-settings:startupapps"], open = true }
+
+[[tweak]]
+id = "open_optional_features"
+title = "Optional features…"
+description = "Opens Windows' page for adding or removing optional features."
+group = "Windows pages"
+kind = "action"
+action = { program = "explorer.exe", args = ["ms-settings:optionalfeatures"], open = true }
+
+[[tweak]]
+id = "open_app_permissions"
+title = "App permissions…"
+description = "Opens Windows' privacy and permissions page."
+group = "Windows pages"
+kind = "action"
+action = { program = "explorer.exe", args = ["ms-settings:privacy"], open = true }

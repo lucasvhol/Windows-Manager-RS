@@ -113,6 +113,9 @@ pub struct NumberSpec {
 pub struct ChoiceOption {
     pub label: String,
     pub value: Data,
+    /// Asks for confirmation before this option is applied.
+    #[serde(default)]
+    pub warning: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -126,6 +129,9 @@ pub struct ActionSpec {
     /// Command (program followed by arguments) that reverses the action, if any.
     #[serde(default)]
     pub undo: Option<Vec<String>>,
+    /// Opens a window or page (launched without waiting; not recorded as a change).
+    #[serde(default)]
+    pub open: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -289,8 +295,31 @@ impl Tweak {
 
     /// Runs an action tweak and journals it (with its reverse command when declared).
     pub fn run_action(&self, journal: &ChangeJournal, tool: &str) -> Result<()> {
+        self.run_action_command()?;
+        self.record_action(journal, tool)
+    }
+
+    /// Runs the action's program and waits for it, or for `open` actions just launches it.
+    pub fn run_action_command(&self) -> Result<()> {
         let a = self.action.as_ref().context("not an action")?;
+        if a.open {
+            std::process::Command::new(&a.program)
+                .args(&a.args)
+                .spawn()
+                .with_context(|| format!("starting {}", a.program))?;
+            return Ok(());
+        }
         crate::process::run_checked(crate::process::hidden_command(&a.program).args(&a.args))?;
+        Ok(())
+    }
+
+    /// Records a completed action in the journal (with its undo command, if any).
+    /// Actions that only open a window are not changes and are not recorded.
+    pub fn record_action(&self, journal: &ChangeJournal, tool: &str) -> Result<()> {
+        let a = self.action.as_ref().context("not an action")?;
+        if a.open {
+            return Ok(());
+        }
         let undo = match a.undo.as_deref() {
             Some([program, args @ ..]) => UndoAction::RunCommand {
                 program: program.clone(),
@@ -522,6 +551,9 @@ pub struct TweakPanel {
     staged: std::collections::BTreeMap<usize, bool>,
     restore_confirm: crate::ui::Confirm<()>,
     warn_confirm: crate::ui::Confirm<()>,
+    choice_confirm: crate::ui::Confirm<(usize, usize)>,
+    /// An action command running in the background.
+    running: Option<(usize, crate::task::BackgroundTask<()>)>,
     group_sel: usize,
     filter: String,
 }
@@ -542,6 +574,8 @@ impl TweakPanel {
             staged: Default::default(),
             restore_confirm: Default::default(),
             warn_confirm: Default::default(),
+            choice_confirm: Default::default(),
+            running: None,
             group_sel: 0,
             filter: String::new(),
         }
@@ -578,6 +612,27 @@ impl TweakPanel {
                 self.explorer_restart_pending = false;
             }
         });
+        if let Some((i, task)) = &mut self.running {
+            task.poll();
+            if let Some(result) = task.take_result() {
+                let t = &self.tweaks[*i];
+                self.message = Some(match result {
+                    Ok(()) => t
+                        .record_action(ctx.journal, self.tool)
+                        .map(|()| format!("{} done.", t.title))
+                        .map_err(|e| format!("{e:#}")),
+                    Err(e) => Err(e),
+                });
+                self.running = None;
+                self.refresh();
+            } else {
+                let title = self.tweaks[*i].title.clone();
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.weak(format!("Running {title}…"));
+                });
+            }
+        }
         show_message(ui, &self.message);
         ui.add_space(6.0);
 
@@ -589,6 +644,9 @@ impl TweakPanel {
         }
         if let Some(i) = self.confirm.show(ui.ctx(), ctx.i18n) {
             self.pending = Some(Op::Run(i));
+        }
+        if let Some((i, k)) = self.choice_confirm.show(ui.ctx(), ctx.i18n) {
+            self.pending = Some(Op::Choice(i, k));
         }
         let mut op: Option<Op> = None;
         let query = self.filter.trim().to_lowercase();
@@ -696,7 +754,18 @@ impl TweakPanel {
                                                 if ui.selectable_label(current == Some(k), &o.label).clicked()
                                                     && current != Some(k)
                                                 {
-                                                    op = Some(Op::Choice(i, k));
+                                                    match &o.warning {
+                                                        Some(w) => this.choice_confirm.ask(
+                                                            format!(
+                                                                "{w}
+
+Apply \"{}\" anyway?",
+                                                                o.label
+                                                            ),
+                                                            (i, k),
+                                                        ),
+                                                        None => op = Some(Op::Choice(i, k)),
+                                                    }
                                                 }
                                             }
                                         },
@@ -707,7 +776,10 @@ impl TweakPanel {
                             }
                             Kind::Action => {
                                 if ui
-                                    .add_enabled(!locked, egui::Button::new(&t.title))
+                                    .add_enabled(
+                                        !locked && this.running.is_none(),
+                                        egui::Button::new(&t.title),
+                                    )
                                     .on_hover_text(&t.description)
                                     .on_disabled_hover_text(hint)
                                     .clicked()
@@ -871,6 +943,28 @@ impl TweakPanel {
             self.refresh();
         }
 
+        // Actions run on a background thread so long commands don't freeze the window.
+        if let Some(Op::Run(i)) = op.or(self.pending) {
+            op = None;
+            self.pending = None;
+            let t = self.tweaks[i].clone();
+            let open = t.action.as_ref().is_some_and(|a| a.open);
+            if ctx.config.dry_run && !open {
+                self.message = Some(Ok(format!(
+                    "{} ({})",
+                    ctx.i18n.tr("common-dry-run-skip"),
+                    t.title
+                )));
+            } else if open {
+                self.message = t.run_action_command().err().map(|e| Err(format!("{e:#}")));
+            } else {
+                self.message = None;
+                self.running = Some((
+                    i,
+                    crate::task::BackgroundTask::spawn(ui.ctx(), move |_| t.run_action_command()),
+                ));
+            }
+        }
         if let Some(op) = op.or_else(|| self.pending.take()) {
             let i = op.index();
             let t = &self.tweaks[i];
@@ -888,7 +982,7 @@ impl TweakPanel {
                     Op::Choice(_, k) => t
                         .set_choice(k, j, tool)
                         .map(|()| format!("{}: {}.", t.title, t.options[k].label)),
-                    Op::Run(_) => t.run_action(j, tool).map(|()| format!("{} done.", t.title)),
+                    Op::Run(_) => unreachable!("handled above"),
                 };
                 if r.is_ok() && t.effect == Effect::Explorer {
                     self.explorer_restart_pending = true;

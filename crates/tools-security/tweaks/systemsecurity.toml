@@ -1,0 +1,304 @@
+# System Security: UAC, sign-in screen, restrictions, components, policy resets.
+# `off` is the Windows 11 default ("delete" = value absent). Settings that lower
+# protection carry a `warning` and ask for confirmation before they are saved.
+
+# --- User Account Control --------------------------------------------------
+
+[[tweak]]
+id = "uac_level"
+title = "When User Account Control asks administrators"
+description = "How Windows asks before an app makes changes that need administrator rights."
+group = "User Account Control"
+kind = "choice"
+target = { key = 'HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System', name = "ConsentPromptBehaviorAdmin" }
+[[tweak.option]]
+label = "Notify when apps make changes (default)"
+value = { dword = 5 }
+[[tweak.option]]
+label = "Always notify, also for Windows settings"
+value = { dword = 2 }
+[[tweak.option]]
+label = "Ask for credentials on the secure desktop"
+value = { dword = 1 }
+[[tweak.option]]
+label = "Never notify (not recommended)"
+warning = "Never notify lets any program you run make system-wide changes without asking."
+value = { dword = 0 }
+
+[[tweak]]
+id = "uac_no_dim"
+title = "Don't dim the desktop for UAC prompts"
+description = "Shows the UAC prompt on the normal desktop instead of the protected, dimmed one."
+group = "User Account Control"
+warning = "Other programs can then interact with the UAC prompt."
+[[tweak.set]]
+key = 'HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
+name = "PromptOnSecureDesktop"
+on = { dword = 0 }
+off = { dword = 1 }
+
+[[tweak]]
+id = "uac_standard_deny"
+title = "Standard users can't request elevation"
+description = "Accounts without administrator rights get an error instead of a password prompt."
+group = "User Account Control"
+[[tweak.set]]
+key = 'HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
+name = "ConsentPromptBehaviorUser"
+on = { dword = 0 }
+off = { dword = 3 }
+
+[[tweak]]
+id = "uac_off"
+title = "Turn off User Account Control completely"
+description = "Every program runs with full administrator rights. Store apps and some Windows features stop working."
+group = "User Account Control"
+effect = "restart"
+warning = "Removes one of Windows' main protections against malware."
+[[tweak.set]]
+key = 'HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
+name = "EnableLUA"
+on = { dword = 0 }
+off = { dword = 1 }
+
+# --- Sign-in screen --------------------------------------------------------
+
+[[tweak]]
+id = "hide_last_user"
+title = "Don't show the last signed-in user"
+description = "The sign-in screen asks for both the user name and the password."
+group = "Sign-in screen"
+[[tweak.set]]
+key = 'HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
+name = "DontDisplayLastUserName"
+on = { dword = 1 }
+off = { dword = 0 }
+
+[[tweak]]
+id = "require_ctrl_alt_del"
+title = "Require Ctrl+Alt+Delete before signing in"
+description = "Protects against fake sign-in screens: only Windows can receive Ctrl+Alt+Delete."
+group = "Sign-in screen"
+[[tweak.set]]
+key = 'HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
+name = "DisableCAD"
+on = { dword = 0 }
+off = "delete"
+
+[[tweak]]
+id = "no_signin_shutdown"
+title = "Hide the power button on the sign-in screen"
+description = "Only signed-in users can shut down or restart the PC."
+group = "Sign-in screen"
+[[tweak.set]]
+key = 'HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
+name = "shutdownwithoutlogon"
+on = { dword = 0 }
+off = { dword = 1 }
+
+[[tweak]]
+id = "no_signin_network"
+title = "Hide the network button on the sign-in screen"
+description = "Nobody can change Wi-Fi before signing in."
+group = "Sign-in screen"
+[[tweak.set]]
+key = 'HKLM\SOFTWARE\Policies\Microsoft\Windows\System'
+name = "DontDisplayNetworkSelectionUI"
+on = { dword = 1 }
+off = "delete"
+
+[[tweak]]
+id = "no_password_reveal"
+title = "Hide the password reveal button"
+description = "Removes the eye button that shows the password you are typing, in Windows and apps that use its controls."
+group = "Sign-in screen"
+[[tweak.set]]
+key = 'HKLM\SOFTWARE\Policies\Microsoft\Windows\CredUI'
+name = "DisablePasswordReveal"
+on = { dword = 1 }
+off = "delete"
+
+[[tweak]]
+id = "blank_password_remote"
+title = "Allow network sign-in with a blank password"
+description = "Accounts without a password can be used from other PCs on the network."
+group = "Sign-in screen"
+warning = "Anyone on the network can sign in to accounts that have no password."
+[[tweak.set]]
+key = 'HKLM\SYSTEM\CurrentControlSet\Control\Lsa'
+name = "LimitBlankPasswordUse"
+on = { dword = 0 }
+off = { dword = 1 }
+
+[[tweak]]
+id = "passwords_never_expire"
+title = "Local passwords never expire"
+description = "Sets the maximum password age of local accounts to unlimited (net accounts)."
+group = "Passwords"
+kind = "action"
+admin = true
+action = { program = "net", args = ["accounts", "/maxpwage:unlimited"], undo = ["net", "accounts", "/maxpwage:42"] }
+
+[[tweak]]
+id = "password_min_length_8"
+title = "Require local passwords of at least 8 characters"
+description = "Applies to new or changed passwords of local accounts (net accounts /minpwlen:8)."
+group = "Passwords"
+kind = "action"
+admin = true
+action = { program = "net", args = ["accounts", "/minpwlen:8"], undo = ["net", "accounts", "/minpwlen:0"] }
+
+# --- Restrictions ----------------------------------------------------------
+
+[[tweak]]
+id = "no_msi_installs"
+title = "Block Windows Installer for non-administrators"
+description = "Standard users can no longer install .msi packages."
+group = "Restrictions"
+[[tweak.set]]
+key = 'HKLM\SOFTWARE\Policies\Microsoft\Windows\Installer'
+name = "DisableMSI"
+on = { dword = 1 }
+off = "delete"
+
+[[tweak]]
+id = "no_powershell_scripts"
+title = "Block PowerShell scripts"
+description = "PowerShell only runs typed commands, not .ps1 script files, for all users."
+group = "Restrictions"
+[[tweak.set]]
+key = 'HKLM\SOFTWARE\Policies\Microsoft\Windows\PowerShell'
+name = "EnableScripts"
+on = { dword = 0 }
+off = "delete"
+
+[[tweak]]
+id = "no_mmc_snapins"
+title = "Block management consoles (MMC)"
+description = "This account can no longer open Device Manager, Disk Management, Services and other consoles."
+group = "Restrictions"
+[[tweak.set]]
+key = 'HKCU\Software\Policies\Microsoft\MMC'
+name = "RestrictToPermittedSnapins"
+on = { dword = 1 }
+off = "delete"
+
+# --- Windows components ----------------------------------------------------
+
+[[tweak]]
+id = "no_file_history"
+title = "Turn off File History"
+description = "Prevents File History backups from being set up or run."
+group = "Windows components"
+[[tweak.set]]
+key = 'HKLM\SOFTWARE\Policies\Microsoft\Windows\FileHistory'
+name = "Disabled"
+on = { dword = 1 }
+off = "delete"
+
+[[tweak]]
+id = "no_error_reporting"
+title = "Turn off Windows Error Reporting"
+description = "Crash reports are no longer collected or sent to Microsoft."
+group = "Windows components"
+[[tweak.set]]
+key = 'HKLM\SOFTWARE\Microsoft\Windows\Windows Error Reporting'
+name = "Disabled"
+on = { dword = 1 }
+off = "delete"
+
+[[tweak]]
+id = "no_game_bar"
+title = "Turn off Game Bar recording for all users"
+description = "Game Bar can no longer record or broadcast."
+group = "Windows components"
+[[tweak.set]]
+key = 'HKLM\SOFTWARE\Policies\Microsoft\Windows\GameDVR'
+name = "AllowGameDVR"
+on = { dword = 0 }
+off = "delete"
+
+[[tweak]]
+id = "no_copilot"
+title = "Turn off Copilot in Windows"
+description = "Removes the Windows Copilot sidebar for this account."
+group = "Windows components"
+effect = "sign-out"
+[[tweak.set]]
+key = 'HKCU\Software\Policies\Microsoft\Windows\WindowsCopilot'
+name = "TurnOffWindowsCopilot"
+on = { dword = 1 }
+off = "delete"
+
+[[tweak]]
+id = "open_windows_features"
+title = "Turn Windows features on or off…"
+description = "Opens Windows' own dialog for optional components such as Hyper-V, .NET 3.5 and the Linux subsystem."
+group = "Windows components"
+kind = "action"
+action = { program = "optionalfeatures.exe", open = true }
+
+[[tweak]]
+id = "open_windows_security"
+title = "Open Windows Security…"
+description = "Microsoft Defender can only be switched off from Windows Security: Tamper Protection blocks registry and policy changes."
+group = "Windows components"
+kind = "action"
+action = { program = "explorer.exe", args = ["windowsdefender:"], open = true }
+
+# --- Group Policy and Firewall ---------------------------------------------
+
+[[tweak]]
+id = "firewall_backup"
+title = "Back up the firewall rules"
+description = "Saves all Windows Firewall settings and rules to firewall.wfw in the program's backup folder."
+group = "Group Policy and Firewall"
+kind = "action"
+admin = true
+action = { program = "powershell", args = ["-NoProfile", "-Command", '''$d = Join-Path $env:APPDATA 'win-manager-rs\data\backups'; New-Item -ItemType Directory -Force $d | Out-Null; $f = Join-Path $d 'firewall.wfw'; Remove-Item $f -ErrorAction SilentlyContinue; netsh advfirewall export $f; if ($LASTEXITCODE) { exit $LASTEXITCODE }'''] }
+
+[[tweak]]
+id = "firewall_restore"
+title = "Restore the firewall rules from the backup"
+description = "Replaces the current firewall settings and rules with the saved firewall.wfw."
+group = "Group Policy and Firewall"
+kind = "action"
+admin = true
+action = { program = "powershell", args = ["-NoProfile", "-Command", '''$f = Join-Path $env:APPDATA 'win-manager-rs\data\backups\firewall.wfw'; if (-not (Test-Path $f)) { Write-Error 'No firewall backup yet.'; exit 1 }; netsh advfirewall import $f; if ($LASTEXITCODE) { exit $LASTEXITCODE }'''], confirm = "Replace the current firewall rules with the saved backup?" }
+
+[[tweak]]
+id = "firewall_reset"
+title = "Reset the firewall to Windows defaults"
+description = "Deletes every rule added by you or by apps and restores the default rules. Back up first."
+group = "Group Policy and Firewall"
+kind = "action"
+admin = true
+action = { program = "netsh", args = ["advfirewall", "reset"], confirm = "Delete every custom firewall rule and restore the Windows defaults? Use 'Back up the firewall rules' first if you might want them back." }
+
+[[tweak]]
+id = "gpo_backup"
+title = "Back up local Group Policy"
+description = "Copies the local Group Policy files to the program's backup folder."
+group = "Group Policy and Firewall"
+kind = "action"
+admin = true
+action = { program = "powershell", args = ["-NoProfile", "-Command", '''$d = Join-Path $env:APPDATA 'win-manager-rs\data\backups\GroupPolicy'; Remove-Item -Recurse -Force $d -ErrorAction SilentlyContinue; New-Item -ItemType Directory -Force $d | Out-Null; foreach ($s in 'GroupPolicy','GroupPolicyUsers') { $p = Join-Path $env:WINDIR (Join-Path System32 $s); if (Test-Path $p) { Copy-Item -Recurse -Force $p (Join-Path $d $s) } }'''] }
+
+[[tweak]]
+id = "gpo_restore"
+title = "Restore local Group Policy from the backup"
+description = "Puts the saved Group Policy files back and applies them."
+group = "Group Policy and Firewall"
+kind = "action"
+admin = true
+action = { program = "powershell", args = ["-NoProfile", "-Command", '''$d = Join-Path $env:APPDATA 'win-manager-rs\data\backups\GroupPolicy'; if (-not (Test-Path $d)) { Write-Error 'No Group Policy backup yet.'; exit 1 }; foreach ($s in 'GroupPolicy','GroupPolicyUsers') { $p = Join-Path $env:WINDIR (Join-Path System32 $s); Remove-Item -Recurse -Force $p -ErrorAction SilentlyContinue; if (Test-Path (Join-Path $d $s)) { Copy-Item -Recurse -Force (Join-Path $d $s) $p } }; gpupdate /force | Out-Null'''], confirm = "Replace the current local Group Policy with the saved backup?" }
+
+[[tweak]]
+id = "gpo_reset"
+title = "Reset local Group Policy to defaults"
+description = "Removes every local Group Policy setting (including those made by other tools) and applies the result. Back up first."
+group = "Group Policy and Firewall"
+kind = "action"
+admin = true
+action = { program = "powershell", args = ["-NoProfile", "-Command", '''foreach ($s in 'GroupPolicy','GroupPolicyUsers') { Remove-Item -Recurse -Force (Join-Path $env:WINDIR (Join-Path System32 $s)) -ErrorAction SilentlyContinue }; gpupdate /force | Out-Null'''], confirm = "Remove every local Group Policy setting? Use 'Back up local Group Policy' first if you might want them back." }
+

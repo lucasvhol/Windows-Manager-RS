@@ -18,6 +18,7 @@ pub const START_TWEAKS: &str = include_str!("../tweaks/start.toml");
 pub const THISPC_TWEAKS: &str = include_str!("../tweaks/thispc.toml");
 pub const NAVPANE_TWEAKS: &str = include_str!("../tweaks/navpane.toml");
 pub const CUSTOM_TWEAKS: &str = include_str!("../tweaks/custom.toml");
+pub const APP_SETTINGS_TWEAKS: &str = include_str!("../tweaks/appsettings.toml");
 
 pub fn tools() -> Vec<Box<dyn Tool>> {
     vec![
@@ -51,6 +52,12 @@ pub fn tools() -> Vec<Box<dyn Tool>> {
             "",
             CUSTOM_TWEAKS,
         )),
+        Box::new(TweakTool::new(
+            Category::Customization,
+            "appsettings",
+            "",
+            APP_SETTINGS_TWEAKS,
+        )),
         Box::new(context_menu::ContextMenuManager::default()),
         Box::new(winx::WinXEditor::default()),
         Box::new(start_menu::StartMenuManager::default()),
@@ -74,6 +81,7 @@ mod tests {
             include_str!("../tweaks/navpane.toml"),
             include_str!("../tweaks/start.toml"),
             include_str!("../tweaks/custom.toml"),
+            include_str!("../tweaks/appsettings.toml"),
         ] {
             for t in parse(text).unwrap() {
                 if t.kind != wm_core::tweaks::Kind::Toggle {
