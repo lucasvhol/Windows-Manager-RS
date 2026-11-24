@@ -84,7 +84,7 @@ This file tracks parity between **Win Manager RS** and the features of a commerc
 | JumpList Quick Launcher | 🟡 | Several named lists; groups; files, folders, URLs, Start items, utilities and apps; edit pane; maximum count; backup and restore | D |
 | Hotkey Manager | 🟡 | Targets: file, folder, URL, Start item, utility, Windows app; enable/disable; backup and restore; conflict detection; kill-all hotkey | D |
 | Run Shortcut Creator | 🟡 | Type and available columns with broken entries in red; folder and URL targets; window mode; parameters; all-users scope; backup; execute | D |
-| Context Menu Manager | 🟡 | Tree of 13 locations with company, Shift, position and signature columns; properties; open in registry; per file type; Open With list; add-menu editor with about 40 built-in commands; New menu; Send To; repair | D |
+| Context Menu Manager | ✅ | 14 sections (10 shell locations, any file type, Open with, New menu, Send To); type, Shift, position, company, signature and scope columns; properties; open in registry; Shift/position switches; delete with backup; editor with 41 built-in commands or any program (elevated, Shift-only, position, per user or all users); repair (re-enable, remove broken); classic Windows 11 menu switch | D |
 | Start Menu Manager | 🟡 | Tree list with user and available columns; rename; launch; pin to taskbar; Pin Any; backup and restore of taskbar pins and Start layout | D |
 | Win+X Menu Editor | 🟡 | Groups (add, rename, move, remove); add file, Start item or utility; restore defaults; run as admin. Needs the WinX hash | D |
 | Navigation Pane Manager | 🟡 (tweaks) | Add folders and utilities as items; order; enable/disable; place on top; edit pane | D |

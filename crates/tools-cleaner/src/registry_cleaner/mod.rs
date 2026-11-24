@@ -232,25 +232,7 @@ impl Options {
     }
 }
 
-/// True only for absolute, local paths whose drive exists but whose file does not.
-/// Relative names, network paths and unplugged drives are never reported.
-pub fn definitely_missing(raw: &str) -> bool {
-    let expanded = expand_env(raw.trim().trim_matches('"'));
-    if expanded.contains('%') {
-        return false;
-    }
-    let p = Path::new(&expanded);
-    let bytes = expanded.as_bytes();
-    let local_abs =
-        bytes.len() >= 3 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' && bytes[2] == b'\\';
-    if !local_abs {
-        return false;
-    }
-    let drive = format!("{}:\\", bytes[0] as char);
-    // Only "not found" counts: access denied (e.g. inside WindowsApps) means it exists.
-    Path::new(&drive).exists()
-        && matches!(std::fs::metadata(p), Err(e) if e.kind() == std::io::ErrorKind::NotFound)
-}
+pub use wm_core::paths::definitely_missing;
 
 /// For 32-bit registrations (`WOW6432Node`, `win32` type libraries) the same text
 /// can mean several places: `System32` / `SysWOW64`, and the 64-bit or `(x86)`

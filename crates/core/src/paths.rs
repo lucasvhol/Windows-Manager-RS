@@ -63,6 +63,25 @@ pub fn expand_env(s: &str) -> String {
     out
 }
 
+/// True only for absolute, local paths whose drive exists and which Windows reports as
+/// "not found". Relative names, network paths, unplugged drives, unexpanded variables
+/// and access-denied paths (e.g. inside WindowsApps) are never reported.
+pub fn definitely_missing(raw: &str) -> bool {
+    let expanded = expand_env(raw.trim().trim_matches('"'));
+    if expanded.contains('%') {
+        return false;
+    }
+    let bytes = expanded.as_bytes();
+    let local_abs =
+        bytes.len() >= 3 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' && bytes[2] == b'\\';
+    if !local_abs {
+        return false;
+    }
+    let drive = format!("{}:\\", bytes[0] as char);
+    Path::new(&drive).exists()
+        && matches!(std::fs::metadata(&expanded), Err(e) if e.kind() == std::io::ErrorKind::NotFound)
+}
+
 /// Moves a file or folder. A file moved to another drive is copied, then the original
 /// is deleted (a plain rename only works within one drive).
 pub fn move_path(from: &Path, to: &Path) -> std::io::Result<()> {

@@ -5313,6 +5313,7 @@ name = "wm-tools-custom"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "egui_extras",
  "rfd",
  "serde",
  "tempfile",
