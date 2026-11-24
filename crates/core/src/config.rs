@@ -26,6 +26,19 @@ pub struct Config {
     pub create_restore_points: bool,
     /// Id of the tool shown on startup.
     pub last_tool: Option<String>,
+    /// Most recently opened tools, newest first (shown on the Home page).
+    pub recent_tools: Vec<String>,
+    /// Interface zoom (1.0 = 100 %).
+    pub ui_scale: f32,
+}
+
+impl Config {
+    /// Records that a tool was opened (keeps the 8 most recent, newest first).
+    pub fn touch_recent(&mut self, id: &str) {
+        self.recent_tools.retain(|t| t != id);
+        self.recent_tools.insert(0, id.to_owned());
+        self.recent_tools.truncate(8);
+    }
 }
 
 impl Default for Config {
@@ -36,6 +49,8 @@ impl Default for Config {
             dry_run: false,
             create_restore_points: true,
             last_tool: None,
+            recent_tools: Vec::new(),
+            ui_scale: 1.0,
         }
     }
 }

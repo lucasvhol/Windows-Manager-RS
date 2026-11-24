@@ -4690,6 +4690,7 @@ dependencies = [
  "anyhow",
  "eframe",
  "egui_extras",
+ "sysinfo",
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
