@@ -73,6 +73,61 @@ pub enum Effect {
     Explorer,
 }
 
+/// How a tweak is presented and applied.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum Kind {
+    /// On/off switch over one or more `set` entries.
+    #[default]
+    Toggle,
+    /// A numeric value in `target`, edited within `number.min..=number.max`.
+    Number,
+    /// One of several `option` values for `target`.
+    Choice,
+    /// A button that runs `action.program`.
+    Action,
+}
+
+/// The single registry value a number or choice tweak edits.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Target {
+    pub key: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct NumberSpec {
+    pub min: u32,
+    pub max: u32,
+    /// Windows default; `None` means the value is normally absent.
+    #[serde(default)]
+    pub default: Option<u32>,
+    #[serde(default)]
+    pub unit: String,
+    /// Store as REG_SZ text instead of REG_DWORD.
+    #[serde(default)]
+    pub sz: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct ChoiceOption {
+    pub label: String,
+    pub value: Data,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct ActionSpec {
+    pub program: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+    /// Confirmation question shown before running.
+    #[serde(default)]
+    pub confirm: Option<String>,
+    /// Command (program followed by arguments) that reverses the action, if any.
+    #[serde(default)]
+    pub undo: Option<Vec<String>>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct Tweak {
     pub id: String,
@@ -82,8 +137,21 @@ pub struct Tweak {
     pub group: String,
     #[serde(default)]
     pub effect: Effect,
-    #[serde(rename = "set")]
+    #[serde(default)]
+    pub kind: Kind,
+    /// Forces the administrator requirement (e.g. for actions).
+    #[serde(default)]
+    pub admin: bool,
+    #[serde(rename = "set", default)]
     pub settings: Vec<Setting>,
+    #[serde(default)]
+    pub target: Option<Target>,
+    #[serde(default)]
+    pub number: Option<NumberSpec>,
+    #[serde(rename = "option", default)]
+    pub options: Vec<ChoiceOption>,
+    #[serde(default)]
+    pub action: Option<ActionSpec>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -96,10 +164,145 @@ pub enum State {
 
 impl Tweak {
     pub fn needs_admin(&self) -> bool {
-        self.settings.iter().any(|s| registry::needs_admin(&s.key))
+        self.admin
+            || self.settings.iter().any(|s| registry::needs_admin(&s.key))
+            || self
+                .target
+                .as_ref()
+                .is_some_and(|t| registry::needs_admin(&t.key))
+    }
+
+    /// Checks that the fields required by `kind` are present and consistent.
+    pub fn validate(&self) -> Result<()> {
+        let ok = match self.kind {
+            Kind::Toggle => !self.settings.is_empty() && self.settings.iter().all(|s| s.on != s.off),
+            Kind::Number => {
+                self.target.is_some()
+                    && self.number.as_ref().is_some_and(|n| {
+                        n.min <= n.max && n.default.is_none_or(|d| (n.min..=n.max).contains(&d))
+                    })
+            }
+            Kind::Choice => self.target.is_some() && self.options.len() >= 2,
+            Kind::Action => self.action.as_ref().is_some_and(|a| !a.program.is_empty()),
+        };
+        if !ok {
+            anyhow::bail!(
+                "tweak `{}` is missing fields required for kind {:?}",
+                self.id,
+                self.kind
+            );
+        }
+        Ok(())
+    }
+
+    fn record_values(
+        &self,
+        journal: &ChangeJournal,
+        tool: &str,
+        what: String,
+        f: impl FnOnce(&Target) -> Result<()>,
+    ) -> Result<()> {
+        let t = self.target.as_ref().context("tweak has no target")?;
+        let snap = registry::snapshot(&t.key, &t.name);
+        if let Err(e) = f(t) {
+            let _ = registry::restore(&snap);
+            return Err(e);
+        }
+        journal.record(tool, what, UndoAction::RestoreRegValues { values: vec![snap] })?;
+        Ok(())
+    }
+
+    /// Current value of a number tweak (the Windows default when the value is absent).
+    pub fn current_number(&self) -> Option<u32> {
+        let (t, n) = (self.target.as_ref()?, self.number.as_ref()?);
+        match registry::read_raw(&t.key, &t.name) {
+            Some(v) if n.sz => registry::decode_string(&v).trim().parse().ok(),
+            Some(v) => registry::decode_dword(&v),
+            None => n.default,
+        }
+    }
+
+    pub fn set_number(&self, value: u32, journal: &ChangeJournal, tool: &str) -> Result<()> {
+        let n = self.number.as_ref().context("not a number tweak")?;
+        if !(n.min..=n.max).contains(&value) {
+            anyhow::bail!("{value} is outside {}–{}", n.min, n.max);
+        }
+        let raw = if n.sz {
+            registry::string(&value.to_string())
+        } else {
+            registry::dword(value)
+        };
+        self.record_values(
+            journal,
+            tool,
+            format!("Set {} to {value}{}", self.title, n.unit),
+            |t| registry::write_raw(&t.key, &t.name, &raw),
+        )
+    }
+
+    /// Restores the Windows default (deleting the value when it is normally absent).
+    pub fn reset_number(&self, journal: &ChangeJournal, tool: &str) -> Result<()> {
+        let n = self.number.as_ref().context("not a number tweak")?;
+        match n.default {
+            Some(d) => self.set_number(d, journal, tool),
+            None => self.record_values(
+                journal,
+                tool,
+                format!("Reset {} to the Windows default", self.title),
+                |t| {
+                    registry::delete_value(&t.key, &t.name)?;
+                    registry::prune_empty_class_override(&t.key);
+                    Ok(())
+                },
+            ),
+        }
+    }
+
+    /// Index of the option matching the current value, if any.
+    pub fn current_choice(&self) -> Option<usize> {
+        let t = self.target.as_ref()?;
+        let current = registry::read_raw(&t.key, &t.name);
+        self.options
+            .iter()
+            .position(|o| o.value.matches(current.as_ref()))
+    }
+
+    pub fn set_choice(&self, index: usize, journal: &ChangeJournal, tool: &str) -> Result<()> {
+        let o = self.options.get(index).context("no such option")?;
+        self.record_values(
+            journal,
+            tool,
+            format!("Set {} to \"{}\"", self.title, o.label),
+            |t| match o.value.to_raw() {
+                Some(v) => registry::write_raw(&t.key, &t.name, &v),
+                None => {
+                    registry::delete_value(&t.key, &t.name)?;
+                    registry::prune_empty_class_override(&t.key);
+                    Ok(())
+                }
+            },
+        )
+    }
+
+    /// Runs an action tweak and journals it (with its reverse command when declared).
+    pub fn run_action(&self, journal: &ChangeJournal, tool: &str) -> Result<()> {
+        let a = self.action.as_ref().context("not an action")?;
+        crate::process::run_checked(crate::process::hidden_command(&a.program).args(&a.args))?;
+        let undo = match a.undo.as_deref() {
+            Some([program, args @ ..]) => UndoAction::RunCommand {
+                program: program.clone(),
+                args: args.to_vec(),
+            },
+            _ => UndoAction::None,
+        };
+        journal.record(tool, self.title.clone(), undo)?;
+        Ok(())
     }
 
     pub fn state(&self) -> State {
+        if self.kind != Kind::Toggle {
+            return State::NotApplied;
+        }
         let on = self
             .settings
             .iter()
@@ -165,9 +368,13 @@ struct File {
 }
 
 pub fn parse(toml_text: &str) -> Result<Vec<Tweak>> {
-    Ok(toml::from_str::<File>(toml_text)
+    let tweaks = toml::from_str::<File>(toml_text)
         .context("parsing tweak definitions")?
-        .tweak)
+        .tweak;
+    for t in &tweaks {
+        t.validate()?;
+    }
+    Ok(tweaks)
 }
 
 /// UI listing tweaks grouped, each with an on/off toggle.
@@ -178,6 +385,10 @@ pub struct TweakPanel {
     message: Message,
     /// Set after changing a tweak that only takes effect once Explorer restarts.
     explorer_restart_pending: bool,
+    /// Values being edited for number tweaks, by tweak index.
+    numbers: std::collections::HashMap<usize, u32>,
+    confirm: crate::ui::Confirm<usize>,
+    pending: Option<Op>,
 }
 
 impl TweakPanel {
@@ -190,6 +401,9 @@ impl TweakPanel {
             tweaks,
             message: None,
             explorer_restart_pending: false,
+            numbers: Default::default(),
+            confirm: Default::default(),
+            pending: None,
         }
     }
 
@@ -210,8 +424,11 @@ impl TweakPanel {
                 self.refresh();
                 self.message = None;
             }
+            let toggles = self.tweaks.iter().filter(|t| t.kind == Kind::Toggle).count();
             let applied = self.states.iter().filter(|s| **s == State::Applied).count();
-            ui.weak(format!("{applied} of {} tweaks applied", self.tweaks.len()));
+            if toggles > 0 {
+                ui.weak(format!("{applied} of {toggles} switches on"));
+            }
             if self.explorer_restart_pending && ui.button("Restart Explorer to apply").clicked() {
                 self.message = Some(
                     crate::process::restart_explorer()
@@ -230,7 +447,10 @@ impl TweakPanel {
                 groups.push(&t.group);
             }
         }
-        let mut action: Option<(usize, bool)> = None;
+        if let Some(i) = self.confirm.show(ui.ctx(), ctx.i18n) {
+            self.pending = Some(Op::Run(i));
+        }
+        let mut op: Option<Op> = None;
         for group in groups {
             if !group.is_empty() {
                 ui.strong(group);
@@ -239,18 +459,92 @@ impl TweakPanel {
                 let state = self.states[i];
                 let locked = t.needs_admin() && !ctx.elevated;
                 ui.horizontal(|ui| {
-                    let mut on = state == State::Applied;
-                    let label = match state {
-                        State::Partial => format!("{} (partially applied)", t.title),
-                        _ => t.title.clone(),
-                    };
-                    let resp = ui.add_enabled(!locked, egui::Checkbox::new(&mut on, label));
-                    if resp.changed() {
-                        action = Some((i, on));
-                    }
-                    let resp = resp.on_hover_text(&t.description);
-                    if locked {
-                        resp.on_disabled_hover_text(ctx.i18n.tr("shell-needs-admin"));
+                    let hint = ctx.i18n.tr("shell-needs-admin");
+                    match t.kind {
+                        Kind::Toggle => {
+                            let mut on = state == State::Applied;
+                            let label = match state {
+                                State::Partial => format!("{} (partially applied)", t.title),
+                                _ => t.title.clone(),
+                            };
+                            let resp = ui.add_enabled(!locked, egui::Checkbox::new(&mut on, label));
+                            if resp.changed() {
+                                op = Some(Op::Toggle(i, on));
+                            }
+                            resp.on_hover_text(&t.description).on_disabled_hover_text(hint);
+                        }
+                        Kind::Number => {
+                            let n = t.number.as_ref().expect("validated");
+                            let current = t.current_number();
+                            let edit = self
+                                .numbers
+                                .entry(i)
+                                .or_insert_with(|| current.or(n.default).unwrap_or(n.min));
+                            ui.label(&t.title);
+                            ui.add_enabled(
+                                !locked,
+                                egui::DragValue::new(edit)
+                                    .range(n.min..=n.max)
+                                    .suffix(format!(" {}", n.unit).trim_end().to_owned()),
+                            )
+                            .on_hover_text(&t.description)
+                            .on_disabled_hover_text(hint);
+                            let edit = *edit;
+                            if Some(edit) != current
+                                && ui
+                                    .add_enabled(!locked, egui::Button::new("Apply").small())
+                                    .clicked()
+                            {
+                                op = Some(Op::SetNumber(i, edit));
+                            }
+                            let is_default = match n.default {
+                                Some(d) => current == Some(d),
+                                None => t
+                                    .target
+                                    .as_ref()
+                                    .is_some_and(|tg| registry::read_raw(&tg.key, &tg.name).is_none()),
+                            };
+                            if !is_default
+                                && ui
+                                    .add_enabled(!locked, egui::Button::new("Default").small())
+                                    .clicked()
+                            {
+                                op = Some(Op::ResetNumber(i));
+                            }
+                        }
+                        Kind::Choice => {
+                            ui.label(&t.title);
+                            let current = t.current_choice();
+                            let shown = current.map_or("(custom)", |c| t.options[c].label.as_str());
+                            ui.add_enabled_ui(!locked, |ui| {
+                                egui::ComboBox::from_id_salt(&t.id)
+                                    .selected_text(shown)
+                                    .show_ui(ui, |ui| {
+                                        for (k, o) in t.options.iter().enumerate() {
+                                            if ui.selectable_label(current == Some(k), &o.label).clicked()
+                                                && current != Some(k)
+                                            {
+                                                op = Some(Op::Choice(i, k));
+                                            }
+                                        }
+                                    });
+                            })
+                            .response
+                            .on_hover_text(&t.description);
+                        }
+                        Kind::Action => {
+                            if ui
+                                .add_enabled(!locked, egui::Button::new(&t.title))
+                                .on_hover_text(&t.description)
+                                .on_disabled_hover_text(hint)
+                                .clicked()
+                            {
+                                match t.action.as_ref().and_then(|a| a.confirm.clone()) {
+                                    Some(q) => self.confirm.ask(q, i),
+                                    None => op = Some(Op::Run(i)),
+                                }
+                            }
+                        }
                     }
                     match t.effect {
                         Effect::Immediate => {}
@@ -276,23 +570,52 @@ impl TweakPanel {
             ui.add_space(8.0);
         }
 
-        if let Some((i, apply)) = action {
+        if let Some(op) = op.or_else(|| self.pending.take()) {
+            let i = op.index();
             let t = &self.tweaks[i];
             self.message = Some(if ctx.config.dry_run {
                 Ok(format!("{} ({})", ctx.i18n.tr("common-dry-run-skip"), t.title))
             } else {
-                let r = if apply {
-                    t.apply(ctx.journal, self.tool)
-                } else {
-                    t.revert(ctx.journal, self.tool)
+                let (j, tool) = (ctx.journal, self.tool);
+                let r = match op {
+                    Op::Toggle(_, true) => t.apply(j, tool).map(|()| format!("Applied {}.", t.title)),
+                    Op::Toggle(_, false) => t.revert(j, tool).map(|()| format!("Reverted {}.", t.title)),
+                    Op::SetNumber(_, v) => t
+                        .set_number(v, j, tool)
+                        .map(|()| format!("Set {} to {v}.", t.title)),
+                    Op::ResetNumber(_) => t
+                        .reset_number(j, tool)
+                        .map(|()| format!("Restored the default for {}.", t.title)),
+                    Op::Choice(_, k) => t
+                        .set_choice(k, j, tool)
+                        .map(|()| format!("{}: {}.", t.title, t.options[k].label)),
+                    Op::Run(_) => t.run_action(j, tool).map(|()| format!("{} done.", t.title)),
                 };
                 if r.is_ok() && t.effect == Effect::Explorer {
                     self.explorer_restart_pending = true;
                 }
-                r.map(|()| format!("{} {}.", if apply { "Applied" } else { "Reverted" }, t.title))
-                    .map_err(|e| format!("{e:#}"))
+                r.map_err(|e| format!("{e:#}"))
             });
+            self.numbers.remove(&i);
             self.refresh();
+        }
+    }
+}
+
+/// A change requested from the panel.
+#[derive(Debug, Clone, Copy)]
+enum Op {
+    Toggle(usize, bool),
+    SetNumber(usize, u32),
+    ResetNumber(usize),
+    Choice(usize, usize),
+    Run(usize),
+}
+
+impl Op {
+    fn index(self) -> usize {
+        match self {
+            Op::Toggle(i, _) | Op::SetNumber(i, _) | Op::ResetNumber(i) | Op::Choice(i, _) | Op::Run(i) => i,
         }
     }
 }
@@ -360,6 +683,100 @@ off = "delete"
 
         let (root, sub) = registry::split_path(&key).unwrap();
         root.delete_subkey_all(sub).unwrap();
+    }
+
+    #[test]
+    fn number_and_choice_tweaks_with_undo() {
+        let key = format!(r"HKCU\Software\win-manager-rs-test-kinds-{}", std::process::id());
+        let text = format!(
+            r#"
+[[tweak]]
+id = "n"
+title = "Delay"
+description = "d"
+kind = "number"
+target = {{ key = '{key}', name = "Delay" }}
+number = {{ min = 0, max = 1000, default = 400, unit = "ms", sz = true }}
+
+[[tweak]]
+id = "c"
+title = "Mode"
+description = "d"
+kind = "choice"
+target = {{ key = '{key}', name = "Mode" }}
+[[tweak.option]]
+label = "Default"
+value = "delete"
+[[tweak.option]]
+label = "Two"
+value = {{ dword = 2 }}
+
+[[tweak]]
+id = "a"
+title = "Echo"
+description = "d"
+kind = "action"
+action = {{ program = "cmd", args = ["/c", "exit", "0"] }}
+"#
+        );
+        let tweaks = parse(&text).unwrap();
+        let (n, c, a) = (&tweaks[0], &tweaks[1], &tweaks[2]);
+        let dir = tempfile::tempdir().unwrap();
+        let journal = ChangeJournal::open(&dir.path().join("j.json"), &dir.path().join("b")).unwrap();
+
+        assert_eq!(n.current_number(), Some(400), "absent value reads as the default");
+        n.set_number(150, &journal, "t").unwrap();
+        assert_eq!(n.current_number(), Some(150));
+        assert_eq!(
+            registry::read_raw(&key, "Delay"),
+            Some(registry::string("150")),
+            "stored as REG_SZ"
+        );
+        assert!(n.set_number(5000, &journal, "t").is_err(), "out of range");
+        n.reset_number(&journal, "t").unwrap();
+        assert_eq!(n.current_number(), Some(400));
+
+        assert_eq!(c.current_choice(), Some(0));
+        c.set_choice(1, &journal, "t").unwrap();
+        assert_eq!(c.current_choice(), Some(1));
+        journal.undo(journal.entries()[0].id).unwrap();
+        assert_eq!(c.current_choice(), Some(0), "undo restores the absent value");
+
+        a.run_action(&journal, "t").unwrap();
+        assert_eq!(journal.entries()[0].description, "Echo");
+
+        let (root, sub) = registry::split_path(&key).unwrap();
+        let _ = root.delete_subkey_all(sub);
+    }
+
+    #[test]
+    fn invalid_definitions_are_rejected() {
+        let missing_target = r#"
+[[tweak]]
+id = "x"
+title = "x"
+description = "x"
+kind = "number"
+number = { min = 0, max = 5 }
+"#;
+        assert!(parse(missing_target).is_err());
+        let bad_default = r#"
+[[tweak]]
+id = "x"
+title = "x"
+description = "x"
+kind = "number"
+target = { key = 'HKCU\x', name = "y" }
+number = { min = 1, max = 5, default = 9 }
+"#;
+        assert!(parse(bad_default).is_err());
+        let empty_toggle = r#"
+[[tweak]]
+id = "x"
+title = "x"
+description = "x"
+"#;
+        assert!(parse(empty_toggle).is_err());
     }
 
     #[test]
