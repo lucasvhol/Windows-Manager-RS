@@ -147,34 +147,9 @@ pub fn diff(left: &BTreeMap<String, String>, right: &BTreeMap<String, String>) -
     out
 }
 
-/// `HKCU\Software` → `Computer\HKEY_CURRENT_USER\Software` (Registry Editor's address format).
-pub fn regedit_path(key: &str) -> String {
-    let (root, rest) = key.split_once('\\').unwrap_or((key, ""));
-    let upper = root.to_ascii_uppercase();
-    let long = match upper.as_str() {
-        "HKCU" => "HKEY_CURRENT_USER",
-        "HKLM" => "HKEY_LOCAL_MACHINE",
-        "HKCR" => "HKEY_CLASSES_ROOT",
-        "HKU" => "HKEY_USERS",
-        "HKCC" => "HKEY_CURRENT_CONFIG",
-        other => other,
-    };
-    if rest.is_empty() {
-        format!(r"Computer\{long}")
-    } else {
-        format!(r"Computer\{long}\{rest}")
-    }
-}
-
-/// Opens Registry Editor at `key` (sets the key it remembers, then starts it).
-pub fn open_in_regedit(key: &str) -> Result<()> {
-    registry::write_raw(
-        r"HKCU\Software\Microsoft\Windows\CurrentVersion\Applets\Regedit",
-        "LastKey",
-        &registry::string(&regedit_path(key)),
-    )?;
-    wm_core::shell::shell_open("regedit.exe", "-m")
-}
+use wm_core::registry::open_in_regedit;
+#[cfg(test)]
+use wm_core::registry::regedit_path;
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct Favorites {

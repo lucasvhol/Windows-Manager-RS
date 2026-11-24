@@ -5396,6 +5396,7 @@ dependencies = [
  "chrono",
  "egui_extras",
  "rfd",
+ "sysinfo",
  "tempfile",
  "tracing",
  "windows",

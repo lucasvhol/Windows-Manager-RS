@@ -9,6 +9,7 @@ anyhow = "1.0.105"
 chrono = "0.4.45"
 egui_extras = "0.37.0"
 rfd = "0.18.0"
+sysinfo = "0.40.4"
 tracing = "0.1.44"
 windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_System_Services", "Win32_System_TaskScheduler", "Win32_System_Com", "Win32_System_Variant", "Win32_System_Ole"] }
 winreg = "0.56.0"
