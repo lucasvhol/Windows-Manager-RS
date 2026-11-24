@@ -8,7 +8,7 @@ use wm_core::{
     ui::{Message, show_message},
 };
 
-use crate::command::run_streaming;
+use wm_core::command::run_streaming;
 
 /// (title, description, program, arguments)
 pub const REPAIRS: [(&str, &str, &str, &[&str]); 4] = [

@@ -2,7 +2,7 @@
 //! Optimization Wizard and My Task (scheduled maintenance via `--run <action>`).
 
 pub mod actions;
-mod command;
+
 mod fixer;
 mod my_task;
 mod oneclick_cleaner;

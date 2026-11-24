@@ -4,8 +4,8 @@
 use std::io::Read;
 use std::process::Stdio;
 
+use crate::process::hidden_command;
 use anyhow::{Context, Result};
-use wm_core::process::hidden_command;
 
 /// Incremental decoder that splits output into lines. `\r` (progress redraws) produces
 /// a status update; `\n` completes a line.
@@ -137,9 +137,28 @@ pub fn run_streaming(
     Ok((code, lines))
 }
 
+/// The last percentage in a progress line (`[====  45.2% ]` → 45.2), for progress bars.
+pub fn percent_in(s: &str) -> Option<f32> {
+    let end = s.rfind('%')?;
+    let head = s[..end].trim_end();
+    let start = head
+        .rfind(|c: char| !(c.is_ascii_digit() || c == '.' || c == ','))
+        .map_or(0, |i| i + 1);
+    head[start..].replace(',', ".").parse().ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn percentages() {
+        assert_eq!(percent_in("[====  45.2% ]"), Some(45.2));
+        assert_eq!(percent_in("[==========100.0%==========]"), Some(100.0));
+        assert_eq!(percent_in("Verification 7% complete."), Some(7.0));
+        assert_eq!(percent_in("Fortschritt 12,5 %"), Some(12.5));
+        assert_eq!(percent_in("no number"), None);
+    }
 
     fn lines_of(events: Vec<Event>) -> Vec<String> {
         events

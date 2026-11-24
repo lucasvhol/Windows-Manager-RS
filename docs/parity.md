@@ -64,7 +64,7 @@ This file tracks parity between **Win Manager RS** and the features of a commerc
 | Tool | Status | Missing | Wave |
 |---|---|---|---|
 | Disk Analyzer | ✅ | Drive picker with type and free space, or any folder; treemap and folder list; largest files (show, recycle); rescan one branch; explore; units (automatic, KB, MB, GB); export as HTML, CSV (every folder) or text tree; "Analyze with Win Manager" on folders and drives in Explorer (per user, journaled) | D |
-| Component Store Cleaner | 🟡 | Superseded-component cleanup; ScanHealth and RestoreHealth | D |
+| Component Store Cleaner | ✅ | Analyze; remove superseded components (optional /ResetBase); quick check, full scan and repair (optionally without Windows Update) with live progress and a verdict. Live DISM runs await the elevated test pass | D |
 | Smart Uninstaller | 🟡 | Batch uninstall; remove entry; rename; details; icon or list view; sort; online lookup; hotfixes; Windows apps; unavailable Program Files folders; uninstall OneDrive; export | D |
 | Windows Apps Uninstaller | 🟡 | Icon grid; export; launch; desktop shortcut; re-register; filter (Microsoft, non-Microsoft, built-in); batch uninstall; force delete; background colour | D |
 | Desktop Cleaner | 🟡 | Columns for size, user, last access and hits; select by usage; move to an "unused" folder; organize; schedule as a task; options | D |

@@ -3,6 +3,7 @@
 //! (change journal + restore points) that all system-modifying code must go through.
 
 pub mod acl;
+pub mod command;
 pub mod config;
 pub mod drives;
 pub mod elevation;
