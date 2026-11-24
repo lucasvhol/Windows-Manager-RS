@@ -27,12 +27,26 @@ pub fn known_folder(folder: KnownFolder) -> Result<PathBuf> {
         KnownFolder::PublicDesktop => FOLDERID_PublicDesktop,
         KnownFolder::Documents => FOLDERID_Documents,
     };
+    known_folder_by_id(id)
+}
+
+/// Path of any known folder by its id (e.g. from a `{B4BFCC3A-…}\file` reference).
+pub fn known_folder_by_id(id: GUID) -> Result<PathBuf> {
     unsafe {
         let p = SHGetKnownFolderPath(&id, KF_FLAG_DEFAULT, None)?;
         let path = PathBuf::from(p.to_string()?);
         CoTaskMemFree(Some(p.0 as *const _));
         Ok(path)
     }
+}
+
+/// Parses `B4BFCC3A-DB2C-424C-B029-7FE99A87C641` (braces optional) without panicking.
+pub fn parse_guid(s: &str) -> Option<GUID> {
+    let hex: String = s.trim_matches(['{', '}']).chars().filter(|c| *c != '-').collect();
+    (hex.len() == 32)
+        .then(|| u128::from_str_radix(&hex, 16).ok())
+        .flatten()
+        .map(GUID::from_u128)
 }
 
 /// Target path stored in a `.lnk` shortcut (environment variables expanded).

@@ -21,8 +21,10 @@ pub mod safety;
 pub mod shell;
 pub mod task;
 pub mod tool;
+pub mod tool_settings;
 pub mod tweaks;
 pub mod ui;
+pub mod user_assist;
 
 pub use eframe::egui;
 pub use tool::{AppCtx, Category, Tool};

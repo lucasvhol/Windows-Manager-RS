@@ -3,7 +3,7 @@
 
 mod apps;
 mod component_store;
-mod desktop;
+pub mod desktop;
 mod disk_analyzer;
 mod duplicates;
 pub mod junk;

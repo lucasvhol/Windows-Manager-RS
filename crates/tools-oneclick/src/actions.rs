@@ -20,6 +20,11 @@ pub const ACTIONS: &[(&str, &str, bool)] = &[
     ),
     ("empty-recycle-bin", "Empty the Recycle Bin", false),
     (
+        "desktop-unused",
+        "Move unused desktop items aside (Desktop Cleaner options)",
+        false,
+    ),
+    (
         "clear-traces",
         "Clear Run history, address bar history and recent files",
         false,
@@ -95,6 +100,7 @@ pub fn run(name: &str, ctx: &AppCtx<'_>) -> Result<String> {
             }
             Ok(format!("Cleared {n} activity traces."))
         }
+        "desktop-unused" => wm_tools_cleaner::desktop::move_unused(ctx),
         "flush-dns" => {
             run_checked(hidden_command("ipconfig").arg("/flushdns"))?;
             ctx.journal
