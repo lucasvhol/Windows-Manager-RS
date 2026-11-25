@@ -45,6 +45,107 @@ pub fn check_destination(source: char, dest: &Path) -> Result<()> {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FileType {
+    #[default]
+    All,
+    Pictures,
+    Documents,
+    Videos,
+    Music,
+    Archives,
+    Programs,
+}
+
+impl FileType {
+    pub const ALL: [FileType; 7] = [
+        FileType::All,
+        FileType::Pictures,
+        FileType::Documents,
+        FileType::Videos,
+        FileType::Music,
+        FileType::Archives,
+        FileType::Programs,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            FileType::All => "All types",
+            FileType::Pictures => "Pictures",
+            FileType::Documents => "Documents",
+            FileType::Videos => "Videos",
+            FileType::Music => "Music",
+            FileType::Archives => "Archives",
+            FileType::Programs => "Programs",
+        }
+    }
+
+    fn extensions(self) -> &'static [&'static str] {
+        match self {
+            FileType::All => &[],
+            FileType::Pictures => &[
+                "jpg", "jpeg", "png", "gif", "bmp", "tif", "tiff", "webp", "heic", "raw", "cr2", "nef",
+                "dng", "svg", "ico", "psd",
+            ],
+            FileType::Documents => &[
+                "doc", "docx", "xls", "xlsx", "ppt", "pptx", "pdf", "txt", "rtf", "odt", "ods", "odp", "csv",
+                "md", "epub", "pages", "key", "numbers",
+            ],
+            FileType::Videos => &[
+                "mp4", "mkv", "avi", "mov", "wmv", "webm", "m4v", "mpg", "mpeg", "flv", "3gp",
+            ],
+            FileType::Music => &["mp3", "wav", "flac", "aac", "m4a", "ogg", "wma", "opus", "aiff"],
+            FileType::Archives => &["zip", "rar", "7z", "tar", "gz", "bz2", "xz", "iso", "cab"],
+            FileType::Programs => &["exe", "msi", "dll", "bat", "cmd", "ps1", "jar", "appx", "msix"],
+        }
+    }
+
+    pub fn matches(self, name: &str) -> bool {
+        if self == FileType::All {
+            return true;
+        }
+        let ext = Path::new(name)
+            .extension()
+            .map(|e| e.to_string_lossy().to_ascii_lowercase())
+            .unwrap_or_default();
+        self.extensions().contains(&ext.as_str())
+    }
+}
+
+/// Where a recovered file goes: straight into `dest`, or into the folders it was in
+/// (rebuilt under `dest`; unknown parts become "Unknown folder").
+pub fn output_path(dest: &Path, file: &DeletedFile, keep_folders: bool) -> PathBuf {
+    let clean = |s: &str| -> String {
+        let c: String = s
+            .chars()
+            .map(|c| {
+                if r#"\/:*?"<>|"#.contains(c) || c.is_control() {
+                    '_'
+                } else {
+                    c
+                }
+            })
+            .collect();
+        let c = c.trim().trim_end_matches('.').to_owned();
+        if c.is_empty() || c == "." || c == ".." {
+            "_".into()
+        } else {
+            c
+        }
+    };
+    let mut dir = dest.to_path_buf();
+    if keep_folders {
+        for part in file.path.split('\\').filter(|p| !p.is_empty()) {
+            dir.push(if part == "?" {
+                "Unknown folder".to_owned()
+            } else {
+                clean(part)
+            });
+        }
+    }
+    unique(&dir, &clean(&file.name))
+}
+
 fn unique(dir: &Path, name: &str) -> PathBuf {
     let p = dir.join(name);
     if !p.exists() {
@@ -99,6 +200,8 @@ pub struct FileUndelete {
     found: Option<(char, Vec<DeletedFile>)>,
     filter: String,
     good_only: bool,
+    file_type: FileType,
+    keep_folders: bool,
     marked: std::collections::HashSet<u64>,
     recover: Option<BackgroundTask<RecoverResult>>,
     message: Message,
@@ -112,6 +215,8 @@ impl Default for FileUndelete {
             found: None,
             filter: String::new(),
             good_only: true,
+            file_type: FileType::All,
+            keep_folders: true,
             marked: Default::default(),
             recover: None,
             message: None,
@@ -213,13 +318,23 @@ impl Tool for FileUndelete {
         let visible: Vec<&DeletedFile> = files
             .iter()
             .filter(|x| !self.good_only || condition(x).1)
+            .filter(|x| self.file_type.matches(&x.name))
             .filter(|x| {
                 f.is_empty() || x.name.to_lowercase().contains(&f) || x.path.to_lowercase().contains(&f)
             })
             .collect();
         ui.horizontal(|ui| {
             ui.add(egui::TextEdit::singleline(&mut self.filter).hint_text("Filter by name or folder…"));
+            egui::ComboBox::from_id_salt("undelete-type")
+                .selected_text(self.file_type.label())
+                .show_ui(ui, |ui| {
+                    for t in FileType::ALL {
+                        ui.selectable_value(&mut self.file_type, t, t.label());
+                    }
+                });
             ui.checkbox(&mut self.good_only, "Only files in good condition");
+            ui.checkbox(&mut self.keep_folders, "Recover with folders")
+                .on_hover_text("Rebuilds the folders the files were in, inside the destination.");
             ui.weak(format!("{} of {} deleted files", visible.len(), files.len()));
             ui.separator();
             let n = self.marked.len();
@@ -239,12 +354,16 @@ impl Tool for FileUndelete {
                             .filter(|x| self.marked.contains(&x.record))
                             .cloned()
                             .collect();
+                        let keep = self.keep_folders;
                         self.recover = Some(BackgroundTask::spawn(ui.ctx(), move |p| {
                             let v = Volume::open(source)?;
                             let (mut ok, mut created, mut errors) = (0, Vec::new(), Vec::new());
                             for (i, file) in chosen.iter().enumerate() {
                                 p.report(i as f32 / chosen.len() as f32, file.name.clone());
-                                let out = unique(&dest, &file.name);
+                                let out = output_path(&dest, file, keep);
+                                if let Some(parent) = out.parent() {
+                                    let _ = std::fs::create_dir_all(parent);
+                                }
                                 let r = File::create(&out)
                                     .context("creating output")
                                     .and_then(|fh| v.copy_data(&file.data, &mut BufWriter::new(fh)));
@@ -327,6 +446,49 @@ mod tests {
         assert!(check_destination('c', Path::new(r"c:\x")).is_err());
         assert!(check_destination('C', Path::new(r"D:\Recovered")).is_ok());
         assert!(check_destination('C', Path::new(r"\\server\share")).is_err());
+    }
+
+    #[test]
+    fn types_and_output_paths() {
+        assert!(FileType::Pictures.matches("Holiday.JPG"));
+        assert!(!FileType::Pictures.matches("notes.txt"));
+        assert!(FileType::Documents.matches("notes.txt"));
+        assert!(FileType::All.matches("anything"));
+        assert!(!FileType::Music.matches("no-extension"));
+
+        let dir = tempfile::tempdir().unwrap();
+        let f = |path: &str, name: &str| DeletedFile {
+            record: 1,
+            name: name.into(),
+            path: path.into(),
+            size: 1,
+            modified: String::new(),
+            data: crate::ntfs::Data::Resident(vec![1]),
+            overwritten: 0.0,
+        };
+        let flat = output_path(dir.path(), &f(r"\Users\Ana\Docs", "a.txt"), false);
+        assert_eq!(flat, dir.path().join("a.txt"));
+        let kept = output_path(dir.path(), &f(r"\Users\Ana\Docs", "a.txt"), true);
+        assert_eq!(
+            kept,
+            dir.path().join("Users").join("Ana").join("Docs").join("a.txt")
+        );
+        let odd = output_path(dir.path(), &f(r"\?\..\x:y", "b?.txt"), true);
+        assert_eq!(
+            odd,
+            dir.path()
+                .join("Unknown folder")
+                .join("_")
+                .join("x_y")
+                .join("b_.txt"),
+            "names can't escape the destination"
+        );
+        std::fs::write(&flat, b"x").unwrap();
+        assert_eq!(
+            output_path(dir.path(), &f(r"\x", "a.txt"), false),
+            dir.path().join("a (2).txt"),
+            "existing files are never overwritten"
+        );
     }
 
     #[test]
