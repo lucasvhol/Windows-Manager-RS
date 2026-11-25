@@ -1980,6 +1980,8 @@ dependencies = [
  "num-traits",
  "png",
  "tiff",
+ "zune-core",
+ "zune-jpeg",
 ]
 
 [[package]]
@@ -5315,6 +5317,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "egui_extras",
+ "image",
  "rfd",
  "serde",
  "serde_json",

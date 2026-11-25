@@ -1,8 +1,13 @@
-//! Visual Customizer: appearance switches, fonts and sizes of window parts, and icon
-//! replacements (desktop system icons, Windows' stock icons, file-type icons).
+//! Visual Customizer: appearance switches, fonts and sizes of window parts, icon
+//! replacements (desktop system icons, Windows' stock icons, file-type icons), folder
+//! colours, themes, and lock-screen and Bing pictures.
 
+mod folders;
 mod fonts;
+mod gallery;
 mod icons;
+mod pictures;
+mod themes;
 
 use std::collections::HashMap;
 
@@ -21,12 +26,16 @@ use fonts::{Element, Metrics, Size};
 
 const ID: &str = "visual";
 
-const SECTIONS: [(&str, &str); 5] = [
+const SECTIONS: [(&str, &str); 9] = [
     (glyph::SLIDERS, "System settings"),
     (glyph::PENCIL_SIMPLE, "Font and size"),
     (glyph::DESKTOP, "System icons"),
     (glyph::IMAGE, "Other icons"),
     (glyph::FILE_TEXT, "File-type icons"),
+    (glyph::FOLDERS, "Folder colorizer"),
+    (glyph::PAINT_BRUSH, "Theme changer"),
+    (glyph::LOCK, "Lock-screen pictures"),
+    (glyph::GLOBE, "Bing pictures"),
 ];
 
 /// Extensions whose icon this tool changed (only those get a Restore button, so an
@@ -55,6 +64,7 @@ pub struct VisualCustomizer {
     extensions: Option<Vec<String>>,
     filter: String,
     saved: Saved,
+    gallery: gallery::Gallery,
     confirm: Confirm<Ask>,
     message: Message,
 }
@@ -73,6 +83,7 @@ impl VisualCustomizer {
             extensions: None,
             filter: String::new(),
             saved: tool_settings::load(ID),
+            gallery: gallery::Gallery::default(),
             confirm: Confirm::default(),
             message: None,
         }
@@ -500,6 +511,7 @@ impl Tool for VisualCustomizer {
 
     fn ui(&mut self, ui: &mut egui::Ui, ctx: &mut AppCtx<'_>) {
         self.handle_confirm(ui, ctx);
+        self.gallery.poll(ui.ctx(), ctx, &mut self.message);
         egui::Panel::left("visual-sections")
             .resizable(false)
             .exact_size(180.0)
@@ -517,7 +529,11 @@ impl Tool for VisualCustomizer {
             1 => self.fonts_page(ui, ctx),
             2 => self.system_icons_page(ui, ctx),
             3 => self.other_icons_page(ui, ctx),
-            _ => self.file_types_page(ui, ctx),
+            4 => self.file_types_page(ui, ctx),
+            5 => self.gallery.folders_page(ui, ctx, &mut self.message),
+            6 => self.gallery.themes_page(ui, ctx, &mut self.message),
+            7 => self.gallery.lock_screen_page(ui, ctx, &mut self.message),
+            _ => self.gallery.bing_page(ui, ctx, &mut self.message),
         }
         show_message(ui, &self.message);
     }

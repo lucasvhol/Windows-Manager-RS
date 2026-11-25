@@ -147,6 +147,41 @@ unsafe fn icon_to_rgba(icon: HICON) -> Option<IconImage> {
     result
 }
 
+/// Windows' own thumbnail of a file (from its thumbnail cache when available), fitted
+/// into `size × size`. Fast even for very large pictures. Returns (width, height, RGBA).
+pub fn thumbnail(path: &Path, size: u32) -> Option<(usize, usize, Vec<u8>)> {
+    use windows::Win32::Foundation::SIZE;
+    use windows::Win32::UI::Shell::{
+        IShellItemImageFactory, SHCreateItemFromParsingName, SIIGBF_RESIZETOFIT,
+    };
+    crate::shell::ensure_com();
+    let factory: IShellItemImageFactory =
+        unsafe { SHCreateItemFromParsingName(&HSTRING::from(path.as_os_str()), None) }.ok()?;
+    let side = size as i32;
+    let bmp = unsafe { factory.GetImage(SIZE { cx: side, cy: side }, SIIGBF_RESIZETOFIT) }.ok()?;
+    let obj = HGDIOBJ(bmp.0);
+    let mut bm = BITMAP::default();
+    let got = unsafe { GetObjectW(obj, size_of::<BITMAP>() as i32, Some((&raw mut bm).cast())) };
+    let result = (got != 0 && bm.bmWidth > 0).then(|| {
+        let (w, h) = (bm.bmWidth, bm.bmHeight.abs());
+        let hdc = unsafe { CreateCompatibleDC(None) };
+        let px = unsafe { bitmap_pixels(hdc, obj, w, h) };
+        unsafe {
+            let _ = DeleteDC(hdc);
+        }
+        px.map(|mut px| {
+            for p in px.as_chunks_mut::<4>().0.iter_mut() {
+                p.swap(0, 2); // BGRA → RGBA
+                p[3] = 255; // photos are opaque; the alpha byte is not always set
+            }
+            (w as usize, h as usize, px)
+        })
+    });
+    unsafe {
+        let _ = DeleteObject(obj);
+    }
+    result.flatten()
+}
 #[cfg(test)]
 mod tests {
     use super::*;
