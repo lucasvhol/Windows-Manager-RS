@@ -3,6 +3,7 @@
 
 mod context_menu;
 pub mod custom_extras;
+mod explorer_extras;
 mod hotkeys;
 mod jumplist;
 mod navpane;
@@ -27,12 +28,11 @@ pub const APP_SETTINGS_TWEAKS: &str = include_str!("../tweaks/appsettings.toml")
 pub fn tools() -> Vec<Box<dyn Tool>> {
     vec![
         Box::new(visual::VisualCustomizer::new(VISUAL_TWEAKS)),
-        Box::new(TweakTool::new(
-            Category::Customization,
-            "explorertweaks",
-            "",
-            include_str!("../tweaks/explorer.toml"),
-        )),
+        Box::new(
+            TweakTool::new(Category::Customization, "explorertweaks", "", EXPLORER_TWEAKS)
+                .with_extra(Box::new(explorer_extras::DragActionSetting::default()))
+                .with_extra(Box::new(explorer_extras::NamingTemplateSetting::default())),
+        ),
         Box::new(
             TweakTool::new(Category::Customization, "customsystem", "", CUSTOM_TWEAKS)
                 .with_extra(Box::new(custom_extras::ThemeScheduleSetting::default()))
