@@ -3,6 +3,7 @@
 
 mod download_windows;
 pub mod file_splitter;
+mod move_folders;
 mod registry_extra;
 mod registry_tools;
 pub mod super_copy;
@@ -17,5 +18,6 @@ pub fn tools() -> Vec<Box<dyn Tool>> {
         Box::new(registry_tools::RegistryTools::default()),
         Box::new(windows_utilities::WindowsUtilities::default()),
         Box::new(download_windows::DownloadWindows::default()),
+        Box::new(move_folders::MoveFolders::default()),
     ]
 }
