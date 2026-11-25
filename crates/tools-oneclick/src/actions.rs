@@ -39,6 +39,11 @@ pub const ACTIONS: &[(&str, &str, bool)] = &[
         "Switch light or dark mode by the theme schedule (Custom System)",
         false,
     ),
+    (
+        "kill-background",
+        "End background programs (1-Click Kill Processes, Standard tier)",
+        false,
+    ),
     ("flush-dns", "Flush the DNS cache", true),
     ("restore-point", "Create a System Restore point", true),
     (
@@ -121,6 +126,7 @@ pub fn run(name: &str, ctx: &AppCtx<'_>) -> Result<String> {
             Ok(format!("Cleared {n} activity traces."))
         }
         "desktop-unused" => wm_tools_cleaner::desktop::move_unused(ctx),
+        "kill-background" => crate::kill_processes::run_standard(ctx),
         "theme-auto" => wm_tools_custom::custom_extras::auto_apply(),
         wm_tools_security::autologon::OFF_ACTION => wm_tools_security::autologon::disable(),
         "flush-dns" => {

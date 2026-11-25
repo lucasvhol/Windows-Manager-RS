@@ -8,7 +8,7 @@ use wm_core::{Category, icons as i};
 pub const TILES: &[(Category, &[&str])] = &[
     (
         Category::OneClick,
-        &["fixer", "oneclickclean", "repair", "wizard"],
+        &["fixer", "oneclickclean", "killprocs", "repair", "wizard"],
     ),
     (
         Category::Information,
@@ -125,6 +125,7 @@ pub fn tool_icon(id: &str) -> &'static str {
         "duplicates" => i::COPY,
         "regclean" => i::DATABASE,
         "regdefrag" => i::STACK,
+        "killprocs" => i::LIGHTNING,
         "explorertweaks" => i::FOLDER_OPEN,
         "navpane" => i::TREE_VIEW,
         "thispc" => i::MONITOR,

@@ -4,6 +4,7 @@
 pub mod actions;
 
 mod fixer;
+pub mod kill_processes;
 pub mod monitor;
 mod my_task;
 mod my_task_rules;
@@ -17,6 +18,7 @@ pub fn tools() -> Vec<Box<dyn Tool>> {
     vec![
         Box::new(oneclick_cleaner::OneClickCleaner::default()),
         Box::new(fixer::OneClickFixer::default()),
+        Box::new(kill_processes::KillProcesses::default()),
         Box::new(wizard::Wizard::default()),
         Box::new(repair_center::RepairCenter::default()),
         Box::new(my_task::MyTask::default()),
