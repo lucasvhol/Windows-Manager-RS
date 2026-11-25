@@ -41,6 +41,11 @@ pub const ACTIONS: &[(&str, &str, bool)] = &[
     ),
     ("flush-dns", "Flush the DNS cache", true),
     ("restore-point", "Create a System Restore point", true),
+    (
+        wm_tools_security::autologon::OFF_ACTION,
+        "Turn off automatic sign-in and delete its stored password",
+        true,
+    ),
 ];
 
 /// Junk rules selected by default that the current process may clean.
@@ -117,6 +122,7 @@ pub fn run(name: &str, ctx: &AppCtx<'_>) -> Result<String> {
         }
         "desktop-unused" => wm_tools_cleaner::desktop::move_unused(ctx),
         "theme-auto" => wm_tools_custom::custom_extras::auto_apply(),
+        wm_tools_security::autologon::OFF_ACTION => wm_tools_security::autologon::disable(),
         "flush-dns" => {
             run_checked(hidden_command("ipconfig").arg("/flushdns"))?;
             ctx.journal

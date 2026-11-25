@@ -1,6 +1,7 @@
 //! Security tools (Phase 5): privacy, settings restrictions, file permissions,
 //! password encryption and read-only NTFS undelete.
 
+pub mod autologon;
 pub mod crypto;
 mod device_security;
 mod file_security;
@@ -30,12 +31,10 @@ pub fn tools() -> Vec<Box<dyn Tool>> {
         Box::new(undelete::FileUndelete::default()),
         Box::new(device_security::DeviceSecurity::default()),
         Box::new(system_protection::SystemProtection::default()),
-        Box::new(TweakTool::new(
-            Category::Security,
-            "systemsecurity",
-            "",
-            SYSTEM_SECURITY_TWEAKS,
-        )),
+        Box::new(
+            TweakTool::new(Category::Security, "systemsecurity", "", SYSTEM_SECURITY_TWEAKS)
+                .with_extra(Box::new(autologon::AutoSignInSetting::default())),
+        ),
         Box::new(TweakTool::new(
             Category::Security,
             "othersecurity",
