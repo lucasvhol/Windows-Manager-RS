@@ -79,6 +79,7 @@ uninstaller-title = Smart Uninstaller
 apps-title = Windows Apps Uninstaller
 winsxs-title = Component Store Cleaner
 regclean-title = Registry Cleaner
+downloadwin-title = Download Windows 11
 killprocs-title = 1-Click Kill Processes
 regdefrag-title = Registry Defrag
 
@@ -159,6 +160,7 @@ desktop-desc = Tidy up desktop items you rarely use.
 junk-desc = Remove temporary files, caches, logs and other junk.
 duplicates-desc = Find identical files and reclaim the space they use.
 regclean-desc = Remove registry entries that point to things that no longer exist.
+downloadwin-desc = Microsoft's official ways to upgrade, reinstall or make install media.
 killprocs-desc = End programs you don't need right now to free memory and CPU.
 regdefrag-desc = Rebuild the registry files without their empty space.
 customsystem-desc = Desktop, taskbar, Start, notifications, sign-in and keyboard options.

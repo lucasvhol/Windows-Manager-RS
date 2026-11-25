@@ -1,6 +1,7 @@
 //! Misc. utilities (Phase 7): file splitter, verified copy, registry tools and a
 //! launcher for Windows' built-in administrative tools.
 
+mod download_windows;
 pub mod file_splitter;
 mod registry_extra;
 mod registry_tools;
@@ -15,5 +16,6 @@ pub fn tools() -> Vec<Box<dyn Tool>> {
         Box::new(super_copy::SuperCopy::default()),
         Box::new(registry_tools::RegistryTools::default()),
         Box::new(windows_utilities::WindowsUtilities::default()),
+        Box::new(download_windows::DownloadWindows::default()),
     ]
 }

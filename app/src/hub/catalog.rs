@@ -73,7 +73,14 @@ pub const TILES: &[(Category, &[&str])] = &[
     ),
     (
         Category::Misc,
-        &["mytask", "utilities", "splitter", "supercopy", "regtools"],
+        &[
+            "mytask",
+            "utilities",
+            "splitter",
+            "supercopy",
+            "regtools",
+            "downloadwin",
+        ],
     ),
 ];
 
@@ -126,6 +133,7 @@ pub fn tool_icon(id: &str) -> &'static str {
         "regclean" => i::DATABASE,
         "regdefrag" => i::STACK,
         "killprocs" => i::LIGHTNING,
+        "downloadwin" => i::WINDOWS_LOGO,
         "explorertweaks" => i::FOLDER_OPEN,
         "navpane" => i::TREE_VIEW,
         "thispc" => i::MONITOR,
