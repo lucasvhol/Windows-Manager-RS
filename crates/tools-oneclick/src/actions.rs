@@ -18,6 +18,11 @@ pub const ACTIONS: &[(&str, &str, bool)] = &[
         "Clean junk files (the default selection of the Junk File Cleaner)",
         false,
     ),
+    (
+        "oneclick-clean",
+        "Run the 1-Click Cleaner with its saved selection",
+        false,
+    ),
     ("empty-recycle-bin", "Empty the Recycle Bin", false),
     (
         "desktop-unused",
@@ -80,6 +85,7 @@ pub fn run(name: &str, ctx: &AppCtx<'_>) -> Result<String> {
     }
     match name {
         "junk-clean" => clean_junk(ctx, &scan_junk(&default_junk_rules(ctx.elevated))),
+        "oneclick-clean" => crate::oneclick_cleaner::run_saved(ctx),
         "empty-recycle-bin" => {
             let rule = junk::parse_rules(junk::RULES)?
                 .into_iter()

@@ -7,6 +7,7 @@ version.workspace = true
 [dependencies]
 anyhow = "1.0.105"
 chrono = "0.4.45"
+serde = { version = "1.0.229", features = ["derive"] }
 tracing = "0.1.44"
 wm-core = { version = "0.1.0", path = "../core" }
 wm-tools-cleaner = { version = "0.1.0", path = "../tools-cleaner" }
@@ -15,4 +16,5 @@ wm-tools-optimizer = { version = "0.1.0", path = "../tools-optimizer" }
 wm-tools-security = { version = "0.1.0", path = "../tools-security" }
 
 [dev-dependencies]
+serde_json = "1.0.154"
 tempfile = "3.27.0"
