@@ -6,6 +6,7 @@ pub mod crypto;
 mod device_security;
 mod file_security;
 mod file_tools;
+mod image_hijack;
 pub mod ntfs;
 pub mod privacy;
 pub mod privacy_traces;
@@ -28,6 +29,8 @@ pub fn tools() -> Vec<Box<dyn Tool>> {
         Box::new(privacy::PrivacyProtector::default()),
         Box::new(settings_security::SettingsSecurity::default()),
         Box::new(file_security::FileSecurity::default()),
+        Box::new(file_security::Unlocker::default()),
+        Box::new(image_hijack::ImageHijack::default()),
         Box::new(security_lock::SecurityLock::default()),
         Box::new(undelete::FileUndelete::default()),
         Box::new(device_security::DeviceSecurity::default()),

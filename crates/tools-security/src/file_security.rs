@@ -850,6 +850,32 @@ impl FileSecurity {
     }
 }
 
+/// File & Folder Unlocker: the same window, opened on its Unlock tab.
+pub struct Unlocker(FileSecurity);
+
+impl Default for Unlocker {
+    fn default() -> Self {
+        Self(FileSecurity {
+            tab: Tab::Unlock,
+            ..FileSecurity::default()
+        })
+    }
+}
+
+impl Tool for Unlocker {
+    fn id(&self) -> &'static str {
+        "unlocker"
+    }
+
+    fn category(&self) -> Category {
+        Category::Security
+    }
+
+    fn ui(&mut self, ui: &mut egui::Ui, ctx: &mut AppCtx<'_>) {
+        self.0.ui(ui, ctx);
+    }
+}
+
 impl Tool for FileSecurity {
     fn id(&self) -> &'static str {
         "filesecurity"

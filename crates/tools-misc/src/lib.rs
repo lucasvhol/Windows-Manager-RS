@@ -1,6 +1,7 @@
 //! Misc. utilities (Phase 7): file splitter, verified copy, registry tools and a
 //! launcher for Windows' built-in administrative tools.
 
+mod compat_manager;
 mod download_windows;
 pub mod file_splitter;
 mod move_folders;
@@ -19,5 +20,6 @@ pub fn tools() -> Vec<Box<dyn Tool>> {
         Box::new(windows_utilities::WindowsUtilities::default()),
         Box::new(download_windows::DownloadWindows::default()),
         Box::new(move_folders::MoveFolders::default()),
+        Box::new(compat_manager::CompatManager::default()),
     ]
 }
