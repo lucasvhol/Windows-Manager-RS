@@ -5,6 +5,7 @@ pub mod autologon;
 pub mod crypto;
 mod device_security;
 mod file_security;
+mod file_tools;
 pub mod ntfs;
 pub mod privacy;
 pub mod privacy_traces;

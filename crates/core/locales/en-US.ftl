@@ -103,7 +103,7 @@ othersecurity-title = Other Security
 devicesecurity-title = Device Security
 systemprotection-title = System Protection
 lockdown-title = Settings Security
-filesecurity-title = File Security
+filesecurity-title = Files and Folders
 securitylock-title = Security Lock
 undelete-title = File Undelete
 
@@ -177,7 +177,7 @@ othersecurity-desc = App permissions, Windows Update, OneDrive, registry backup 
 devicesecurity-desc = Hide or block drives, block programs, control USB storage and drive letters.
 systemprotection-desc = Restore points, protection per drive and Windows recovery tools.
 lockdown-desc = Restrict what this account can change, and harden Windows.
-filesecurity-desc = File and folder ownership and permissions.
+filesecurity-desc = Encrypt, shred, protect or unlock files and folders, and manage their permissions.
 privacy-desc = Limit tracking and clear activity history.
 securitylock-desc = Protect files and folders with a password.
 undelete-desc = Recover files deleted from NTFS drives.

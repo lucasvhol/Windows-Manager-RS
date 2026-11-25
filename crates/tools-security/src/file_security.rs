@@ -1,5 +1,7 @@
-//! File Security: view a file or folder's owner and permissions, take ownership,
-//! grant yourself access, reset to inherited permissions, or remove explicit entries.
+//! Files and Folders (File Security): a list of files and folders to encrypt or decrypt
+//! (through Security Lock), shred, protect or unlock; plus a viewer for an item's owner
+//! and permissions with take ownership, grant yourself access, reset to inherited
+//! permissions and removal of explicit entries.
 //!
 //! Reading uses the Win32 security API; changes go through `icacls` (locale-independent
 //! switches). Before each change the ACLs are saved with `icacls /save` and the owner is
@@ -7,6 +9,8 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::file_tools::{self, Holder, ShredReport};
+use crate::security_lock::SecurityLock;
 use anyhow::{Context, Result, bail};
 use windows::Win32::Foundation::{HLOCAL, LocalFree, WIN32_ERROR};
 use windows::Win32::Security::Authorization::{
@@ -18,15 +22,19 @@ use windows::Win32::Security::{
 };
 use windows::core::{HSTRING, PCWSTR, PWSTR};
 use wm_core::{
-    AppCtx, Category, Tool, egui, paths,
+    AppCtx, Category, Tool, egui,
+    explorer_verb::{self, Target, Verb},
+    paths,
     process::{hidden_command, run_checked},
     safety::UndoAction,
+    task::BackgroundTask,
     ui::{Confirm, Message, show_message},
 };
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct AceInfo {
     pub account: String,
+    pub sid: String,
     pub allow: bool,
     pub mask: u32,
     pub inherited: bool,
@@ -91,13 +99,25 @@ fn account_name(sid: PSID) -> String {
             let d = String::from_utf16_lossy(&domain[..dlen as usize]);
             return if d.is_empty() { n } else { format!("{d}\\{n}") };
         }
+        let s = sid_string(sid);
+        if s.is_empty() {
+            "(unknown account)".into()
+        } else {
+            s
+        }
+    }
+}
+
+/// `S-1-1-0` style text for a SID (the same in every Windows language).
+fn sid_string(sid: PSID) -> String {
+    unsafe {
         let mut s = PWSTR::null();
         if ConvertSidToStringSidW(sid, &mut s).is_ok() {
             let text = s.to_string().unwrap_or_default();
             let _ = LocalFree(Some(HLOCAL(s.0.cast())));
             return text;
         }
-        "(unknown account)".into()
+        String::new()
     }
 }
 
@@ -139,6 +159,7 @@ pub fn read_security(path: &Path) -> Result<Security> {
                     let sid = PSID(std::ptr::addr_of!(allowed.SidStart) as *mut _);
                     entries.push(AceInfo {
                         account: account_name(sid),
+                        sid: sid_string(sid),
                         allow: header.AceType == 0,
                         mask: allowed.Mask,
                         inherited: header.AceFlags & 0x10 != 0,
@@ -170,12 +191,40 @@ pub enum Change {
     TakeOwnership,
     GrantMeFullControl,
     ResetToInherited,
-    RemoveEntries { account: String, allow: bool },
+    RemoveEntries {
+        account: String,
+        allow: bool,
+    },
+    /// Deny everyone (administrators too) changing the item: writing always, running
+    /// programs unless `executable`, deleting if `undeletable`.
+    Protect {
+        executable: bool,
+        undeletable: bool,
+    },
+    /// Removes the explicit deny entries for Everyone that Protect adds.
+    Unprotect,
 }
+
+/// The Everyone group, by SID so it works in every Windows language.
+const EVERYONE: &str = "*S-1-1-0";
 
 impl Change {
     pub fn describe(&self) -> String {
         match self {
+            Change::Protect {
+                executable,
+                undeletable,
+            } => {
+                let mut s = "Protect from changes".to_owned();
+                if *executable {
+                    s += ", programs can run";
+                }
+                if *undeletable {
+                    s += ", undeletable";
+                }
+                s
+            }
+            Change::Unprotect => "Remove protection".into(),
             Change::TakeOwnership => "Take ownership".into(),
             Change::GrantMeFullControl => "Grant me full control".into(),
             Change::ResetToInherited => "Reset to inherited permissions".into(),
@@ -197,6 +246,36 @@ impl Change {
                 vec!["/grant".into(), format!("{}:{inherit}F", current_user())]
             }
             Change::ResetToInherited => vec!["/reset".into()],
+            Change::Protect {
+                executable,
+                undeletable,
+            } => {
+                let mut rights = vec!["W"];
+                if *undeletable {
+                    rights.push("D");
+                    if is_dir {
+                        rights.push("DC");
+                    }
+                }
+                let inherit = if is_dir { "(OI)(CI)" } else { "" };
+                let mut a = vec![
+                    "/deny".into(),
+                    format!("{EVERYONE}:{inherit}({})", rights.join(",")),
+                ];
+                if !executable {
+                    // On a folder, X also means "enter it", so deny running only for the
+                    // files inside (inherit-only), never for the folder itself.
+                    a.push(if is_dir {
+                        format!("{EVERYONE}:(OI)(IO)(X)")
+                    } else {
+                        format!("{EVERYONE}:(X)")
+                    });
+                }
+                // Inheritance already covers the contents; no /t.
+                a.push("/c".into());
+                return a;
+            }
+            Change::Unprotect => vec!["/remove:d".into(), EVERYONE.into()],
             Change::RemoveEntries { account, allow } => {
                 vec![
                     if *allow { "/remove:g" } else { "/remove:d" }.into(),
@@ -214,6 +293,22 @@ impl Change {
 
 fn icacls(path: &Path, args: &[String]) -> Result<()> {
     run_checked(hidden_command("icacls").arg(path).args(args)).map(|_| ())
+}
+
+/// Whether the folder's only explicit deny for Everyone is the "delete subfolders and
+/// files" entry that Undeletable adds, so removing Everyone's deny entries there
+/// undoes just that (and never a protection set on the folder itself).
+fn only_dc_denied(folder: &Path) -> bool {
+    const DELETE_CHILD: u32 = 0x40;
+    let Ok(sec) = read_security(folder) else {
+        return false;
+    };
+    let denies: Vec<&AceInfo> = sec
+        .entries
+        .iter()
+        .filter(|e| !e.allow && !e.inherited && e.sid == "S-1-1-0")
+        .collect();
+    !denies.is_empty() && denies.iter().all(|e| e.mask == DELETE_CHILD)
 }
 
 /// Applies a change after saving the current ACLs; returns the undo action.
@@ -257,6 +352,29 @@ pub fn apply(path: &Path, change: &Change, recursive: bool, backups: &Path) -> R
     };
     icacls(path, &change.icacls_args(is_dir, recursive))?;
 
+    // Windows also lets an item be deleted by anyone allowed to "delete subfolders and
+    // files" in its folder, so Undeletable denies that on the parent too. The entry is
+    // not inherited, so the folder's other items stay deletable through their own
+    // permissions. Drive roots are left alone.
+    let parent_args: Option<Vec<String>> = match change {
+        Change::Protect {
+            undeletable: true, ..
+        } => Some(vec!["/deny".into(), format!("{EVERYONE}:(DC)"), "/c".into()]),
+        Change::Unprotect if only_dc_denied(parent) => {
+            Some(vec!["/remove:d".into(), EVERYONE.into(), "/c".into()])
+        }
+        _ => None,
+    };
+    if let Some(args) = parent_args
+        && parent.parent().is_some()
+    {
+        steps.push(UndoAction::RestoreAcl {
+            path: parent.to_owned(),
+            sddl: wm_core::acl::dacl_sddl(parent)?,
+        });
+        icacls(parent, &args)?;
+    }
+
     if *change == Change::TakeOwnership {
         let mut args = vec![
             path.display().to_string(),
@@ -275,79 +393,381 @@ pub fn apply(path: &Path, change: &Change, recursive: bool, backups: &Path) -> R
     Ok(UndoAction::Sequence { steps })
 }
 
+const VERB: Verb<'static> = Verb {
+    id: "WinManager.FilesAndFolders",
+    label: "Encrypt, shred or unlock with Win Manager",
+    args: "--open filesecurity --add",
+    targets: &[Target::AnyFile, Target::Folder],
+};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum Tab {
+    #[default]
+    Encrypt,
+    Shred,
+    Permissions,
+    Unlock,
+}
+
 #[derive(Default)]
 pub struct FileSecurity {
-    path: String,
+    items: Vec<PathBuf>,
+    /// The item whose permissions are shown.
+    selected: Option<usize>,
+    tab: Tab,
+    lock: SecurityLock,
     security: Option<Result<Security, String>>,
     recursive: bool,
-    confirm: Confirm<Change>,
+    executable: bool,
+    undeletable: bool,
+    confirm: Confirm<(Change, bool)>,
+    shred_confirm: Confirm<()>,
+    shred_task: Option<BackgroundTask<ShredReport>>,
+    holders: Option<Result<Vec<Holder>, String>>,
+    unlock_confirm: Confirm<()>,
     message: Message,
+    handled_args: bool,
+    menu_installed: Option<bool>,
 }
 
 impl FileSecurity {
+    fn selected_path(&self) -> Option<PathBuf> {
+        self.selected.and_then(|i| self.items.get(i)).cloned()
+    }
+
     fn load(&mut self) {
-        self.security = Some(read_security(Path::new(self.path.trim())).map_err(|e| format!("{e:#}")));
-    }
-}
-
-impl Tool for FileSecurity {
-    fn id(&self) -> &'static str {
-        "filesecurity"
+        self.security = self
+            .selected_path()
+            .map(|p| read_security(&p).map_err(|e| format!("{e:#}")));
     }
 
-    fn category(&self) -> Category {
-        Category::Security
+    fn add(&mut self, paths: impl IntoIterator<Item = PathBuf>) {
+        for p in paths {
+            if !self.items.contains(&p) {
+                self.items.push(p);
+            }
+        }
+        if self.selected.is_none() && !self.items.is_empty() {
+            self.selected = Some(0);
+            self.load();
+        }
+        self.holders = None;
     }
 
-    fn requires_admin(&self) -> bool {
-        true
+    fn list_ui(&mut self, ui: &mut egui::Ui, ctx: &AppCtx<'_>) {
+        ui.horizontal(|ui| {
+            if ui.button("Add files…").clicked()
+                && let Some(files) = rfd::FileDialog::new().pick_files()
+            {
+                self.add(files);
+            }
+            if ui.button("Add folder…").clicked()
+                && let Some(d) = rfd::FileDialog::new().pick_folder()
+            {
+                self.add([d]);
+            }
+            if ui
+                .add_enabled(self.selected.is_some(), egui::Button::new("Remove"))
+                .clicked()
+                && let Some(i) = self.selected
+            {
+                self.items.remove(i);
+                self.selected = (!self.items.is_empty()).then(|| i.min(self.items.len() - 1));
+                self.load();
+                self.holders = None;
+            }
+            if ui
+                .add_enabled(!self.items.is_empty(), egui::Button::new("Clear list"))
+                .clicked()
+            {
+                self.items.clear();
+                self.selected = None;
+                self.security = None;
+                self.holders = None;
+            }
+            let installed = *self.menu_installed.get_or_insert_with(|| VERB.is_installed());
+            let mut on = installed;
+            if ui
+                .checkbox(&mut on, "In Explorer's right-click menu")
+                .on_hover_text("Adds \"Encrypt, shred or unlock with Win Manager\" for files and folders.")
+                .changed()
+            {
+                let r = if on {
+                    VERB.install(ctx.journal, "filesecurity")
+                } else {
+                    VERB.uninstall(ctx.journal, "filesecurity")
+                };
+                self.message = Some(
+                    r.map(|()| "Explorer menu updated.".into())
+                        .map_err(|e| format!("{e:#}")),
+                );
+                self.menu_installed = None;
+            }
+        });
+        ui.weak("You can also drop files and folders on this window.");
+        let dropped: Vec<PathBuf> = ui.ctx().input(|i| {
+            i.raw
+                .dropped_files
+                .iter()
+                .map(|f| f.path().to_path_buf())
+                .collect()
+        });
+        if !dropped.is_empty() {
+            self.add(dropped);
+        }
+        let mut clicked = None;
+        egui::ScrollArea::vertical()
+            .id_salt("fs-items")
+            .max_height(140.0)
+            .auto_shrink([false, true])
+            .show(ui, |ui| {
+                if self.items.is_empty() {
+                    ui.weak("No files or folders yet.");
+                }
+                for (i, p) in self.items.iter().enumerate() {
+                    let kind = if p.is_dir() { "folder" } else { "file" };
+                    if ui
+                        .selectable_label(self.selected == Some(i), format!("{}   ({kind})", p.display()))
+                        .clicked()
+                    {
+                        clicked = Some(i);
+                    }
+                }
+            });
+        if let Some(i) = clicked {
+            self.selected = Some(i);
+            self.load();
+        }
     }
 
-    fn ui(&mut self, ui: &mut egui::Ui, ctx: &mut AppCtx<'_>) {
-        if let Some(change) = self.confirm.show(ui.ctx(), ctx.i18n) {
-            let path = PathBuf::from(self.path.trim());
+    fn shred_ui(&mut self, ui: &mut egui::Ui, ctx: &AppCtx<'_>) {
+        if let Some(t) = &mut self.shred_task {
+            t.poll();
+            if let Some(r) = t.take_result() {
+                self.shred_task = None;
+                self.message = Some(r.and_then(|rep| {
+                    let _ = ctx.journal.record(
+                        "filesecurity",
+                        format!("Shredded {} files", rep.shredded),
+                        UndoAction::None,
+                    );
+                    if rep.failed.is_empty() {
+                        Ok(format!("Shredded {} files.", rep.shredded))
+                    } else {
+                        Err(format!(
+                            "Shredded {}; not shredded: {}",
+                            rep.shredded,
+                            rep.failed.join("; ")
+                        ))
+                    }
+                }));
+                self.items.retain(|p| p.exists());
+                self.selected = None;
+                self.security = None;
+            }
+        }
+        if self.shred_confirm.show(ui.ctx(), ctx.i18n).is_some() {
+            if ctx.config.dry_run {
+                self.message = Some(Ok(ctx.i18n.tr("common-dry-run-skip")));
+            } else {
+                let targets = self.items.clone();
+                self.shred_task = Some(BackgroundTask::spawn(ui.ctx(), move |p| {
+                    Ok(file_tools::shred(&targets, &|f, s| p.report(f, s)))
+                }));
+            }
+        }
+        ui.label("Overwrites each file with random data, gives it a random name, then deletes it, so recovery tools can't bring it back.");
+        ui.weak("On SSDs and USB drives the drive may keep old copies of the data internally; for those, encryption gives stronger protection. System folders are refused.");
+        let files = file_tools::shred_files(&self.items).len();
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            if ui
+                .add_enabled(
+                    files > 0 && self.shred_task.is_none(),
+                    egui::Button::new(format!("Shred {files} files")),
+                )
+                .clicked()
+            {
+                self.shred_confirm.ask(
+                    format!(
+                        "Shred {files} files? They can't be recovered, not even from the Change Journal."
+                    ),
+                    (),
+                );
+            }
+            if let Some(t) = &self.shred_task {
+                ui.add(
+                    egui::ProgressBar::new(t.progress)
+                        .desired_width(240.0)
+                        .text(t.status.clone()),
+                );
+            }
+        });
+    }
+
+    fn unlock_ui(&mut self, ui: &mut egui::Ui, ctx: &AppCtx<'_>) {
+        if self.unlock_confirm.show(ui.ctx(), ctx.i18n).is_some() {
             self.message = Some(if ctx.config.dry_run {
                 Ok(ctx.i18n.tr("common-dry-run-skip"))
             } else {
-                paths::backups_dir()
-                    .and_then(|b| apply(&path, &change, self.recursive, &b))
-                    .and_then(|undo| {
+                file_tools::close_holders(&self.items)
+                    .and_then(|()| {
                         ctx.journal.record(
                             "filesecurity",
-                            format!("{} on {}", change.describe(), path.display()),
-                            undo,
-                        )
+                            format!("Closed the programs using {} item(s)", self.items.len()),
+                            UndoAction::None,
+                        )?;
+                        Ok(())
                     })
-                    .map(|_| format!("{} done.", change.describe()))
+                    .map(|()| "Asked the programs to close; any that didn't were ended.".into())
                     .map_err(|e| format!("{e:#}"))
             });
+            self.holders = None;
+        }
+        ui.label("Finds the programs that keep these files open, so you can close them and then move, rename or delete the files.");
+        ui.horizontal(|ui| {
+            if ui
+                .add_enabled(!self.items.is_empty(), egui::Button::new("Find programs"))
+                .clicked()
+            {
+                self.holders = Some(file_tools::holders(&self.items).map_err(|e| format!("{e:#}")));
+            }
+            let any = matches!(&self.holders, Some(Ok(h)) if !h.is_empty());
+            if ui.add_enabled(any, egui::Button::new("Close them")).clicked() {
+                self.unlock_confirm.ask(
+                    "Close the programs using these files? They are asked to close first and ended if they don't; unsaved work in them is lost.",
+                    (),
+                );
+            }
+        });
+        let mut end = None;
+        match &self.holders {
+            None => {}
+            Some(Err(e)) => {
+                ui.colored_label(ui.visuals().error_fg_color, e);
+            }
+            Some(Ok(h)) if h.is_empty() => {
+                ui.weak("No program has these files open.");
+            }
+            Some(Ok(h)) => {
+                egui::Grid::new("fs-holders")
+                    .striped(true)
+                    .num_columns(4)
+                    .show(ui, |ui| {
+                        for t in ["Program", "Process ID", "Service", ""] {
+                            ui.strong(t);
+                        }
+                        ui.end_row();
+                        for x in h {
+                            ui.label(&x.name);
+                            ui.label(x.pid.to_string());
+                            ui.weak(&x.service);
+                            if x.pid != std::process::id() && ui.small_button("End process").clicked() {
+                                end = Some(x.clone());
+                            }
+                            ui.end_row();
+                        }
+                    });
+            }
+        }
+        if let Some(x) = end {
+            self.message = Some(if ctx.config.dry_run {
+                Ok(ctx.i18n.tr("common-dry-run-skip"))
+            } else {
+                run_checked(hidden_command("taskkill").args(["/PID", &x.pid.to_string(), "/F"]))
+                    .map(|_| {
+                        let _ = ctx.journal.record(
+                            "filesecurity",
+                            format!("Ended {} ({}) to unlock files", x.name, x.pid),
+                            UndoAction::None,
+                        );
+                        format!("Ended {}.", x.name)
+                    })
+                    .map_err(|e| format!("{e:#}"))
+            });
+            self.holders = Some(file_tools::holders(&self.items).map_err(|e| format!("{e:#}")));
+        }
+    }
+
+    fn apply_change(&mut self, ctx: &AppCtx<'_>, change: &Change, all: bool) -> Result<String, String> {
+        if ctx.config.dry_run {
+            return Ok(ctx.i18n.tr("common-dry-run-skip"));
+        }
+        let targets: Vec<PathBuf> = if all {
+            self.items.clone()
+        } else {
+            self.selected_path().into_iter().collect()
+        };
+        let backups = paths::backups_dir().map_err(|e| format!("{e:#}"))?;
+        let mut problems = Vec::new();
+        for path in &targets {
+            let r = apply(path, change, self.recursive, &backups).and_then(|undo| {
+                ctx.journal.record(
+                    "filesecurity",
+                    format!("{} on {}", change.describe(), path.display()),
+                    undo,
+                )
+            });
+            if let Err(e) = r {
+                problems.push(format!("{}: {e:#}", path.display()));
+            }
+        }
+        if problems.is_empty() {
+            Ok(format!("{} done.", change.describe()))
+        } else {
+            Err(problems.join("; "))
+        }
+    }
+
+    fn permissions_ui(&mut self, ui: &mut egui::Ui, ctx: &AppCtx<'_>) {
+        if let Some((change, all)) = self.confirm.show(ui.ctx(), ctx.i18n) {
+            self.message = Some(self.apply_change(ctx, &change, all));
             self.load();
         }
-
+        ui.strong("Protect every item in the list");
+        ui.weak("Stops everyone, administrators included, from changing the items. Remove the protection to edit them again.");
         ui.horizontal(|ui| {
-            ui.add(
-                egui::TextEdit::singleline(&mut self.path)
-                    .hint_text(r"C:\path\to\file or folder")
-                    .desired_width(420.0),
-            );
-            if ui.button("File…").clicked()
-                && let Some(p) = rfd::FileDialog::new().pick_file()
-            {
-                self.path = p.display().to_string();
-                self.load();
+            ui.checkbox(&mut self.executable, "Executable")
+                .on_hover_text("Programs such as EXE and BAT files can still run.");
+            ui.checkbox(&mut self.undeletable, "Undeletable")
+                .on_hover_text("The items can't be deleted either.");
+            let any = !self.items.is_empty();
+            if ui.add_enabled(any, egui::Button::new("Protect")).clicked() {
+                let c = Change::Protect {
+                    executable: self.executable,
+                    undeletable: self.undeletable,
+                };
+                self.confirm.ask(
+                    format!(
+                        "{} for {} item(s)? The previous permissions are saved for undo.",
+                        c.describe(),
+                        self.items.len()
+                    ),
+                    (c, true),
+                );
             }
-            if ui.button("Folder…").clicked()
-                && let Some(p) = rfd::FileDialog::new().pick_folder()
+            if ui
+                .add_enabled(any, egui::Button::new("Remove protection"))
+                .clicked()
             {
-                self.path = p.display().to_string();
-                self.load();
+                self.confirm.ask(
+                    format!("Remove the protection from {} item(s)?", self.items.len()),
+                    (Change::Unprotect, true),
+                );
             }
-            if ui.button("Show permissions").clicked() {
+        });
+        ui.separator();
+
+        let Some(path) = self.selected_path() else {
+            ui.weak("Select an item in the list to see its owner and permissions.");
+            return;
+        };
+        ui.horizontal(|ui| {
+            ui.strong(path.display().to_string());
+            if ui.small_button(ctx.i18n.tr("common-refresh")).clicked() {
                 self.load();
             }
         });
-        show_message(ui, &self.message);
-
         let sec = match &self.security {
             Some(Ok(s)) => s.clone(),
             Some(Err(e)) => {
@@ -356,7 +776,6 @@ impl Tool for FileSecurity {
             }
             None => return,
         };
-        ui.add_space(6.0);
         ui.horizontal(|ui| {
             ui.weak("Owner:");
             ui.strong(&sec.owner);
@@ -396,14 +815,13 @@ impl Tool for FileSecurity {
         if let Some(c) = remove {
             self.confirm.ask(
                 format!("{}? The previous permissions are saved for undo.", c.describe()),
-                c,
+                (c, false),
             );
         }
 
         ui.add_space(8.0);
-        let is_dir = Path::new(self.path.trim()).is_dir();
         ui.add_enabled_ui(ctx.elevated, |ui| {
-            if is_dir {
+            if path.is_dir() {
                 ui.checkbox(&mut self.recursive, "Apply to all subfolders and files");
             }
             ui.horizontal(|ui| {
@@ -418,14 +836,54 @@ impl Tool for FileSecurity {
                         } else {
                             ""
                         };
-                        self.confirm
-                            .ask(format!("{} for {}?{warn}", c.describe(), self.path.trim()), c);
+                        self.confirm.ask(
+                            format!("{} for {}?{warn}", c.describe(), path.display()),
+                            (c, false),
+                        );
                     }
                 }
             });
         });
         if !ctx.elevated {
             ui.weak(ctx.i18n.tr("shell-needs-admin"));
+        }
+    }
+}
+
+impl Tool for FileSecurity {
+    fn id(&self) -> &'static str {
+        "filesecurity"
+    }
+
+    fn category(&self) -> Category {
+        Category::Security
+    }
+
+    fn ui(&mut self, ui: &mut egui::Ui, ctx: &mut AppCtx<'_>) {
+        if !self.handled_args {
+            self.handled_args = true;
+            if let Some(p) = explorer_verb::arg_after("--add").filter(|p| p.exists()) {
+                self.add([p]);
+            }
+        }
+        self.list_ui(ui, ctx);
+        show_message(ui, &self.message);
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            ui.selectable_value(&mut self.tab, Tab::Encrypt, "Encrypt and decrypt");
+            ui.selectable_value(&mut self.tab, Tab::Shred, "Shred");
+            ui.selectable_value(&mut self.tab, Tab::Permissions, "Permissions");
+            ui.selectable_value(&mut self.tab, Tab::Unlock, "Unlock");
+        });
+        ui.separator();
+        match self.tab {
+            Tab::Encrypt => {
+                self.lock.set_targets(&self.items);
+                self.lock.panel(ui, ctx, false);
+            }
+            Tab::Shred => self.shred_ui(ui, ctx),
+            Tab::Permissions => self.permissions_ui(ui, ctx),
+            Tab::Unlock => self.unlock_ui(ui, ctx),
         }
     }
 }
@@ -489,6 +947,70 @@ mod tests {
         journal.undo(e.id).unwrap();
         let restored = read_security(&file).unwrap();
         assert_eq!(restored.entries, before.entries, "undo restores the original ACL");
+    }
+
+    #[test]
+    fn protect_arguments() {
+        let p = |executable, undeletable| Change::Protect {
+            executable,
+            undeletable,
+        };
+        assert_eq!(
+            p(false, false).icacls_args(false, true),
+            ["/deny", "*S-1-1-0:(W)", "*S-1-1-0:(X)", "/c"]
+        );
+        // Folders: inherited by the contents, and never deny entering the folder itself.
+        assert_eq!(
+            p(false, true).icacls_args(true, true),
+            ["/deny", "*S-1-1-0:(OI)(CI)(W,D,DC)", "*S-1-1-0:(OI)(IO)(X)", "/c"]
+        );
+        assert_eq!(
+            p(true, false).icacls_args(true, false),
+            ["/deny", "*S-1-1-0:(OI)(CI)(W)", "/c"]
+        );
+        assert_eq!(
+            Change::Unprotect.icacls_args(false, false),
+            ["/remove:d", "*S-1-1-0", "/c"]
+        );
+    }
+
+    #[test]
+    fn protecting_blocks_writes_until_removed() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("p.txt");
+        std::fs::write(&file, "x").unwrap();
+        let backups = dir.path().join("b");
+        std::fs::create_dir_all(&backups).unwrap();
+        let protect = Change::Protect {
+            executable: true,
+            undeletable: true,
+        };
+        let undo = apply(&file, &protect, false, &backups).unwrap();
+        assert!(std::fs::write(&file, "changed").is_err(), "writing is denied");
+        assert!(std::fs::remove_file(&file).is_err(), "deleting is denied");
+        assert!(
+            !only_dc_denied(&file),
+            "the file's own deny entries are not DC-only"
+        );
+        assert!(
+            only_dc_denied(dir.path()),
+            "Undeletable also denies DC on the folder"
+        );
+        apply(&file, &Change::Unprotect, false, &backups).unwrap();
+        assert!(
+            !read_security(dir.path())
+                .unwrap()
+                .entries
+                .iter()
+                .any(|e| !e.allow),
+            "the folder's deny entry is removed"
+        );
+        std::fs::write(&file, "changed").unwrap();
+        // The journal's undo for Protect also restores the ACL.
+        let journal = wm_core::safety::ChangeJournal::open(&dir.path().join("j.json"), &backups).unwrap();
+        let e = journal.record("t", "protect", undo).unwrap();
+        journal.undo(e.id).unwrap();
+        std::fs::remove_file(&file).unwrap();
     }
 
     impl AceInfo {

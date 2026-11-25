@@ -213,6 +213,20 @@ impl Tool for SecurityLock {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, ctx: &mut AppCtx<'_>) {
+        self.panel(ui, ctx, true);
+    }
+}
+
+impl SecurityLock {
+    /// Uses a list kept elsewhere (Files and Folders); ignored while a job runs.
+    pub fn set_targets(&mut self, targets: &[PathBuf]) {
+        if self.task.is_none() {
+            self.targets = targets.to_vec();
+        }
+    }
+
+    /// The tool's page; `own_list` false hides its own Add / Clear buttons and list.
+    pub fn panel(&mut self, ui: &mut egui::Ui, ctx: &AppCtx<'_>, own_list: bool) {
         if let Some((mode, t)) = &mut self.task {
             t.poll();
             if let Some(r) = t.take_result() {
@@ -252,28 +266,30 @@ impl Tool for SecurityLock {
         });
         ui.separator();
         let encrypting = self.mode == Mode::Encrypt;
-        ui.horizontal(|ui| {
-            if ui.button("Add files…").clicked()
-                && let Some(files) = rfd::FileDialog::new().pick_files()
-            {
-                self.targets.extend(files);
+        if own_list {
+            ui.horizontal(|ui| {
+                if ui.button("Add files…").clicked()
+                    && let Some(files) = rfd::FileDialog::new().pick_files()
+                {
+                    self.targets.extend(files);
+                }
+                if ui.button("Add folder…").clicked()
+                    && let Some(d) = rfd::FileDialog::new().pick_folder()
+                {
+                    self.targets.push(d);
+                }
+                if ui
+                    .add_enabled(!self.targets.is_empty(), egui::Button::new("Clear list"))
+                    .clicked()
+                {
+                    self.targets.clear();
+                }
+            });
+            for t in &self.targets {
+                ui.weak(t.display().to_string());
             }
-            if ui.button("Add folder…").clicked()
-                && let Some(d) = rfd::FileDialog::new().pick_folder()
-            {
-                self.targets.push(d);
-            }
-            if ui
-                .add_enabled(!self.targets.is_empty(), egui::Button::new("Clear list"))
-                .clicked()
-            {
-                self.targets.clear();
-            }
-        });
-        let files = collect(&self.targets, encrypting);
-        for t in &self.targets {
-            ui.weak(t.display().to_string());
         }
+        let files = collect(&self.targets, encrypting);
         ui.label(format!(
             "{} files to {}",
             files.len(),
