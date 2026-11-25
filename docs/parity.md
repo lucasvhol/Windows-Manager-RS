@@ -108,7 +108,7 @@ This file tracks parity between **Win Manager RS** and the features of a commerc
 | Tool | Status | Missing | Wave |
 |---|---|---|---|
 | System Network | 🟡 | Remote Desktop (allow, firewall, port, NLA, idle and disconnected limits), Remote Assistance, network discovery and file sharing, admin shares, anonymous enumeration, LLMNR, time server, interval and sync, Winsock / TCP/IP / network reset, Shared Folders console. A built-in share list goes to D; the browse list (Computer Browser) no longer exists on Windows 10/11 | C→D |
-| URL Manager | 🟡 (hosts) | Favorites checker; per-browser URL blocker; cookie protection list | D |
+| URL Manager | 🟡 (hosts; favorites checker) | Done: hosts editor; favorites checker (Edge, Chrome, Brave bookmarks in every profile and the Favorites folder; works, moved, broken, unreachable; problems-only view; CSV report; broken .url favorites to the Recycle Bin). Left (admin: browser policy keys are read-only for standard accounts here): per-browser URL blocker; cookie protection list | D |
 | IP Switcher | 🟡 | Profile combo with New, Save, Delete and Apply; adapter status panel; start with Windows | D |
 | Wi-Fi Manager | 🟡 | Priority up and down; connect; details; block or allow lists; backup and restore; last-connected column | D |
 | Network Tools | ✅ | Ping; trace route with three round trips, host names and optional hop locations; DNS lookup; port check with common-port preset; IP scanner (ping + ARP, MAC and host name; local subnet by default); geolocation (ipinfo.io, on request only; private addresses never sent); whois; router page (default gateway); Windows Wi-Fi report (creating it needs admin, an existing one opens without) | D |

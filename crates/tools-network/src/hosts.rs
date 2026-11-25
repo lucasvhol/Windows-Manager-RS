@@ -5,10 +5,12 @@
 use std::net::IpAddr;
 use std::path::PathBuf;
 
+use crate::favorites;
 use anyhow::{Context, Result, bail};
 use wm_core::{
     AppCtx, Category, Tool, egui, paths,
     process::{hidden_command, run_checked},
+    task::BackgroundTask,
     ui::{Message, show_message},
 };
 
@@ -95,7 +97,19 @@ pub fn hosts_path() -> PathBuf {
     PathBuf::from(paths::expand_env(r"%WINDIR%\System32\drivers\etc\hosts"))
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum Tab {
+    #[default]
+    Hosts,
+    Favorites,
+}
+
 pub struct UrlManager {
+    tab: Tab,
+    marks: Option<Vec<favorites::Bookmark>>,
+    status: Vec<Option<favorites::Status>>,
+    check: Option<BackgroundTask<Vec<favorites::Status>>>,
+    problems_only: bool,
     lines: Option<Result<Vec<Line>, String>>,
     dirty: bool,
     host: String,
@@ -107,6 +121,11 @@ pub struct UrlManager {
 impl Default for UrlManager {
     fn default() -> Self {
         Self {
+            tab: Tab::Hosts,
+            marks: None,
+            status: Vec::new(),
+            check: None,
+            problems_only: false,
             lines: None,
             dirty: false,
             host: String::new(),
@@ -145,11 +164,163 @@ impl Tool for UrlManager {
         Category::Network
     }
 
-    fn requires_admin(&self) -> bool {
-        true
+    fn ui(&mut self, ui: &mut egui::Ui, ctx: &mut AppCtx<'_>) {
+        ui.horizontal(|ui| {
+            ui.selectable_value(&mut self.tab, Tab::Hosts, "Block or redirect sites");
+            ui.selectable_value(&mut self.tab, Tab::Favorites, "Check favorites");
+        });
+        ui.separator();
+        match self.tab {
+            Tab::Hosts => self.hosts_ui(ui, ctx),
+            Tab::Favorites => self.favorites_ui(ui, ctx),
+        }
+    }
+}
+
+impl UrlManager {
+    fn favorites_ui(&mut self, ui: &mut egui::Ui, ctx: &AppCtx<'_>) {
+        if let Some(t) = &mut self.check {
+            t.poll();
+            if let Some(r) = t.take_result() {
+                self.check = None;
+                match r {
+                    Ok(s) => self.status = s.into_iter().map(Some).collect(),
+                    Err(e) => self.message = Some(Err(e)),
+                }
+            }
+        }
+        let marks = self.marks.get_or_insert_with(favorites::all_bookmarks).clone();
+        ui.label("Finds bookmarks in Edge, Chrome, Brave and the Windows Favorites folder whose sites have moved or no longer exist.");
+        ui.horizontal(|ui| {
+            let busy = self.check.is_some();
+            if ui
+                .add_enabled(
+                    !busy && !marks.is_empty(),
+                    egui::Button::new(format!("Check {} links", marks.len())),
+                )
+                .on_hover_text("Visits every web link once (16 at a time).")
+                .clicked()
+            {
+                let list = marks.clone();
+                self.status = vec![None; list.len()];
+                self.check = Some(BackgroundTask::spawn(ui.ctx(), move |p| {
+                    Ok(favorites::check_all(
+                        &list,
+                        &|d, n| p.report(d as f32 / n.max(1) as f32, format!("{d} of {n}")),
+                        &|| p.is_cancelled(),
+                    ))
+                }));
+            }
+            if let Some(t) = &self.check {
+                ui.add(
+                    egui::ProgressBar::new(t.progress)
+                        .desired_width(200.0)
+                        .text(t.status.clone()),
+                );
+                if ui.button(ctx.i18n.tr("common-cancel")).clicked() {
+                    t.cancel();
+                }
+            }
+            if ui
+                .add_enabled(!busy, egui::Button::new(ctx.i18n.tr("common-refresh")))
+                .clicked()
+            {
+                self.marks = None;
+                self.status.clear();
+            }
+            ui.checkbox(&mut self.problems_only, "Only problems");
+            let done: Vec<favorites::Status> = self.status.iter().flatten().cloned().collect();
+            if done.len() == marks.len()
+                && !marks.is_empty()
+                && ui.button("Save report…").clicked()
+                && let Some(p) = rfd::FileDialog::new()
+                    .add_filter("CSV", &["csv"])
+                    .set_file_name("favorites-check.csv")
+                    .save_file()
+            {
+                self.message = Some(
+                    std::fs::write(&p, favorites::to_csv(&marks, &done))
+                        .map(|()| format!("Saved {}.", p.display()))
+                        .map_err(|e| format!("{e:#}")),
+                );
+            }
+        });
+        let problems = self.status.iter().flatten().filter(|s| s.is_problem()).count();
+        if !self.status.is_empty() {
+            ui.weak(format!("{problems} broken or unreachable so far."));
+        }
+        show_message(ui, &self.message);
+        let mut recycle = None;
+        egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
+            egui::Grid::new("fav-grid")
+                .striped(true)
+                .num_columns(4)
+                .show(ui, |ui| {
+                    for h in ["Where", "Title", "Link", "Status"] {
+                        ui.strong(h);
+                    }
+                    ui.end_row();
+                    for (i, m) in marks.iter().enumerate() {
+                        let st = self.status.get(i).cloned().flatten();
+                        if self.problems_only && !st.as_ref().is_some_and(|s| s.is_problem()) {
+                            continue;
+                        }
+                        ui.weak(if m.folder.is_empty() {
+                            m.browser.clone()
+                        } else {
+                            format!("{} · {}", m.browser, m.folder)
+                        });
+                        ui.label(m.title.chars().take(50).collect::<String>());
+                        ui.hyperlink_to(m.url.chars().take(60).collect::<String>(), &m.url);
+                        ui.horizontal(|ui| {
+                            match &st {
+                                None => {
+                                    ui.weak("—");
+                                }
+                                Some(s) if s.is_problem() => {
+                                    ui.colored_label(ui.visuals().error_fg_color, s.label());
+                                }
+                                Some(s) => {
+                                    ui.label(s.label());
+                                }
+                            }
+                            if let favorites::Source::UrlFile(p) = &m.source
+                                && st.as_ref().is_some_and(|s| s.is_problem())
+                                && ui
+                                    .small_button("Delete")
+                                    .on_hover_text("Moves the shortcut to the Recycle Bin")
+                                    .clicked()
+                            {
+                                recycle = Some(p.clone());
+                            }
+                        });
+                        ui.end_row();
+                    }
+                });
+        });
+        if let Some(p) = recycle {
+            self.message = Some(
+                ctx.journal
+                    .recycle(
+                        "hosts",
+                        format!("Removed the broken favorite {}", p.display()),
+                        vec![p],
+                    )
+                    .map(|_| "Moved to the Recycle Bin.".into())
+                    .map_err(|e| format!("{e:#}")),
+            );
+            self.marks = None;
+            self.status.clear();
+        }
+        if marks
+            .iter()
+            .any(|m| matches!(m.source, favorites::Source::Browser(_)))
+        {
+            ui.weak("To remove a browser bookmark, open the link's row in the browser's own bookmark manager; editing its file while it runs would be undone.");
+        }
     }
 
-    fn ui(&mut self, ui: &mut egui::Ui, ctx: &mut AppCtx<'_>) {
+    fn hosts_ui(&mut self, ui: &mut egui::Ui, ctx: &mut AppCtx<'_>) {
         if self.lines.is_none() {
             self.lines = Some(
                 std::fs::read_to_string(hosts_path())
@@ -157,6 +328,9 @@ impl Tool for UrlManager {
                     .map_err(|e| e.to_string()),
             );
             self.dirty = false;
+        }
+        if !ctx.elevated {
+            ui.weak("Saving changes to the hosts file needs the app to run as administrator.");
         }
         ui.label("Block a website by pointing it to 0.0.0.0, or redirect a name to another address.");
         ui.horizontal(|ui| {

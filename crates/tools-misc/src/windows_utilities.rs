@@ -1213,7 +1213,10 @@ mod tests {
     #[test]
     fn store_apps_and_region_read() {
         let apps = store_apps().unwrap();
-        assert!(!apps.is_empty(), "Windows always has packaged apps (Settings, Calculator…)");
+        assert!(
+            !apps.is_empty(),
+            "Windows always has packaged apps (Settings, Calculator…)"
+        );
         assert!(apps.iter().all(|a| a.family().is_some()));
         let _ = store_region();
     }
