@@ -6,7 +6,7 @@ mod folders;
 mod fonts;
 mod gallery;
 mod icons;
-mod pictures;
+pub mod pictures;
 mod themes;
 
 use std::collections::HashMap;

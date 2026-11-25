@@ -5315,9 +5315,11 @@ dependencies = [
 name = "wm-tools-custom"
 version = "0.1.0"
 dependencies = [
+ "ab_glyph",
  "anyhow",
  "chrono",
  "egui_extras",
+ "epaint_default_fonts",
  "image",
  "rfd",
  "serde",

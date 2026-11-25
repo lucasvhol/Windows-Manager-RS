@@ -1,6 +1,7 @@
 //! Customization tools (Phase 4): context menu, Win+X, Start menu, hotkeys, Run
 //! aliases, jump list launcher, and visual / Explorer / This PC / navigation pane tweaks.
 
+pub mod bing;
 mod context_menu;
 pub mod custom_extras;
 mod explorer_extras;
@@ -10,7 +11,7 @@ mod navpane;
 mod run_shortcuts;
 mod start_menu;
 mod thispc;
-mod visual;
+pub mod visual;
 mod winx;
 
 use wm_core::tweaks::TweakTool;
@@ -52,6 +53,7 @@ pub fn tools() -> Vec<Box<dyn Tool>> {
         Box::new(jumplist::JumpListLauncher::default()),
         Box::new(navpane::NavPaneManager::default()),
         Box::new(thispc::ThisPcManager::default()),
+        Box::new(bing::BingDownloader::default()),
     ]
 }
 

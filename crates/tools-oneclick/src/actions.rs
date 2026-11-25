@@ -40,6 +40,11 @@ pub const ACTIONS: &[(&str, &str, bool)] = &[
         false,
     ),
     (
+        wm_tools_custom::bing::DAILY_ACTION,
+        "Save today's Bing picture (Bing Images Downloader settings)",
+        false,
+    ),
+    (
         "kill-background",
         "End background programs (1-Click Kill Processes, Standard tier)",
         false,
@@ -127,6 +132,7 @@ pub fn run(name: &str, ctx: &AppCtx<'_>) -> Result<String> {
         }
         "desktop-unused" => wm_tools_cleaner::desktop::move_unused(ctx),
         "kill-background" => crate::kill_processes::run_standard(ctx),
+        wm_tools_custom::bing::DAILY_ACTION => wm_tools_custom::bing::run_daily(ctx),
         "theme-auto" => wm_tools_custom::custom_extras::auto_apply(),
         wm_tools_security::autologon::OFF_ACTION => wm_tools_security::autologon::disable(),
         "flush-dns" => {

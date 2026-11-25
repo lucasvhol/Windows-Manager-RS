@@ -178,21 +178,31 @@ pub struct BingImage {
     urlbase: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
 pub enum Resolution {
+    #[default]
     Uhd,
     FullHd,
     Hd,
+    /// Portrait, for phones and rotated screens.
+    Portrait,
 }
 
 impl Resolution {
     pub const ALL: [Resolution; 3] = [Resolution::Uhd, Resolution::FullHd, Resolution::Hd];
+    pub const WITH_PORTRAIT: [Resolution; 4] = [
+        Resolution::Uhd,
+        Resolution::FullHd,
+        Resolution::Hd,
+        Resolution::Portrait,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {
             Resolution::Uhd => "Largest available (up to 4K)",
             Resolution::FullHd => "1920 × 1080",
             Resolution::Hd => "1366 × 768",
+            Resolution::Portrait => "1080 × 1920 (portrait)",
         }
     }
 
@@ -201,8 +211,85 @@ impl Resolution {
             Resolution::Uhd => "_UHD.jpg",
             Resolution::FullHd => "_1920x1080.jpg",
             Resolution::Hd => "_1366x768.jpg",
+            Resolution::Portrait => "_1080x1920.jpg",
         }
     }
+}
+
+/// Bing markets with their own picture of the day (code, name).
+pub const MARKETS: [(&str, &str); 10] = [
+    ("", "Automatic (your region)"),
+    ("en-US", "United States"),
+    ("en-GB", "United Kingdom"),
+    ("de-DE", "Germany"),
+    ("fr-FR", "France"),
+    ("ja-JP", "Japan"),
+    ("zh-CN", "China"),
+    ("pt-BR", "Brazil"),
+    ("en-IN", "India"),
+    ("en-CA", "Canada"),
+];
+
+/// The last eight pictures of a market ("" = automatic).
+pub fn bing_list_for(market: &str) -> Result<Vec<BingImage>> {
+    let mkt = if MARKETS.iter().any(|(c, _)| *c == market && !c.is_empty()) {
+        format!("&mkt={market}")
+    } else {
+        String::new()
+    };
+    parse_bing(&wm_core::net::get_text(&format!(
+        "{BING}/HPImageArchive.aspx?format=js&idx=0&n=8{mkt}"
+    ))?)
+}
+
+/// Writes `text` on a dark stripe along the bottom of a JPEG (in place).
+pub fn caption(path: &Path, text: &str) -> Result<()> {
+    use ab_glyph::{Font, FontRef, PxScale, ScaleFont};
+    let mut img = image::open(path).context("opening the picture")?.to_rgb8();
+    let (w, h) = img.dimensions();
+    let size = (h as f32 / 40.0).clamp(14.0, 48.0);
+    let pad = (size * 0.6) as u32;
+    let band = size as u32 + pad * 2;
+    for y in h.saturating_sub(band)..h {
+        for x in 0..w {
+            let p = img.get_pixel_mut(x, y);
+            for c in p.0.iter_mut() {
+                *c = (*c as f32 * 0.45) as u8;
+            }
+        }
+    }
+    let font = FontRef::try_from_slice(epaint_default_fonts::UBUNTU_LIGHT).context("loading the font")?;
+    let scaled = font.as_scaled(PxScale::from(size));
+    let mut x = pad as f32;
+    let baseline = (h - pad) as f32 - scaled.descent().abs();
+    let mut prev = None;
+    for ch in text.chars() {
+        let id = scaled.glyph_id(ch);
+        if let Some(p) = prev {
+            x += scaled.kern(p, id);
+        }
+        let glyph = id.with_scale_and_position(PxScale::from(size), ab_glyph::point(x, baseline));
+        x += scaled.h_advance(id);
+        prev = Some(id);
+        if x > w as f32 - pad as f32 {
+            break;
+        }
+        if let Some(outline) = font.outline_glyph(glyph) {
+            let b = outline.px_bounds();
+            outline.draw(|gx, gy, cov| {
+                let (px, py) = (b.min.x as i32 + gx as i32, b.min.y as i32 + gy as i32);
+                if px >= 0 && py >= 0 && (px as u32) < w && (py as u32) < h {
+                    let p = img.get_pixel_mut(px as u32, py as u32);
+                    for c in p.0.iter_mut() {
+                        *c = (*c as f32 * (1.0 - cov) + 255.0 * cov) as u8;
+                    }
+                }
+            });
+        }
+    }
+    let mut out = std::io::BufWriter::new(std::fs::File::create(path)?);
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 92).encode_image(&img)?;
+    Ok(())
 }
 
 const BING: &str = "https://www.bing.com";
@@ -232,9 +319,7 @@ pub fn parse_bing(json: &str) -> Result<Vec<BingImage>> {
 
 /// The last eight pictures of the day (asks bing.com; started by the user).
 pub fn bing_list() -> Result<Vec<BingImage>> {
-    parse_bing(&wm_core::net::get_text(&format!(
-        "{BING}/HPImageArchive.aspx?format=js&idx=0&n=8"
-    ))?)
+    bing_list_for("")
 }
 
 impl BingImage {
@@ -255,10 +340,19 @@ impl BingImage {
         format!("{}-{id}.jpg", self.date)
     }
 
+    pub fn file_name_for(&self, res: Resolution) -> String {
+        let name = self.file_name();
+        if res == Resolution::Portrait {
+            name.replace(".jpg", "-portrait.jpg")
+        } else {
+            name
+        }
+    }
+
     /// Downloads the picture into `dest` (kept if already there).
     pub fn save(&self, res: Resolution, dest: &Path) -> Result<PathBuf> {
         std::fs::create_dir_all(dest)?;
-        let target = dest.join(self.file_name());
+        let target = dest.join(self.file_name_for(res));
         if !target.exists() {
             let bytes =
                 wm_core::net::get_bytes(&format!("{BING}{}{}", self.urlbase, res.suffix()), 40 << 20)?;
