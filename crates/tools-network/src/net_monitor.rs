@@ -155,8 +155,8 @@ pub fn connections() -> Vec<Conn> {
     out
 }
 
-/// (alias, bytes received, bytes sent) for physical, connected adapters.
-pub fn interface_counters() -> Vec<(String, u64, u64)> {
+/// (alias, bytes received, bytes sent, link speed in bits/s) for physical, connected adapters.
+pub fn interface_counters() -> Vec<(String, u64, u64, u64)> {
     let mut out = Vec::new();
     unsafe {
         let mut t: *mut MIB_IF_TABLE2 = std::ptr::null_mut();
@@ -170,7 +170,12 @@ pub fn interface_counters() -> Vec<(String, u64, u64)> {
             let filter = flags & 0x02 != 0;
             if hardware && !filter && r.OperStatus == IfOperStatusUp {
                 let end = r.Alias.iter().position(|&c| c == 0).unwrap_or(r.Alias.len());
-                out.push((String::from_utf16_lossy(&r.Alias[..end]), r.InOctets, r.OutOctets));
+                out.push((
+                    String::from_utf16_lossy(&r.Alias[..end]),
+                    r.InOctets,
+                    r.OutOctets,
+                    r.ReceiveLinkSpeed.max(r.TransmitLinkSpeed),
+                ));
             }
         }
         FreeMibTable(t as *const _);
@@ -181,8 +186,19 @@ pub fn interface_counters() -> Vec<(String, u64, u64)> {
 #[derive(Debug, Clone, Default)]
 pub struct Snapshot {
     pub conns: Vec<Conn>,
-    /// (adapter, download B/s, upload B/s)
-    pub rates: Vec<(String, f64, f64)>,
+    pub rates: Vec<Rate>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Rate {
+    pub adapter: String,
+    /// Bytes per second.
+    pub down: f64,
+    pub up: f64,
+    /// Link speed in bits per second.
+    pub link: u64,
+    /// Seconds the rate was measured over.
+    pub secs: f64,
 }
 
 struct State {
@@ -209,17 +225,144 @@ fn sample(s: &mut State) -> Snapshot {
     let secs = s.at.elapsed().as_secs_f64().max(0.001);
     s.at = Instant::now();
     let mut rates = Vec::new();
-    for (name, rx, tx) in interface_counters() {
+    for (name, rx, tx, link) in interface_counters() {
         if let Some((prx, ptx)) = s.last.get(&name) {
-            rates.push((
-                name.clone(),
-                rx.saturating_sub(*prx) as f64 / secs,
-                tx.saturating_sub(*ptx) as f64 / secs,
-            ));
+            rates.push(Rate {
+                adapter: name.clone(),
+                down: rx.saturating_sub(*prx) as f64 / secs,
+                up: tx.saturating_sub(*ptx) as f64 / secs,
+                link,
+                secs,
+            });
         }
         s.last.insert(name, (rx, tx));
     }
     Snapshot { conns, rates }
+}
+
+/// Seconds of history in the chart (one sample per second).
+pub const HISTORY: usize = 60;
+
+/// Throughput of one adapter (or all of them) since the monitor opened or was reset.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Stats {
+    /// (received, sent) bytes per second, oldest first.
+    pub history: std::collections::VecDeque<(f64, f64)>,
+    pub current: (f64, f64),
+    pub max: (f64, f64),
+    /// Bytes.
+    pub total: (f64, f64),
+    pub secs: f64,
+    pub link: u64,
+}
+
+impl Stats {
+    pub fn add(&mut self, r: &Rate) {
+        self.current = (r.down, r.up);
+        self.max = (self.max.0.max(r.down), self.max.1.max(r.up));
+        self.total = (self.total.0 + r.down * r.secs, self.total.1 + r.up * r.secs);
+        self.secs += r.secs;
+        self.link = r.link;
+        self.history.push_back((r.down, r.up));
+        while self.history.len() > HISTORY {
+            self.history.pop_front();
+        }
+    }
+
+    /// Average bytes per second.
+    pub fn average(&self) -> (f64, f64) {
+        if self.secs <= 0.0 {
+            (0.0, 0.0)
+        } else {
+            (self.total.0 / self.secs, self.total.1 / self.secs)
+        }
+    }
+}
+
+/// All adapters together (the link speed is the fastest one's).
+pub fn combined(rates: &[Rate]) -> Option<Rate> {
+    let first = rates.first()?;
+    Some(Rate {
+        adapter: String::new(),
+        down: rates.iter().map(|r| r.down).sum(),
+        up: rates.iter().map(|r| r.up).sum(),
+        link: rates.iter().map(|r| r.link).max().unwrap_or(0),
+        secs: first.secs,
+    })
+}
+
+fn rate_text(bytes_per_sec: f64) -> String {
+    format!("{}/s", format_bytes(bytes_per_sec as u64))
+}
+
+/// "1 Gbps", "300 Mbps"…
+pub fn link_text(bps: u64) -> String {
+    match bps {
+        0 => "unknown".into(),
+        b if b >= 1_000_000_000 => format!("{:.1} Gbps", b as f64 / 1e9).replace(".0 ", " "),
+        b if b >= 1_000_000 => format!("{} Mbps", b / 1_000_000),
+        b => format!("{} kbps", b / 1000),
+    }
+}
+
+/// A 60-second chart of received and sent rates, scaled to the highest point.
+fn rate_chart(ui: &mut egui::Ui, s: &Stats, received: egui::Color32, sent: egui::Color32) {
+    let size = egui::vec2(ui.available_width(), 150.0);
+    let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+    let painter = ui.painter_at(rect);
+    let v = ui.visuals();
+    painter.rect_filled(rect, 3.0, v.extreme_bg_color);
+    let grid = egui::Stroke::new(1.0, v.widgets.noninteractive.bg_stroke.color);
+    for i in 1..4 {
+        let y = rect.top() + rect.height() * i as f32 / 4.0;
+        painter.line_segment([egui::pos2(rect.left(), y), egui::pos2(rect.right(), y)], grid);
+    }
+    let peak = s
+        .history
+        .iter()
+        .map(|(d, u)| d.max(*u))
+        .fold(0.0_f64, f64::max)
+        .max(1024.0);
+    let step = rect.width() / (HISTORY - 1) as f32;
+    // Newest sample on the right edge.
+    let offset = HISTORY - s.history.len();
+    for (series, color) in [(0, received), (1, sent)] {
+        let points: Vec<egui::Pos2> = s
+            .history
+            .iter()
+            .enumerate()
+            .map(|(i, p)| {
+                let val = if series == 0 { p.0 } else { p.1 };
+                let y = rect.bottom() - (val / peak) as f32 * (rect.height() - 4.0) - 2.0;
+                egui::pos2(rect.left() + (i + offset) as f32 * step, y)
+            })
+            .collect();
+        if points.len() >= 2 {
+            painter.add(egui::Shape::line(points, egui::Stroke::new(1.8, color)));
+        }
+    }
+    let font = egui::FontId::proportional(11.0);
+    painter.text(
+        rect.left_top() + egui::vec2(4.0, 2.0),
+        egui::Align2::LEFT_TOP,
+        rate_text(peak),
+        font.clone(),
+        v.weak_text_color(),
+    );
+    painter.text(
+        rect.left_bottom() + egui::vec2(4.0, -2.0),
+        egui::Align2::LEFT_BOTTOM,
+        "60 s ago",
+        font.clone(),
+        v.weak_text_color(),
+    );
+    painter.text(
+        rect.right_bottom() + egui::vec2(-4.0, -2.0),
+        egui::Align2::RIGHT_BOTTOM,
+        "now",
+        font,
+        v.weak_text_color(),
+    );
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -234,6 +377,11 @@ pub struct NetworkMonitor {
     snap: Snapshot,
     filter: String,
     show: Show,
+    /// Per adapter name; "" is all adapters together.
+    stats: std::collections::BTreeMap<String, Stats>,
+    /// The adapter shown in the chart ("" = all).
+    adapter: String,
+    message: wm_core::ui::Message,
 }
 
 impl Default for NetworkMonitor {
@@ -243,7 +391,98 @@ impl Default for NetworkMonitor {
             snap: Snapshot::default(),
             filter: String::new(),
             show: Show::Established,
+            stats: Default::default(),
+            adapter: String::new(),
+            message: None,
         }
+    }
+}
+
+impl NetworkMonitor {
+    fn record(&mut self, snap: &Snapshot) {
+        for r in &snap.rates {
+            self.stats.entry(r.adapter.clone()).or_default().add(r);
+        }
+        if let Some(all) = combined(&snap.rates) {
+            self.stats.entry(String::new()).or_default().add(&all);
+        }
+    }
+
+    fn throughput_ui(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            let label = |a: &str| {
+                if a.is_empty() {
+                    "All adapters".to_owned()
+                } else {
+                    a.to_owned()
+                }
+            };
+            egui::ComboBox::from_id_salt("netmon-adapter")
+                .selected_text(label(&self.adapter))
+                .show_ui(ui, |ui| {
+                    for name in self.stats.keys() {
+                        ui.selectable_value(&mut self.adapter, name.clone(), label(name));
+                    }
+                });
+            if ui
+                .button("Reset")
+                .on_hover_text("Clears the chart and the statistics.")
+                .clicked()
+            {
+                self.stats.clear();
+            }
+            if ui
+                .button("Resource Monitor")
+                .on_hover_text("Windows' Resource Monitor, with traffic per process.")
+                .clicked()
+            {
+                self.message = wm_core::shell::shell_open("resmon.exe", "")
+                    .err()
+                    .map(|e| Err(format!("{e:#}")));
+            }
+        });
+        wm_core::ui::show_message(ui, &self.message);
+        let Some(s) = self.stats.get(&self.adapter).cloned() else {
+            ui.weak("Measuring…");
+            return;
+        };
+        let received = egui::Color32::from_rgb(64, 156, 255);
+        let sent = egui::Color32::from_rgb(255, 140, 50);
+        rate_chart(ui, &s, received, sent);
+        let avg = s.average();
+        egui::Grid::new("netmon-stats")
+            .num_columns(5)
+            .spacing([24.0, 4.0])
+            .show(ui, |ui| {
+                for h in ["", "Current", "Maximum", "Average", "Total"] {
+                    ui.strong(h);
+                }
+                ui.end_row();
+                for (name, color, cur, max, avg, total) in [
+                    ("Received", received, s.current.0, s.max.0, avg.0, s.total.0),
+                    ("Sent", sent, s.current.1, s.max.1, avg.1, s.total.1),
+                ] {
+                    ui.colored_label(color, format!("━ {name}"));
+                    ui.label(rate_text(cur));
+                    ui.label(rate_text(max));
+                    ui.label(rate_text(avg));
+                    ui.label(format_bytes(total as u64));
+                    ui.end_row();
+                }
+            });
+        let used = if s.link > 0 {
+            format!(
+                " · in use now: {:.1}%",
+                (s.current.0.max(s.current.1) * 8.0) / s.link as f64 * 100.0
+            )
+        } else {
+            String::new()
+        };
+        ui.weak(format!(
+            "Link speed {}{used} · measured over {}",
+            link_text(s.link),
+            wm_core::ui::format_duration(s.secs as u64)
+        ));
     }
 }
 
@@ -260,7 +499,7 @@ impl Tool for NetworkMonitor {
         let sampler = self.sampler.get_or_insert_with(|| {
             Sampler::spawn(
                 ui.ctx(),
-                Duration::from_secs(2),
+                Duration::from_secs(1),
                 || State {
                     sys: System::new().expect("sysinfo"),
                     last: HashMap::new(),
@@ -269,21 +508,18 @@ impl Tool for NetworkMonitor {
                 sample,
             )
         });
-        if let Some(s) = sampler.latest() {
+        // Every sample, so the chart has no gaps.
+        let fresh = sampler.drain();
+        for s in &fresh {
+            self.record(s);
+        }
+        if let Some(s) = fresh.into_iter().last() {
             self.snap = s;
         }
 
-        ui.horizontal_wrapped(|ui| {
-            for (name, down, up) in &self.snap.rates {
-                ui.strong(name);
-                ui.label(format!(
-                    "↓ {}/s  ↑ {}/s",
-                    format_bytes(*down as u64),
-                    format_bytes(*up as u64)
-                ));
-                ui.separator();
-            }
-        });
+        self.throughput_ui(ui);
+        ui.add_space(6.0);
+        ui.strong("Connections");
         ui.horizontal(|ui| {
             ui.add(egui::TextEdit::singleline(&mut self.filter).hint_text(ctx.i18n.tr("common-filter")));
             for (s, label) in [
@@ -399,5 +635,40 @@ mod tests {
     #[test]
     fn interface_counters_do_not_fail() {
         let _ = interface_counters();
+    }
+
+    #[test]
+    fn statistics() {
+        let r = |down, up| Rate {
+            adapter: "Wi-Fi".into(),
+            down,
+            up,
+            link: 100_000_000,
+            secs: 1.0,
+        };
+        let mut s = Stats::default();
+        s.add(&r(1000.0, 10.0));
+        s.add(&r(3000.0, 30.0));
+        assert_eq!(s.current, (3000.0, 30.0));
+        assert_eq!(s.max, (3000.0, 30.0));
+        assert_eq!(s.total, (4000.0, 40.0));
+        assert_eq!(s.average(), (2000.0, 20.0));
+        for _ in 0..100 {
+            s.add(&r(1.0, 1.0));
+        }
+        assert_eq!(s.history.len(), HISTORY, "the chart keeps 60 seconds");
+        let both = combined(&[
+            r(1.0, 2.0),
+            Rate {
+                link: 1_000_000_000,
+                ..r(3.0, 4.0)
+            },
+        ])
+        .unwrap();
+        assert_eq!((both.down, both.up, both.link), (4.0, 6.0, 1_000_000_000));
+        assert!(combined(&[]).is_none());
+        assert_eq!(link_text(1_000_000_000), "1 Gbps");
+        assert_eq!(link_text(2_500_000_000), "2.5 Gbps");
+        assert_eq!(link_text(300_000_000), "300 Mbps");
     }
 }

@@ -112,7 +112,7 @@ This file tracks parity between **Win Manager RS** and the features of a commerc
 | IP Switcher | 🟡 | Profile combo with New, Save, Delete and Apply; adapter status panel; start with Windows | D |
 | Wi-Fi Manager | 🟡 | Priority up and down; connect; details; block or allow lists; backup and restore; last-connected column | D |
 | Network Tools | ✅ | Ping; trace route with three round trips, host names and optional hop locations; DNS lookup; port check with common-port preset; IP scanner (ping + ARP, MAC and host name; local subnet by default); geolocation (ipinfo.io, on request only; private addresses never sent); whois; router page (default gateway); Windows Wi-Fi report (creating it needs admin, an existing one opens without) | D |
-| Network Monitor | 🟡 | 60-second line chart (received and sent); bandwidth; table of current, maximum, total and average; adapter combo; Resource Monitor link; reset | D |
+| Network Monitor | ✅ | 60-second chart of received and sent (one sample a second); adapter combo (all adapters or one); link speed and current use; table of current, maximum, average and total since opening or reset; Reset; Resource Monitor link; live connections with process, filter and Connected / Listening / All views | D |
 
 ## Misc. Utilities
 
