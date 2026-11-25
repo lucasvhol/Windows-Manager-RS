@@ -293,6 +293,54 @@ impl Settings {
                 );
             }
         });
+
+        ui.add_space(12.0);
+        ui.strong("Options tools remember");
+        ui.weak("Reset a tool to forget its remembered choices (selections, schemes, schedules' options). It starts with its defaults the next time it opens.");
+        let saved = wm_core::tool_settings::saved();
+        if saved.is_empty() {
+            ui.weak("No tool has remembered anything yet.");
+        }
+        let mut reset = None;
+        egui::Grid::new("tool-settings")
+            .striped(true)
+            .num_columns(2)
+            .show(ui, |ui| {
+                for id in &saved {
+                    ui.label(tool_label(ctx, id));
+                    if ui.small_button("Reset").clicked() {
+                        reset = Some(id.clone());
+                    }
+                    ui.end_row();
+                }
+            });
+        if let Some(id) = reset {
+            self.message = Some(
+                wm_core::tool_settings::reset(&id)
+                    .map(|()| {
+                        format!(
+                            "{} will start with its defaults. Restart the app if it's open.",
+                            tool_label(ctx, &id)
+                        )
+                    })
+                    .map_err(|e| format!("{e:#}")),
+            );
+        }
+    }
+}
+
+/// A readable name for a saved-settings id: the tool's title when the id is a tool,
+/// otherwise the id with a hint of which tool owns it.
+fn tool_label(ctx: &AppCtx<'_>, id: &str) -> String {
+    let key = format!("{id}-title");
+    let title = ctx.i18n.tr(&key);
+    if title != key && !title.is_empty() {
+        return title;
+    }
+    match id {
+        "privacy-traces" => "Privacy Protector (trace selection)".into(),
+        "themeschedule" => "Custom System (theme schedule)".into(),
+        other => other.to_owned(),
     }
 }
 

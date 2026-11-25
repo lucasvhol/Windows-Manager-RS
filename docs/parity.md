@@ -23,7 +23,7 @@ This file tracks parity between **Win Manager RS** and the features of a commerc
 | OS edition and build shown in the hub | ✅ | B |
 | Settings: program password, minimise to tray, UI scale and font, list row height, language, light/dark | 🟡 (password, UI scale, language, theme; tray moves to D with the My Task background monitor, which needs the same tray icon) | B→D |
 | Settings: save all applied tweaks to a file and restore them later (e.g. after a reinstall) | ✅ | B |
-| Settings: reset a tool's saved settings; back up and restore program settings | 🟡 (back up / restore done; per-tool reset in D) | B→D |
+| Settings: reset a tool's saved settings; back up and restore program settings | ✅ (back up / restore; list of tools with remembered options, each with Reset) | B→D |
 | Frequently used tools list | ✅ | B |
 | Update check (own releases) | ❌ | E |
 | Licensing, registration, trial countdown | ⛔ the original's business model, not a feature | — |
