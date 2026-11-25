@@ -169,3 +169,48 @@ key = 'HKLM\SOFTWARE\Policies\Microsoft\Windows\System'
 name = "PublishUserActivities"
 on = { dword = 0 }
 off = "delete"
+
+[[tweak]]
+id = "hide_most_used"
+title = "Hide the most used apps in Start"
+description = "Start stops listing the apps you open most (policy ShowOrHideMostUsedApps)."
+group = "Recent activity"
+[[tweak.set]]
+key = 'HKLM\SOFTWARE\Policies\Microsoft\Windows\Explorer'
+name = "ShowOrHideMostUsedApps"
+on = { dword = 2 }
+off = "delete"
+
+[[tweak]]
+id = "hide_recently_added"
+title = "Hide recently added apps in Start"
+description = "New apps no longer appear in Start's Recommended section (policy HideRecentlyAddedApps)."
+group = "Recent activity"
+[[tweak.set]]
+key = 'HKLM\SOFTWARE\Policies\Microsoft\Windows\Explorer'
+name = "HideRecentlyAddedApps"
+on = { dword = 1 }
+off = "delete"
+
+[[tweak]]
+id = "privacy_no_recent_items"
+title = "Don't track recently opened items"
+description = "Recent files stop appearing in Start, Jump Lists and File Explorer."
+group = "Recent activity"
+[[tweak.set]]
+key = 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced'
+name = "Start_TrackDocs"
+on = { dword = 0 }
+off = "delete"
+
+[[tweak]]
+id = "privacy_no_frequent_folders"
+title = "Don't show frequent folders in Home"
+description = "File Explorer Home stops listing the folders you use most."
+group = "Recent activity"
+effect = "explorer"
+[[tweak.set]]
+key = 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer'
+name = "ShowFrequent"
+on = { dword = 0 }
+off = "delete"

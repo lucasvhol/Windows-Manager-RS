@@ -6,6 +6,7 @@ mod device_security;
 mod file_security;
 pub mod ntfs;
 pub mod privacy;
+pub mod privacy_traces;
 mod security_lock;
 mod settings_security;
 mod system_protection;

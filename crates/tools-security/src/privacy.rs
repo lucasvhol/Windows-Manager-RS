@@ -2,13 +2,16 @@
 
 use std::path::PathBuf;
 
+use crate::privacy_traces::{self, Item, Section};
 use anyhow::Result;
 use windows::Win32::System::DataExchange::{CloseClipboard, EmptyClipboard, OpenClipboard};
 use wm_core::{
     AppCtx, Category, Tool, egui, paths, registry,
     safety::UndoAction,
+    task::BackgroundTask,
+    tool_settings,
     tweaks::TweakPanel,
-    ui::{Message, show_message},
+    ui::{Confirm, Message, show_message},
 };
 
 const EXPLORER: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer";
@@ -143,11 +146,18 @@ enum Tab {
     Traces,
 }
 
+const SELECTION_ID: &str = "privacy-traces";
+
+/// Ticks the user changed, by item id; other items use their default.
+type Selection = std::collections::BTreeMap<String, bool>;
+
 pub struct PrivacyProtector {
     tab: Tab,
     panel: TweakPanel,
-    selected: Vec<bool>,
-    counts: Option<Vec<usize>>,
+    items: Vec<(Item, usize)>,
+    scan: Option<BackgroundTask<Vec<(Item, usize)>>>,
+    selection: Selection,
+    confirm: Confirm<()>,
     message: Message,
 }
 
@@ -156,9 +166,186 @@ impl Default for PrivacyProtector {
         Self {
             tab: Tab::Settings,
             panel: TweakPanel::new("privacy", include_str!("../tweaks/privacy.toml")),
-            selected: vec![true; Trace::ALL.len()],
-            counts: None,
+            items: Vec::new(),
+            scan: None,
+            selection: tool_settings::load(SELECTION_ID),
+            confirm: Confirm::default(),
             message: None,
+        }
+    }
+}
+
+impl PrivacyProtector {
+    fn rescan(&mut self, ctx: &egui::Context) {
+        self.scan = Some(BackgroundTask::spawn(ctx, |_| {
+            Ok(privacy_traces::catalog()
+                .into_iter()
+                .map(|i| {
+                    let n = privacy_traces::count_item(&i);
+                    (i, n)
+                })
+                .collect())
+        }));
+    }
+
+    fn selected(&self, item: &Item) -> bool {
+        self.selection.get(&item.id).copied().unwrap_or(item.default_on)
+    }
+
+    fn set_selected(&mut self, id: &str, on: bool) {
+        self.selection.insert(id.to_owned(), on);
+        let _ = tool_settings::save(SELECTION_ID, &self.selection);
+    }
+
+    fn clear_selected(&mut self, ctx: &AppCtx<'_>) -> Result<String, String> {
+        if ctx.config.dry_run {
+            return Ok(ctx.i18n.tr("common-dry-run-skip"));
+        }
+        let mut total = 0;
+        let mut done = 0;
+        let mut problems = Vec::new();
+        for (item, _) in self.items.iter().filter(|(i, _)| self.selected(i)) {
+            match privacy_traces::clear_item(ctx, item) {
+                Ok(n) => {
+                    total += n;
+                    done += 1;
+                }
+                Err(e) => problems.push(format!("{}: {e:#}", item.label)),
+            }
+        }
+        let summary = format!("Cleared {done} item(s), {total} entries.");
+        if problems.is_empty() {
+            Ok(format!("{summary} Undo from the Change Journal where allowed."))
+        } else {
+            Err(format!("{summary} Not cleared: {}", problems.join("; ")))
+        }
+    }
+
+    fn traces_ui(&mut self, ui: &mut egui::Ui, ctx: &AppCtx<'_>) {
+        if self.items.is_empty() && self.scan.is_none() {
+            self.rescan(ui.ctx());
+        }
+        if let Some(task) = &mut self.scan {
+            task.poll();
+            if let Some(result) = task.take_result() {
+                match result {
+                    Ok(items) => self.items = items,
+                    Err(e) => self.message = Some(Err(e)),
+                }
+                self.scan = None;
+            }
+        }
+        if self.confirm.show(ui.ctx(), ctx.i18n).is_some() {
+            self.message = Some(self.clear_selected(ctx));
+            self.rescan(ui.ctx());
+        }
+
+        let chosen: Vec<&Item> = self
+            .items
+            .iter()
+            .map(|(i, _)| i)
+            .filter(|i| self.selected(i) && (!i.admin || ctx.elevated))
+            .collect();
+        let lasting = chosen.iter().filter(|i| !i.undoable()).count();
+        let n_chosen = chosen.len();
+        ui.horizontal(|ui| {
+            let label = format!("Clear selected ({n_chosen})");
+            if ui
+                .add_enabled(n_chosen > 0 && self.scan.is_none(), egui::Button::new(label))
+                .clicked()
+            {
+                let mut q = format!("Clear the {n_chosen} selected item(s)?");
+                if lasting > 0 {
+                    q += &format!(" {lasting} of them can't be undone.");
+                }
+                self.confirm.ask(q, ());
+            }
+            if ui.button(ctx.i18n.tr("common-refresh")).clicked() && self.scan.is_none() {
+                self.rescan(ui.ctx());
+            }
+            if ui.button("Default selection").clicked() {
+                self.selection.clear();
+                let _ = tool_settings::save(SELECTION_ID, &self.selection);
+            }
+            if self.scan.is_some() {
+                ui.spinner();
+                ui.weak("Counting…");
+            }
+        });
+        show_message(ui, &self.message);
+        ui.add_space(4.0);
+
+        let mut toggles: Vec<(String, bool)> = Vec::new();
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                for section in Section::ALL {
+                    let rows: Vec<&(Item, usize)> =
+                        self.items.iter().filter(|(i, _)| i.section == section).collect();
+                    if rows.is_empty() {
+                        continue;
+                    }
+                    let on = rows.iter().filter(|(i, _)| self.selected(i)).count();
+                    egui::CollapsingHeader::new(format!(
+                        "{}  ({on} of {} selected)",
+                        section.label(),
+                        rows.len()
+                    ))
+                    .id_salt(section)
+                    .default_open(true)
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            if ui.small_button("All").clicked() {
+                                toggles.extend(rows.iter().map(|(i, _)| (i.id.clone(), true)));
+                            }
+                            if ui.small_button("None").clicked() {
+                                toggles.extend(rows.iter().map(|(i, _)| (i.id.clone(), false)));
+                            }
+                        });
+                        for (item, n) in rows {
+                            ui.horizontal(|ui| {
+                                let mut sel = self.selected(item);
+                                let enabled = !item.admin || ctx.elevated;
+                                let resp =
+                                    ui.add_enabled(enabled, egui::Checkbox::new(&mut sel, item.label.as_str()));
+                                if resp.changed() {
+                                    toggles.push((item.id.clone(), sel));
+                                }
+                                // Unelevated, admin items can't be read, so no count.
+                                if item.countable() && enabled {
+                                    ui.weak(match *n {
+                                        0 => "empty".to_owned(),
+                                        1 => "1 entry".to_owned(),
+                                        n => format!("{n} entries"),
+                                    });
+                                }
+                                let mut notes: Vec<&str> = Vec::new();
+                                if !item.note.is_empty() {
+                                    notes.push(item.note);
+                                }
+                                if item.close.is_some() {
+                                    notes.push("close the browser first");
+                                }
+                                if !item.undoable() {
+                                    notes.push("can't be undone");
+                                }
+                                if item.admin {
+                                    notes.push("admin");
+                                }
+                                if !notes.is_empty() {
+                                    ui.weak(format!("· {}", notes.join(" · ")));
+                                }
+                            });
+                        }
+                    });
+                }
+                if !self.items.is_empty() {
+                    ui.add_space(6.0);
+                    ui.weak("Program history lists only programs that have left some behind. Firefox isn't covered: its history and bookmarks share one file.");
+                }
+            });
+        for (id, on) in toggles {
+            self.set_selected(&id, on);
         }
     }
 }
@@ -178,53 +365,10 @@ impl Tool for PrivacyProtector {
             ui.selectable_value(&mut self.tab, Tab::Traces, "Clear activity traces");
         });
         ui.separator();
-        if self.tab == Tab::Settings {
-            self.panel.ui(ui, ctx);
-            return;
+        match self.tab {
+            Tab::Settings => self.panel.ui(ui, ctx),
+            Tab::Traces => self.traces_ui(ui, ctx),
         }
-
-        let counts = self
-            .counts
-            .get_or_insert_with(|| Trace::ALL.iter().map(|t| count(*t)).collect())
-            .clone();
-        for (i, t) in Trace::ALL.iter().enumerate() {
-            ui.horizontal(|ui| {
-                ui.checkbox(&mut self.selected[i], t.label());
-                if *t != Trace::Clipboard {
-                    ui.weak(format!("{} entries", counts[i]));
-                }
-                if !t.undoable() {
-                    ui.weak("· cannot be undone");
-                }
-            });
-        }
-        ui.add_space(6.0);
-        ui.horizontal(|ui| {
-            if ui.button("Clear selected").clicked() {
-                self.message = Some(if ctx.config.dry_run {
-                    Ok(ctx.i18n.tr("common-dry-run-skip"))
-                } else {
-                    let mut total = 0;
-                    let mut errors = Vec::new();
-                    for (i, t) in Trace::ALL.iter().enumerate().filter(|(i, _)| self.selected[*i]) {
-                        match clear(ctx, *t) {
-                            Ok(n) => total += n,
-                            Err(e) => errors.push(format!("{}: {e:#}", Trace::ALL[i].label())),
-                        }
-                    }
-                    if errors.is_empty() {
-                        Ok(format!("Cleared {total} entries. Registry history and files can be restored from the Change Journal."))
-                    } else {
-                        Err(errors.join("; "))
-                    }
-                });
-                self.counts = None;
-            }
-            if ui.button(ctx.i18n.tr("common-refresh")).clicked() {
-                self.counts = None;
-            }
-        });
-        show_message(ui, &self.message);
     }
 }
 

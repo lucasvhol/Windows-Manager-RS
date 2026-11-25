@@ -5429,6 +5429,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tracing",
+ "trash",
  "walkdir",
  "windows",
  "wm-core",
