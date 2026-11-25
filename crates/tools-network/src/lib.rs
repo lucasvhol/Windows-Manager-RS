@@ -5,6 +5,7 @@ pub mod adapters;
 mod hosts;
 mod ip_switcher;
 mod net_monitor;
+mod net_scan;
 mod net_tools;
 mod wifi;
 

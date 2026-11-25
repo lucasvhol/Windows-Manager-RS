@@ -4,6 +4,7 @@ use std::io::{Read, Write};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpStream, ToSocketAddrs};
 use std::time::Duration;
 
+use crate::net_scan;
 use anyhow::{Context, Result, bail};
 use windows::Win32::NetworkManagement::Dns::{
     DNS_QUERY_STANDARD, DNS_RECORDA, DNS_RECORDW, DNS_TYPE, DNS_TYPE_A, DNS_TYPE_AAAA, DNS_TYPE_CNAME,
@@ -18,6 +19,8 @@ use wm_core::{AppCtx, Category, Tool, egui, task::BackgroundTask};
 const IP_SUCCESS: u32 = 0;
 const IP_TTL_EXPIRED_TRANSIT: u32 = 11013;
 const IP_REQ_TIMED_OUT: u32 = 11010;
+pub const IP_SUCCESS_CODE: u32 = IP_SUCCESS;
+pub const IP_TTL_EXPIRED: u32 = IP_TTL_EXPIRED_TRANSIT;
 
 pub fn status_text(code: u32) -> &'static str {
     match code {
@@ -111,24 +114,6 @@ pub fn ping(host: &str, count: u32) -> Result<Vec<String>> {
         }
     ));
     Ok(out)
-}
-
-pub fn traceroute(host: &str, max_hops: u8, mut each: impl FnMut(String)) -> Result<()> {
-    let ip = resolve_v4(host)?;
-    each(format!("Tracing route to {host} [{ip}], at most {max_hops} hops"));
-    for ttl in 1..=max_hops {
-        let (status, from, ms) = echo(ip, ttl, 1500)?;
-        match status {
-            IP_SUCCESS | IP_TTL_EXPIRED_TRANSIT => each(format!("{ttl:>2}  {ms:>4} ms  {from}")),
-            _ => each(format!("{ttl:>2}     *     {}", status_text(status))),
-        }
-        if status == IP_SUCCESS {
-            each("Trace complete.".into());
-            return Ok(());
-        }
-    }
-    each("Destination not reached within the hop limit.".into());
-    Ok(())
 }
 
 pub const DNS_TYPES: [(&str, DNS_TYPE); 6] = [
@@ -290,15 +275,26 @@ enum Mode {
     Dns,
     Ports,
     Whois,
+    Scan,
+    Geo,
 }
+
+/// Ports most often worth checking.
+const COMMON_PORTS: &str =
+    "21-23, 25, 53, 80, 110, 135, 139, 143, 443, 445, 993, 995, 1433, 3306, 3389, 5900, 8080";
 
 pub struct NetworkTools {
     mode: Mode,
     host: String,
     dns_type: usize,
     ports: String,
+    /// IP scanner range.
+    range: String,
+    /// Look up hop locations in traceroute (sends hop addresses to ipinfo.io).
+    locate: bool,
     output: Vec<String>,
     task: Option<BackgroundTask<Vec<String>>>,
+    message: wm_core::ui::Message,
 }
 
 impl Default for NetworkTools {
@@ -308,8 +304,11 @@ impl Default for NetworkTools {
             host: "example.com".into(),
             dns_type: 0,
             ports: "22, 80, 443, 3389".into(),
+            range: String::new(),
+            locate: false,
             output: Vec::new(),
             task: None,
+            message: None,
         }
     }
 }
@@ -330,19 +329,93 @@ impl Tool for NetworkTools {
                 (Mode::Trace, "Traceroute"),
                 (Mode::Dns, "DNS lookup"),
                 (Mode::Ports, "Port check"),
+                (Mode::Scan, "IP scanner"),
+                (Mode::Geo, "Geolocation"),
                 (Mode::Whois, "Whois"),
             ] {
                 ui.selectable_value(&mut self.mode, m, label);
             }
+            ui.separator();
+            if ui
+                .button("Router page")
+                .on_hover_text("Opens your router's settings page (the default gateway) in the browser.")
+                .clicked()
+            {
+                self.message = Some(match net_scan::default_gateway() {
+                    Some(gw) => wm_core::shell::shell_open(&format!("http://{gw}/"), "")
+                        .map(|()| format!("Opened http://{gw}/"))
+                        .map_err(|e| format!("{e:#}")),
+                    None => Err("No default gateway: this PC isn't connected to a router.".into()),
+                });
+            }
+            let report = net_scan::wlan_report_path();
+            if ui
+                .add_enabled(ctx.elevated || report.exists(), egui::Button::new("Wi-Fi report"))
+                .on_hover_text(
+                    "Windows' report of Wi-Fi connections, errors and disconnects over the last three days.",
+                )
+                .on_disabled_hover_text("Creating the report needs the app to run as administrator.")
+                .clicked()
+            {
+                let made = if ctx.elevated {
+                    net_scan::make_wlan_report()
+                } else {
+                    Ok(report)
+                };
+                self.message = Some(
+                    made.and_then(|p| wm_core::shell::shell_open(&p.display().to_string(), ""))
+                        .map(|()| {
+                            if ctx.elevated {
+                                "Opened a new Wi-Fi report.".into()
+                            } else {
+                                "Opened the last Wi-Fi report (run as administrator for a new one).".into()
+                            }
+                        })
+                        .map_err(|e| format!("{e:#}")),
+                );
+            }
         });
         ui.separator();
+        wm_core::ui::show_message(ui, &self.message);
         let busy = self.task.is_some();
+        if self.mode == Mode::Scan && self.range.is_empty() {
+            self.range = net_scan::local_range().unwrap_or_else(|| "192.168.1.0/24".into());
+        }
         ui.horizontal(|ui| {
-            ui.add(
-                egui::TextEdit::singleline(&mut self.host)
-                    .hint_text("Host name or IP")
-                    .desired_width(240.0),
-            );
+            match self.mode {
+                Mode::Scan => {
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.range)
+                            .hint_text("192.168.1.1-254 or 192.168.1.0/24")
+                            .desired_width(240.0),
+                    );
+                }
+                Mode::Geo => {
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.host)
+                            .hint_text("IP or host; empty = your public address")
+                            .desired_width(240.0),
+                    );
+                }
+                _ => {
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.host)
+                            .hint_text("Host name or IP")
+                            .desired_width(240.0),
+                    );
+                }
+            }
+            match self.mode {
+                Mode::Trace => {
+                    ui.checkbox(&mut self.locate, "Show hop locations").on_hover_text(
+                        "Looks up each public hop on ipinfo.io, which sends those addresses to that service.",
+                    );
+                }
+                Mode::Ports if ui.small_button("Common ports").clicked() => {
+                    self.ports = COMMON_PORTS.into();
+                }
+                _ => {}
+            }
             match self.mode {
                 Mode::Dns => {
                     egui::ComboBox::from_id_salt("dns_type")
@@ -362,23 +435,32 @@ impl Tool for NetworkTools {
                 }
                 _ => {}
             }
-            if ui
-                .add_enabled(!busy && !self.host.trim().is_empty(), egui::Button::new("Run"))
-                .clicked()
-            {
+            let ready = match self.mode {
+                Mode::Scan => !self.range.trim().is_empty(),
+                Mode::Geo => true,
+                _ => !self.host.trim().is_empty(),
+            };
+            if ui.add_enabled(!busy && ready, egui::Button::new("Run")).clicked() {
                 let host = self.host.trim().to_owned();
                 let (mode, kind, ports) = (self.mode, DNS_TYPES[self.dns_type].1, self.ports.clone());
+                let (range, locate) = (self.range.clone(), self.locate);
                 self.output.clear();
                 self.task = Some(BackgroundTask::spawn(ui.ctx(), move |p| match mode {
                     Mode::Ping => ping(&host, 4),
                     Mode::Trace => {
                         let mut lines = Vec::new();
-                        traceroute(&host, 30, |l| {
+                        net_scan::traceroute3(&host, 30, locate, |l| {
                             p.report(0.0, l.clone());
                             lines.push(l);
                         })?;
                         Ok(lines)
                     }
+                    Mode::Scan => {
+                        let r = net_scan::parse_range(&range)?;
+                        let hosts = net_scan::scan(r, &|f| p.report(f, ""), &|| p.is_cancelled());
+                        Ok(net_scan::host_lines(&hosts, r))
+                    }
+                    Mode::Geo => net_scan::geolocate(&host),
                     Mode::Dns => dns_lookup(&host, kind),
                     Mode::Ports => {
                         let ports = parse_ports(&ports)?;
@@ -395,10 +477,24 @@ impl Tool for NetworkTools {
                     Mode::Whois => Ok(whois(&host)?.lines().map(str::to_owned).collect()),
                 }));
             }
-            if busy {
-                ui.spinner();
+            if let Some(t) = &self.task {
+                if self.mode == Mode::Scan {
+                    ui.add(
+                        egui::ProgressBar::new(t.progress)
+                            .desired_width(160.0)
+                            .show_percentage(),
+                    );
+                } else {
+                    ui.spinner();
+                }
+                if ui.small_button("Stop").clicked() {
+                    t.cancel();
+                }
             }
         });
+        if self.mode == Mode::Geo {
+            ui.weak("Sends the address to ipinfo.io when you press Run.");
+        }
         if let Some(t) = &mut self.task {
             t.poll();
             if !t.status.is_empty() && self.output.last() != Some(&t.status) {
