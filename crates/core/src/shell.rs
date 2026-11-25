@@ -246,6 +246,43 @@ pub fn read_shortcut(lnk: &Path) -> Result<ShortcutSpec> {
     }
 }
 
+/// Windows' own "Change Icon" dialog. `current` is a "path,index" spec to start from
+/// (shell32.dll when empty). Returns the chosen spec, or `None` when cancelled.
+pub fn pick_icon(current: &str) -> Option<String> {
+    use windows::Win32::UI::Shell::PickIconDlg;
+    let (path, index) = if current.trim().is_empty() {
+        (r"%SystemRoot%\System32\shell32.dll".to_owned(), 0)
+    } else {
+        crate::file_icon::split_icon_location(current)
+    };
+    let mut buf = [0u16; 260];
+    for (dst, src) in buf.iter_mut().zip(path.encode_utf16().take(259)) {
+        *dst = src;
+    }
+    let mut index = index;
+    if unsafe { PickIconDlg(None, &mut buf, Some(&mut index)) } == 0 {
+        return None;
+    }
+    let end = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+    let chosen = String::from_utf16_lossy(&buf[..end]);
+    let is_ico = chosen.to_ascii_lowercase().ends_with(".ico");
+    Some(if is_ico {
+        chosen
+    } else {
+        format!("{chosen},{index}")
+    })
+}
+
+/// Tells Explorer that icons or file associations changed, and refreshes the icon
+/// cache the way Windows does after a theme change.
+pub fn refresh_icons() {
+    use windows::Win32::UI::Shell::{SHCNE_ASSOCCHANGED, SHCNF_IDLIST, SHChangeNotify};
+    unsafe { SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, None, None) };
+    let _ = crate::process::hidden_command("ie4uinit.exe")
+        .arg("-show")
+        .status();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

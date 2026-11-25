@@ -8,6 +8,7 @@ mod navpane;
 mod run_shortcuts;
 mod start_menu;
 mod thispc;
+mod visual;
 mod winx;
 
 use wm_core::tweaks::TweakTool;
@@ -24,12 +25,7 @@ pub const APP_SETTINGS_TWEAKS: &str = include_str!("../tweaks/appsettings.toml")
 
 pub fn tools() -> Vec<Box<dyn Tool>> {
     vec![
-        Box::new(TweakTool::new(
-            Category::Customization,
-            "visual",
-            "Theme, taskbar and window appearance. Each switch restores the Windows default when turned off.",
-            include_str!("../tweaks/visual.toml"),
-        )),
+        Box::new(visual::VisualCustomizer::new(VISUAL_TWEAKS)),
         Box::new(TweakTool::new(
             Category::Customization,
             "explorertweaks",
