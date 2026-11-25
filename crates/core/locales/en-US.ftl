@@ -191,5 +191,5 @@ supercopy-desc = Fast, verified, resumable copying of files and folders.
 regtools-desc = Search, export, compare and bookmark registry keys.
 oneclickclean-desc = Clean junk, dead registry entries and traces in one go.
 fixer-desc = Standard fixes for common Windows problems.
-repair-desc = Check and repair system files, the component store and disks.
+repair-desc = Repairs grouped by problem: system files, apps, blocked tools, security settings, associations, icons, network and reset.
 wizard-desc = Optimize Windows step by step for your goals.

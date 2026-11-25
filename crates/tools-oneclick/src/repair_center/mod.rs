@@ -1,0 +1,391 @@
+//! Repair Center: sections of described repair boxes (system files, apps, blocked
+//! tools, security settings, associations, icons, network, reset and more). Boxes
+//! that can tell whether they are needed show a status line. Each run is journaled
+//! with its undo steps and leaves a log file.
+
+mod catalog;
+
+use std::collections::HashMap;
+use std::path::PathBuf;
+
+use wm_core::{
+    AppCtx, Category, Tool, egui, icons, paths,
+    safety::UndoAction,
+    shell::shell_open,
+    task::BackgroundTask,
+    ui::{Confirm, Message, numbered_tabs, request_open_tool, section_nav, show_message},
+};
+
+use crate::fixer::{self, Outcome};
+use catalog::{Health, How, Repair, Section};
+
+/// Repair boxes per page.
+const PAGE: usize = 6;
+
+pub struct RepairCenter {
+    sections: Vec<Section>,
+    section: usize,
+    page: usize,
+    health: HashMap<&'static str, Health>,
+    /// Section the health map was computed for.
+    health_for: Option<usize>,
+    running: Option<(Repair, BackgroundTask<Outcome>)>,
+    log: Vec<String>,
+    logs: Vec<(PathBuf, String)>,
+    confirm: Confirm<Repair>,
+    message: Message,
+}
+
+impl Default for RepairCenter {
+    fn default() -> Self {
+        Self {
+            sections: catalog::sections(),
+            section: 0,
+            page: 0,
+            health: HashMap::new(),
+            health_for: None,
+            running: None,
+            log: Vec::new(),
+            logs: Vec::new(),
+            confirm: Confirm::default(),
+            message: None,
+        }
+    }
+}
+
+/// Saved repair logs, newest first: (path, "date · repair").
+fn list_logs() -> Vec<(PathBuf, String)> {
+    let Ok(dir) = paths::logs_dir() else {
+        return Vec::new();
+    };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut logs: Vec<(PathBuf, String)> = entries
+        .flatten()
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().into_owned();
+            let rest = name.strip_prefix("repair-")?.strip_suffix(".txt")?;
+            // repair-YYYYMMDD-HHMMSS.mmm-<id>.txt
+            let (date, time_id) = rest.split_once('-')?;
+            let (time, id) = time_id.split_once('-')?;
+            let label = format!(
+                "{}-{}-{} {}:{} · {}",
+                date.get(..4)?,
+                date.get(4..6)?,
+                date.get(6..8)?,
+                time.get(..2)?,
+                time.get(2..4)?,
+                catalog::find(id).map_or(id, |r| r.title)
+            );
+            Some((e.path(), label))
+        })
+        .collect();
+    logs.sort_by(|a, b| b.0.cmp(&a.0));
+    logs
+}
+
+fn save_log(id: &str, lines: &[String]) -> anyhow::Result<PathBuf> {
+    let path = paths::logs_dir()?.join(format!("repair-{}-{id}.txt", fixer::stamp()));
+    std::fs::write(&path, lines.join("\r\n"))?;
+    Ok(path)
+}
+
+/// One described repair box. Returns true when its button is pressed.
+fn repair_box(ui: &mut egui::Ui, r: &Repair, health: Option<&Health>, enabled: bool, hint: &str) -> bool {
+    let mut clicked = false;
+    egui::Frame::group(ui.style()).inner_margin(10.0).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.set_min_height(112.0);
+        ui.strong(r.title);
+        ui.add(egui::Label::new(egui::RichText::new(r.description).weak()).wrap());
+        ui.add_space(2.0);
+        match health {
+            Some(Health::Fine(t)) => {
+                ui.colored_label(egui::Color32::from_rgb(70, 160, 90), format!("✔ {t}"));
+            }
+            Some(Health::Problem(t)) => {
+                ui.colored_label(ui.visuals().warn_fg_color, format!("⚠ {t}"));
+            }
+            Some(Health::Info(t)) => {
+                ui.weak(t);
+            }
+            None => {}
+        }
+        ui.horizontal(|ui| {
+            let label = match r.how {
+                How::Run if r.id == "advstartup" => "Restart",
+                How::Run => "Repair",
+                How::Open(..) => "Open",
+                How::Tool(_) => "Open tool",
+            };
+            let mut b = ui.add_enabled(enabled, egui::Button::new(label).min_size(egui::vec2(90.0, 0.0)));
+            if r.admin {
+                b = b.on_disabled_hover_text(hint);
+            }
+            clicked = b.clicked();
+            if r.admin {
+                ui.weak("administrator");
+            }
+            if r.restart {
+                ui.weak("· restart required");
+            }
+        });
+    });
+    clicked
+}
+
+impl RepairCenter {
+    fn poll(&mut self, ctx: &mut AppCtx<'_>) {
+        let Some((r, t)) = &mut self.running else { return };
+        t.poll();
+        let Some(res) = t.take_result() else { return };
+        let r = *r;
+        self.running = None;
+        self.health_for = None;
+        match res {
+            Ok(out) => {
+                for (what, undo) in out.undo {
+                    let _ = ctx.journal.record("repair", what, undo);
+                }
+                let failed = out.log.iter().any(|l| l.starts_with("  failed:"));
+                self.log = out.log;
+                let saved = save_log(r.id, &self.log);
+                self.message = Some(match (failed, saved) {
+                    (_, Err(e)) => Err(format!(
+                        "{}: finished, but the log was not saved ({e:#}).",
+                        r.title
+                    )),
+                    (true, _) => Err(format!("{}: finished with errors. See the log.", r.title)),
+                    (false, _) => Ok(format!("{}: done.", r.title)),
+                });
+            }
+            Err(e) => {
+                self.log.push(format!("  failed: {e}"));
+                let _ = save_log(r.id, &self.log);
+                self.message = Some(Err(format!("{}: {e}", r.title)));
+            }
+        }
+    }
+
+    fn start(&mut self, ui: &egui::Ui, ctx: &mut AppCtx<'_>, r: Repair) {
+        if ctx.config.dry_run {
+            self.message = Some(Ok(ctx.i18n.tr("common-dry-run-skip")));
+            return;
+        }
+        let _ = ctx
+            .journal
+            .record("repair", format!("Ran repair: {}", r.title), UndoAction::None);
+        self.message = None;
+        self.log = vec![format!("== {} ==", r.title)];
+        self.running = Some((
+            r,
+            BackgroundTask::spawn(ui.ctx(), move |p| {
+                let mut out = Outcome {
+                    log: vec![format!("== {} ==", r.title)],
+                    ..Default::default()
+                };
+                let mut status = |s: &str| p.report(0.0, s.to_owned());
+                if let Err(e) = catalog::apply(r.id, &mut out, &mut status) {
+                    out.log.push(format!("  failed: {e:#}"));
+                }
+                Ok(out)
+            }),
+        ));
+    }
+
+    fn press(&mut self, ui: &egui::Ui, r: Repair) {
+        match r.how {
+            How::Run => {
+                let mut q = format!("{}?\n\n{}", r.title, r.description);
+                if r.restart {
+                    q += "\n\nA restart is needed for this to take full effect.";
+                }
+                self.confirm.ask(q, r);
+            }
+            How::Open(target, args) => {
+                self.message = shell_open(target, args)
+                    .err()
+                    .map(|e| Err(format!("{}: {e:#}", r.title)));
+            }
+            How::Tool(id) => request_open_tool(ui.ctx(), id),
+        }
+    }
+
+    fn repairs_page(&mut self, ui: &mut egui::Ui, ctx: &AppCtx<'_>) {
+        if self.health_for != Some(self.section) {
+            self.health = self.sections[self.section]
+                .repairs
+                .iter()
+                .filter_map(|r| catalog::health(r.id).map(|h| (r.id, h)))
+                .collect();
+            self.health_for = Some(self.section);
+        }
+        let section = &self.sections[self.section];
+        let pages = section.repairs.len().div_ceil(PAGE);
+        if pages > 1 {
+            numbered_tabs(ui, &vec![""; pages], &mut self.page);
+        }
+        self.page = self.page.min(pages.saturating_sub(1));
+        let hint = ctx.i18n.tr("shell-needs-admin");
+        let busy = self.running.is_some();
+        let mut pressed = None;
+        let shown: Vec<Repair> = section
+            .repairs
+            .iter()
+            .skip(self.page * PAGE)
+            .take(PAGE)
+            .copied()
+            .collect();
+        egui::ScrollArea::vertical()
+            .id_salt("repair-boxes")
+            .max_height((ui.available_height() - 150.0).max(240.0))
+            .show(ui, |ui| {
+                for pair in shown.chunks(2) {
+                    ui.columns(2, |cols| {
+                        for (col, r) in cols.iter_mut().zip(pair) {
+                            let enabled = (!r.admin || ctx.elevated) && !(busy && r.how == How::Run);
+                            if repair_box(col, r, self.health.get(r.id), enabled, &hint) {
+                                pressed = Some(*r);
+                            }
+                        }
+                    });
+                    ui.add_space(4.0);
+                }
+            });
+        if let Some(r) = pressed {
+            self.press(ui, r);
+        }
+    }
+
+    fn logs_page(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            ui.label("Each repair saves its log here.");
+            if ui.button("Refresh").clicked() {
+                self.logs = list_logs();
+            }
+            if ui.button("Open logs folder").clicked() {
+                self.message = paths::logs_dir()
+                    .and_then(|d| shell_open(&d.to_string_lossy(), ""))
+                    .err()
+                    .map(|e| Err(format!("{e:#}")));
+            }
+        });
+        ui.add_space(4.0);
+        if self.logs.is_empty() {
+            ui.weak("No repairs have been run yet.");
+            return;
+        }
+        let mut open = None;
+        egui::ScrollArea::vertical()
+            .id_salt("repair-logs")
+            .max_height((ui.available_height() - 40.0).max(200.0))
+            .show(ui, |ui| {
+                egui::Grid::new("repair-logs-grid")
+                    .striped(true)
+                    .num_columns(2)
+                    .show(ui, |ui| {
+                        for (path, label) in &self.logs {
+                            ui.label(label);
+                            if ui.small_button("Open").clicked() {
+                                open = Some(path.clone());
+                            }
+                            ui.end_row();
+                        }
+                    });
+            });
+        if let Some(p) = open {
+            self.message = shell_open(&p.to_string_lossy(), "")
+                .err()
+                .map(|e| Err(format!("{e:#}")));
+        }
+    }
+}
+
+impl Tool for RepairCenter {
+    fn id(&self) -> &'static str {
+        "repair"
+    }
+
+    fn category(&self) -> Category {
+        Category::OneClick
+    }
+
+    fn ui(&mut self, ui: &mut egui::Ui, ctx: &mut AppCtx<'_>) {
+        self.poll(ctx);
+        if let Some(r) = self.confirm.show(ui.ctx(), ctx.i18n) {
+            self.start(ui, ctx, r);
+        }
+        let logs_index = self.sections.len() + 1;
+        let mut nav: Vec<(&str, &str)> = self.sections.iter().map(|s| (s.icon, s.title)).collect();
+        nav.push(("", ""));
+        nav.push((icons::LIST, "Repair logs"));
+        egui::Panel::left("repair-sections")
+            .resizable(false)
+            .exact_size(180.0)
+            .frame(egui::Frame::NONE.inner_margin(egui::Margin {
+                right: 8,
+                ..Default::default()
+            }))
+            .show(ui, |ui| {
+                if section_nav(ui, &nav, &mut self.section) {
+                    self.page = 0;
+                    if self.section == logs_index {
+                        self.logs = list_logs();
+                    }
+                }
+            });
+
+        if !ctx.elevated {
+            ui.colored_label(
+                ui.visuals().warn_fg_color,
+                "Repairs marked \"administrator\" need the app to run as administrator.",
+            );
+        }
+        if self.section == logs_index {
+            self.logs_page(ui);
+        } else {
+            self.repairs_page(ui, ctx);
+        }
+
+        if let Some((r, t)) = &self.running {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label(format!("{}: {}", r.title, t.status));
+            });
+        }
+        show_message(ui, &self.message);
+        if self.log.len() > 1 && self.section != logs_index {
+            egui::CollapsingHeader::new(format!("Log ({} lines)", self.log.len()))
+                .default_open(self.running.is_none())
+                .show(ui, |ui| {
+                    egui::ScrollArea::vertical()
+                        .id_salt("repair-log")
+                        .max_height(160.0)
+                        .stick_to_bottom(true)
+                        .show(ui, |ui| {
+                            ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(self.log.join("\n")).monospace().small(),
+                                )
+                                .selectable(true),
+                            );
+                        });
+                });
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn saved_logs_are_listed_with_their_repair() {
+        let path = save_log("dns", &["== Flush DNS cache ==".into(), "  ok".into()]).unwrap();
+        let logs = list_logs();
+        let found = logs.iter().find(|(p, _)| *p == path).expect("listed");
+        assert!(found.1.ends_with("· Flush DNS cache"), "{}", found.1);
+        std::fs::remove_file(path).unwrap();
+    }
+}

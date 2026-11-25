@@ -252,8 +252,17 @@ pub fn numbered_tabs(ui: &mut Ui, labels: &[&str], selected: &mut usize) {
     ui.horizontal(|ui| {
         for (i, label) in labels.iter().enumerate() {
             let sel = *selected == i;
-            let text = egui::RichText::new(format!("{}  {label}", i + 1));
-            let text = if sel { text.strong().color(ACCENT) } else { text };
+            let text = if label.is_empty() {
+                egui::RichText::new(format!("  {}  ", i + 1))
+            } else {
+                egui::RichText::new(format!("{}  {label}", i + 1))
+            };
+            // The selected button is filled with the selection colour, so its text is white.
+            let text = if sel {
+                text.strong().color(Color32::WHITE)
+            } else {
+                text
+            };
             if ui.add(egui::Button::new(text).selected(sel)).clicked() {
                 *selected = i;
             }

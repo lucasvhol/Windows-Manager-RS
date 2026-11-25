@@ -172,7 +172,7 @@ pub struct Outcome {
     pub undo: Vec<(String, UndoAction)>,
 }
 
-fn run(program: &str, args: &[&str], log: &mut Vec<String>) -> Result<String> {
+pub(crate) fn run(program: &str, args: &[&str], log: &mut Vec<String>) -> Result<String> {
     log.push(format!("> {program} {}", args.join(" ")));
     let out = hidden_command(program)
         .args(args)
@@ -191,7 +191,12 @@ fn run(program: &str, args: &[&str], log: &mut Vec<String>) -> Result<String> {
 }
 
 /// Runs a long tool, reporting its progress lines, and logs its output.
-fn run_long(program: &str, args: &[&str], log: &mut Vec<String>, status: &mut dyn FnMut(&str)) -> Result<()> {
+pub(crate) fn run_long(
+    program: &str,
+    args: &[&str],
+    log: &mut Vec<String>,
+    status: &mut dyn FnMut(&str),
+) -> Result<()> {
     log.push(format!("> {program} {}", args.join(" ")));
     let (code, lines) = run_streaming(program, args, |s| status(s))?;
     log.extend(
@@ -227,7 +232,7 @@ fn kill_explorer_then(log: &mut Vec<String>, f: impl FnOnce(&mut Vec<String>)) -
     Ok(())
 }
 
-fn delete_matching(dir: &str, pattern: &str, log: &mut Vec<String>) {
+pub(crate) fn delete_matching(dir: &str, pattern: &str, log: &mut Vec<String>) {
     for p in paths::expand_pattern(&format!(r"{dir}\{pattern}")) {
         match std::fs::remove_file(&p) {
             Ok(()) => log.push(format!("  deleted {}", p.display())),
@@ -252,12 +257,12 @@ fn set_aside(path: &str, log: &mut Vec<String>) {
     }
 }
 
-fn stamp() -> String {
+pub(crate) fn stamp() -> String {
     chrono::Local::now().format("%Y%m%d-%H%M%S%.3f").to_string()
 }
 
 /// Exports a key to the backups folder; the undo re-imports it.
-fn export_key(key: &str) -> Result<UndoAction> {
+pub(crate) fn export_key(key: &str) -> Result<UndoAction> {
     let safe: String = key
         .chars()
         .map(|c| if c.is_alphanumeric() { c } else { '_' })
@@ -275,7 +280,7 @@ fn export_key(key: &str) -> Result<UndoAction> {
     Ok(UndoAction::ImportRegFile { path: file })
 }
 
-fn delete_key(key: &str) -> Result<()> {
+pub(crate) fn delete_key(key: &str) -> Result<()> {
     let (root, sub) = registry::split_path(key)?;
     root.delete_subkey_all(sub)
         .with_context(|| format!("deleting {key}"))
