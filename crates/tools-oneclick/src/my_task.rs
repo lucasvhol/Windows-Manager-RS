@@ -2,72 +2,16 @@
 //! Scheduler. Tasks live in the `\Win Manager RS\` folder and run this executable with
 //! `--run <action>`, so they work while the app is closed.
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
 use wm_core::{
     AppCtx, Category, Tool, egui,
-    process::{hidden_command, run_checked},
-    safety::UndoAction,
     ui::{Confirm, Message, show_message},
 };
 use wm_tools_optimizer::tasks::{self, Action, TaskRow};
 
 use crate::actions::ACTIONS;
 
-pub const FOLDER: &str = r"\Win Manager RS";
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Schedule {
-    Daily,
-    Weekly(usize),
-    AtLogon,
-}
-
-pub const DAYS: [&str; 7] = ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"];
-
-/// `schtasks /create` arguments for a new task.
-pub fn create_args(
-    name: &str,
-    exe: &str,
-    action: &str,
-    schedule: Schedule,
-    time: &str,
-    highest: bool,
-) -> Vec<String> {
-    let mut a: Vec<String> = vec![
-        "/create".into(),
-        "/tn".into(),
-        format!(r"{FOLDER}\{name}"),
-        "/tr".into(),
-        format!("\"{exe}\" --run {action}"),
-    ];
-    match schedule {
-        Schedule::Daily => a.extend(["/sc".into(), "DAILY".into(), "/st".into(), time.into()]),
-        Schedule::Weekly(d) => a.extend([
-            "/sc".into(),
-            "WEEKLY".into(),
-            "/d".into(),
-            DAYS[d % 7].into(),
-            "/st".into(),
-            time.into(),
-        ]),
-        Schedule::AtLogon => a.extend(["/sc".into(), "ONLOGON".into()]),
-    }
-    if highest {
-        a.extend(["/rl".into(), "HIGHEST".into()]);
-    }
-    a.push("/f".into());
-    a
-}
-
-pub fn valid_time(t: &str) -> bool {
-    let Some((h, m)) = t.split_once(':') else {
-        return false;
-    };
-    h.len() == 2
-        && m.len() == 2
-        && h.parse::<u8>().is_ok_and(|h| h < 24)
-        && m.parse::<u8>().is_ok_and(|m| m < 60)
-}
+pub use wm_core::scheduler::{DAYS, FOLDER, Schedule, schedule, valid_time};
 
 pub fn valid_name(n: &str) -> bool {
     !n.trim().is_empty() && n.len() <= 60 && n.chars().all(|c| c.is_alphanumeric() || " -_".contains(c))
@@ -121,34 +65,6 @@ impl MyTask {
         }
         schedule(ctx, &name, action, self.schedule, &self.time, self.highest)
     }
-}
-
-/// Creates (or replaces) a task in our folder that runs `--run <action>`, journaled
-/// with an undo that deletes it. Inputs are assumed valid.
-pub fn schedule(
-    ctx: &AppCtx<'_>,
-    name: &str,
-    action: &str,
-    when: Schedule,
-    time: &str,
-    highest: bool,
-) -> Result<String> {
-    if ctx.config.dry_run {
-        return Ok(ctx.i18n.tr("common-dry-run-skip"));
-    }
-    let exe = std::env::current_exe()?.display().to_string();
-    let args = create_args(name, &exe, action, when, time, highest);
-    run_checked(hidden_command("schtasks").args(&args)).context("creating the task")?;
-    let path = format!(r"{FOLDER}\{name}");
-    ctx.journal.record(
-        "mytask",
-        format!("Scheduled \"{name}\" ({action})"),
-        UndoAction::RunCommand {
-            program: "schtasks".into(),
-            args: vec!["/delete".into(), "/tn".into(), path, "/f".into()],
-        },
-    )?;
-    Ok(format!("Scheduled \"{name}\"."))
 }
 
 impl Tool for MyTask {
@@ -284,6 +200,8 @@ impl Tool for MyTask {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use wm_core::process::{hidden_command, run_checked};
+    use wm_core::scheduler::create_args;
 
     #[test]
     fn schtasks_arguments() {

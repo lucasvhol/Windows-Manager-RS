@@ -19,6 +19,7 @@ pub mod paths;
 pub mod process;
 pub mod registry;
 pub mod safety;
+pub mod scheduler;
 pub mod shell;
 pub mod task;
 pub mod tool;

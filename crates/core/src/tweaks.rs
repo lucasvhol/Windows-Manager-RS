@@ -511,6 +511,11 @@ impl TweakTool {
             panel: TweakPanel::new(id, definitions),
         }
     }
+
+    pub fn with_extra(mut self, extra: Box<dyn ExtraSetting>) -> Self {
+        self.panel = self.panel.with_extra(extra);
+        self
+    }
 }
 
 impl crate::Tool for TweakTool {
@@ -556,6 +561,16 @@ pub struct TweakPanel {
     running: Option<(usize, crate::task::BackgroundTask<()>)>,
     group_sel: usize,
     filter: String,
+    /// Settings the tool draws itself, inside their group.
+    extras: Vec<Box<dyn ExtraSetting>>,
+}
+
+/// A setting a tool draws itself (too rich for a switch), shown inside one of a
+/// [`TweakPanel`]'s groups and found by its search.
+pub trait ExtraSetting {
+    fn group(&self) -> &str;
+    fn title(&self) -> &str;
+    fn ui(&mut self, ui: &mut Ui, ctx: &AppCtx<'_>);
 }
 
 impl TweakPanel {
@@ -578,7 +593,13 @@ impl TweakPanel {
             running: None,
             group_sel: 0,
             filter: String::new(),
+            extras: Vec::new(),
         }
+    }
+
+    pub fn with_extra(mut self, extra: Box<dyn ExtraSetting>) -> Self {
+        self.extras.push(extra);
+        self
     }
 
     pub fn tweaks(&self) -> &[Tweak] {
@@ -637,9 +658,14 @@ impl TweakPanel {
         ui.add_space(6.0);
 
         let mut groups: Vec<String> = Vec::new();
-        for t in &self.tweaks {
-            if !groups.contains(&t.group) {
-                groups.push(t.group.clone());
+        for g in self
+            .tweaks
+            .iter()
+            .map(|t| t.group.as_str())
+            .chain(self.extras.iter().map(|e| e.group()))
+        {
+            if !groups.iter().any(|x| x == g) {
+                groups.push(g.to_owned());
             }
         }
         if let Some(i) = self.confirm.show(ui.ctx(), ctx.i18n) {
@@ -665,7 +691,10 @@ impl TweakPanel {
         };
         let mut draw = |ui: &mut Ui, this: &mut Self| {
             for group in &shown {
-                if !this.tweaks.iter().any(|t| t.group == *group && matches(t)) {
+                let extra_here = this.extras.iter().any(|e| {
+                    e.group() == group && (query.is_empty() || e.title().to_lowercase().contains(&query))
+                });
+                if !extra_here && !this.tweaks.iter().any(|t| t.group == *group && matches(t)) {
                     continue;
                 }
                 if !group.is_empty() {
@@ -817,6 +846,13 @@ Apply \"{}\" anyway?",
                         }
                     });
                     ui.add_space(4.0);
+                }
+                for extra in this.extras.iter_mut().filter(|e| e.group() == group) {
+                    if query.is_empty() || extra.title().to_lowercase().contains(&query) {
+                        ui.add_space(4.0);
+                        extra.ui(ui, ctx);
+                        ui.add_space(4.0);
+                    }
                 }
                 ui.add_space(8.0);
             }

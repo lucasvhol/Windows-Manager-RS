@@ -2,6 +2,7 @@
 //! aliases, jump list launcher, and visual / Explorer / This PC / navigation pane tweaks.
 
 mod context_menu;
+pub mod custom_extras;
 mod hotkeys;
 mod jumplist;
 mod navpane;
@@ -32,12 +33,11 @@ pub fn tools() -> Vec<Box<dyn Tool>> {
             "",
             include_str!("../tweaks/explorer.toml"),
         )),
-        Box::new(TweakTool::new(
-            Category::Customization,
-            "customsystem",
-            "",
-            CUSTOM_TWEAKS,
-        )),
+        Box::new(
+            TweakTool::new(Category::Customization, "customsystem", "", CUSTOM_TWEAKS)
+                .with_extra(Box::new(custom_extras::ThemeScheduleSetting::default()))
+                .with_extra(Box::new(custom_extras::CapsLockSetting::default())),
+        ),
         Box::new(TweakTool::new(
             Category::Customization,
             "appsettings",

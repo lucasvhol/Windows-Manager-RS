@@ -34,6 +34,11 @@ pub const ACTIONS: &[(&str, &str, bool)] = &[
         "Clear Run history, address bar history and recent files",
         false,
     ),
+    (
+        wm_tools_custom::custom_extras::THEME_ACTION,
+        "Switch light or dark mode by the theme schedule (Custom System)",
+        false,
+    ),
     ("flush-dns", "Flush the DNS cache", true),
     ("restore-point", "Create a System Restore point", true),
 ];
@@ -111,6 +116,7 @@ pub fn run(name: &str, ctx: &AppCtx<'_>) -> Result<String> {
             Ok(format!("Cleared {n} activity traces."))
         }
         "desktop-unused" => wm_tools_cleaner::desktop::move_unused(ctx),
+        "theme-auto" => wm_tools_custom::custom_extras::auto_apply(),
         "flush-dns" => {
             run_checked(hidden_command("ipconfig").arg("/flushdns"))?;
             ctx.journal
