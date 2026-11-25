@@ -18,6 +18,7 @@ pub mod password;
 pub mod paths;
 pub mod process;
 pub mod registry;
+pub mod rules;
 pub mod safety;
 pub mod scheduler;
 pub mod shell;

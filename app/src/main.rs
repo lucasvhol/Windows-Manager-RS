@@ -64,6 +64,12 @@ fn run_headless(action: &str) -> i32 {
 fn main() -> eframe::Result {
     let _guard = init_logging();
     let args: Vec<String> = std::env::args().collect();
+    // My Task's rule monitor: runs headless (with a notification-area icon) until stopped.
+    if args.iter().any(|a| a == "--monitor") {
+        let code = wm_tools_oneclick::monitor::run();
+        drop(_guard);
+        std::process::exit(code);
+    }
     // Desktop shortcuts made by Registry Tools: open Registry Editor at a key and exit.
     if let Some(i) = args.iter().position(|a| a == "--regjump") {
         let key = args.get(i + 1).map(String::as_str).unwrap_or_default();

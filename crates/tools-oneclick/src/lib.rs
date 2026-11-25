@@ -4,7 +4,9 @@
 pub mod actions;
 
 mod fixer;
+pub mod monitor;
 mod my_task;
+mod my_task_rules;
 mod oneclick_cleaner;
 mod repair_center;
 mod wizard;

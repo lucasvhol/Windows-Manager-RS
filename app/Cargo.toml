@@ -7,6 +7,7 @@ version.workspace = true
 [dependencies]
 anyhow = "1.0.105"
 eframe = "0.37.0"
+raw-window-handle = "0.6.2"
 egui_extras = "0.37.0"
 rfd = "0.18.0"
 sysinfo = "0.40.4"

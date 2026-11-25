@@ -32,6 +32,8 @@ pub struct Shell {
     locked: bool,
     password_input: String,
     password_wrong: bool,
+    /// Tells the minimise watcher whether to hide the window (set once the handle is known).
+    tray_flag: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 }
 
 impl Shell {
@@ -88,6 +90,7 @@ impl Shell {
             locked: config_locked,
             password_input: String::new(),
             password_wrong: false,
+            tray_flag: None,
         }
     }
 
@@ -443,6 +446,25 @@ impl Shell {
         }
     }
 
+    /// With "hide in the notification area" on, a minimised main window is hidden (by a
+    /// watcher thread, since nothing is drawn while minimised); the rule monitor's tray
+    /// icon shows it again.
+    fn hide_to_tray(&mut self, frame: &eframe::Frame) {
+        use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+        let flag = self.tray_flag.get_or_insert_with(|| {
+            let flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            if let Ok(h) = frame.window_handle()
+                && let RawWindowHandle::Win32(w) = h.as_raw()
+            {
+                let hwnd = w.hwnd.get();
+                wm_tools_oneclick::monitor::remember_app_window(hwnd);
+                wm_tools_oneclick::monitor::watch_minimize(hwnd, flag.clone());
+            }
+            flag
+        });
+        flag.store(self.config.minimize_to_tray, std::sync::atomic::Ordering::Relaxed);
+    }
+
     /// Persists config and applies side effects (language, theme, zoom) when it changed.
     fn sync_config(&mut self, ctx: &egui::Context) {
         if self.config == self.saved_config {
@@ -543,5 +565,6 @@ impl eframe::App for Shell {
         self.tool_windows(&ctx);
         self.about(&ctx);
         self.sync_config(&ctx);
+        self.hide_to_tray(_frame);
     }
 }

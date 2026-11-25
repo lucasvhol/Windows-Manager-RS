@@ -29,3 +29,12 @@ pub fn tools() -> Vec<Box<dyn Tool>> {
         ),
     ]
 }
+
+/// Bytes received plus sent by the connected physical adapters since they started
+/// (for rates, take the difference between two calls).
+pub fn total_traffic_bytes() -> u64 {
+    net_monitor::interface_counters()
+        .iter()
+        .map(|(_, rx, tx, _)| rx + tx)
+        .sum()
+}

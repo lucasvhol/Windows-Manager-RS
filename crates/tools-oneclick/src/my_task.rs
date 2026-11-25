@@ -33,11 +33,15 @@ pub struct MyTask {
     highest: bool,
     confirm: Confirm<TaskRow>,
     message: Message,
+    live: bool,
+    rules: crate::my_task_rules::RulesPage,
 }
 
 impl Default for MyTask {
     fn default() -> Self {
         Self {
+            live: false,
+            rules: Default::default(),
             tasks: None,
             name: "Weekly cleanup".into(),
             action: 0,
@@ -77,6 +81,15 @@ impl Tool for MyTask {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, ctx: &mut AppCtx<'_>) {
+        ui.horizontal(|ui| {
+            ui.selectable_value(&mut self.live, false, "Scheduled tasks");
+            ui.selectable_value(&mut self.live, true, "Live rules");
+        });
+        ui.separator();
+        if self.live {
+            self.rules.ui(ui, ctx);
+            return;
+        }
         if self.tasks.is_none() {
             self.tasks = Some(our_tasks().map_err(|e| format!("{e:#}")));
         }

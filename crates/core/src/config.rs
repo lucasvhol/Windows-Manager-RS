@@ -32,6 +32,8 @@ pub struct Config {
     pub ui_scale: f32,
     /// Argon2id hash of the optional program password (see `password` module).
     pub password_hash: Option<String>,
+    /// Hide the main window in the notification area (the rule monitor's icon) when minimised.
+    pub minimize_to_tray: bool,
 }
 
 impl Config {
@@ -54,6 +56,7 @@ impl Default for Config {
             recent_tools: Vec::new(),
             ui_scale: 1.0,
             password_hash: None,
+            minimize_to_tray: false,
         }
     }
 }

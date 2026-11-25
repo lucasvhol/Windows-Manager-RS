@@ -111,6 +111,11 @@ impl Settings {
                     ctx.config.ui_scale = pct as f32 / 100.0;
                 }
                 ui.end_row();
+
+                ui.label("When minimised");
+                ui.checkbox(&mut ctx.config.minimize_to_tray, "Hide in the notification area")
+                    .on_hover_text("Click the Win Manager icon to bring the window back. The icon belongs to My Task's rule monitor, which starts if needed.");
+                ui.end_row();
             });
     }
 
@@ -297,7 +302,11 @@ impl Settings {
         ui.add_space(12.0);
         ui.strong("Options tools remember");
         ui.weak("Reset a tool to forget its remembered choices (selections, schemes, schedules' options). It starts with its defaults the next time it opens.");
-        let saved = wm_core::tool_settings::saved();
+        // app-window is bookkeeping for the tray icon, not an option.
+        let saved: Vec<String> = wm_core::tool_settings::saved()
+            .into_iter()
+            .filter(|id| id != "app-window")
+            .collect();
         if saved.is_empty() {
             ui.weak("No tool has remembered anything yet.");
         }
@@ -340,6 +349,8 @@ fn tool_label(ctx: &AppCtx<'_>, id: &str) -> String {
     match id {
         "privacy-traces" => "Privacy Protector (trace selection)".into(),
         "themeschedule" => "Custom System (theme schedule)".into(),
+        "mytask-rules" => "My Task (live rules)".into(),
+        "mytask-log" => "My Task (rule monitor history)".into(),
         other => other.to_owned(),
     }
 }
