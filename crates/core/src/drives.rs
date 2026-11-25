@@ -136,6 +136,57 @@ pub fn list() -> Vec<DriveInfo> {
     out
 }
 
+/// Whether the disk behind a drive letter is solid state (no seek penalty), or `None`
+/// when Windows cannot tell (for example some USB bridges and virtual disks). Opening
+/// the volume for a property query needs no administrator rights.
+pub fn is_ssd(letter: char) -> Option<bool> {
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::Storage::FileSystem::{
+        CreateFileW, FILE_FLAGS_AND_ATTRIBUTES, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
+    };
+    use windows::Win32::System::IO::DeviceIoControl;
+    use windows::Win32::System::Ioctl::{
+        DEVICE_SEEK_PENALTY_DESCRIPTOR, IOCTL_STORAGE_QUERY_PROPERTY, PropertyStandardQuery,
+        STORAGE_PROPERTY_QUERY, StorageDeviceSeekPenaltyProperty,
+    };
+
+    let path = wide(&format!(r"\\.\{letter}:"));
+    let handle = unsafe {
+        CreateFileW(
+            PCWSTR(path.as_ptr()),
+            0,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            None,
+            OPEN_EXISTING,
+            FILE_FLAGS_AND_ATTRIBUTES(0),
+            None,
+        )
+    }
+    .ok()?;
+    let query = STORAGE_PROPERTY_QUERY {
+        PropertyId: StorageDeviceSeekPenaltyProperty,
+        QueryType: PropertyStandardQuery,
+        ..Default::default()
+    };
+    let mut desc = DEVICE_SEEK_PENALTY_DESCRIPTOR::default();
+    let mut returned = 0u32;
+    let ok = unsafe {
+        DeviceIoControl(
+            handle,
+            IOCTL_STORAGE_QUERY_PROPERTY,
+            Some(std::ptr::from_ref(&query).cast()),
+            size_of::<STORAGE_PROPERTY_QUERY>() as u32,
+            Some(std::ptr::from_mut(&mut desc).cast()),
+            size_of::<DEVICE_SEEK_PENALTY_DESCRIPTOR>() as u32,
+            Some(&mut returned),
+            None,
+        )
+    };
+    let _ = unsafe { CloseHandle(handle) };
+    ok.ok()?;
+    (returned as usize >= size_of::<DEVICE_SEEK_PENALTY_DESCRIPTOR>()).then_some(!desc.IncursSeekPenalty)
+}
+
 #[cfg(test)]
 mod tests {
     #[test]

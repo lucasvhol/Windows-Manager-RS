@@ -12,6 +12,7 @@ pub mod file_icon;
 pub mod fileinfo;
 pub mod i18n;
 pub mod icons;
+pub mod machine;
 pub mod net;
 pub mod password;
 pub mod paths;

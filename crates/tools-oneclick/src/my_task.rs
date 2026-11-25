@@ -119,23 +119,36 @@ impl MyTask {
         if needs_admin && !self.highest {
             bail!("\"{action}\" needs administrator rights: tick \"Run with highest privileges\".");
         }
-        if ctx.config.dry_run {
-            return Ok(ctx.i18n.tr("common-dry-run-skip"));
-        }
-        let exe = std::env::current_exe()?.display().to_string();
-        let args = create_args(&name, &exe, action, self.schedule, &self.time, self.highest);
-        run_checked(hidden_command("schtasks").args(&args)).context("creating the task")?;
-        let path = format!(r"{FOLDER}\{name}");
-        ctx.journal.record(
-            "mytask",
-            format!("Scheduled \"{name}\" ({action})"),
-            UndoAction::RunCommand {
-                program: "schtasks".into(),
-                args: vec!["/delete".into(), "/tn".into(), path, "/f".into()],
-            },
-        )?;
-        Ok(format!("Scheduled \"{name}\"."))
+        schedule(ctx, &name, action, self.schedule, &self.time, self.highest)
     }
+}
+
+/// Creates (or replaces) a task in our folder that runs `--run <action>`, journaled
+/// with an undo that deletes it. Inputs are assumed valid.
+pub fn schedule(
+    ctx: &AppCtx<'_>,
+    name: &str,
+    action: &str,
+    when: Schedule,
+    time: &str,
+    highest: bool,
+) -> Result<String> {
+    if ctx.config.dry_run {
+        return Ok(ctx.i18n.tr("common-dry-run-skip"));
+    }
+    let exe = std::env::current_exe()?.display().to_string();
+    let args = create_args(name, &exe, action, when, time, highest);
+    run_checked(hidden_command("schtasks").args(&args)).context("creating the task")?;
+    let path = format!(r"{FOLDER}\{name}");
+    ctx.journal.record(
+        "mytask",
+        format!("Scheduled \"{name}\" ({action})"),
+        UndoAction::RunCommand {
+            program: "schtasks".into(),
+            args: vec!["/delete".into(), "/tn".into(), path, "/f".into()],
+        },
+    )?;
+    Ok(format!("Scheduled \"{name}\"."))
 }
 
 impl Tool for MyTask {
