@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use wm_core::{
     AppCtx, Category, Tool, egui, paths,
     process::{hidden_command, run_checked},
+    registry,
     safety::UndoAction,
     task::BackgroundTask,
     ui::{Message, show_message},
@@ -178,6 +179,47 @@ pub fn save_profiles(path: &std::path::Path, profiles: &[Profile]) -> Result<()>
     Ok(())
 }
 
+const RUN_KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
+const RUN_VALUE: &str = "WinManager IP Switcher";
+
+/// Whether IP Switcher opens when you sign in.
+pub fn starts_with_windows() -> bool {
+    registry::read_raw(RUN_KEY, RUN_VALUE).is_some()
+}
+
+pub fn set_start_with_windows(ctx: &AppCtx<'_>, on: bool) -> Result<()> {
+    let snap = registry::snapshot(RUN_KEY, RUN_VALUE);
+    if on {
+        let exe = std::env::current_exe()?;
+        registry::write_raw(
+            RUN_KEY,
+            RUN_VALUE,
+            &registry::string(&format!("\"{}\" --open ipswitcher", exe.display())),
+        )?;
+    } else {
+        registry::delete_value(RUN_KEY, RUN_VALUE)?;
+    }
+    ctx.journal.record(
+        "ipswitcher",
+        if on {
+            "IP Switcher opens at sign-in"
+        } else {
+            "IP Switcher no longer opens at sign-in"
+        },
+        UndoAction::RestoreRegValues { values: vec![snap] },
+    )?;
+    Ok(())
+}
+
+/// "1 Gbps", "100 Mbps".
+fn speed_text(bps: u64) -> String {
+    match bps {
+        0 => "unknown".into(),
+        b if b >= 1_000_000_000 => format!("{:.1} Gbps", b as f64 / 1e9).replace(".0 ", " "),
+        b => format!("{} Mbps", b / 1_000_000),
+    }
+}
+
 pub const DNS_PRESETS: [(&str, [Ipv4Addr; 2]); 3] = [
     (
         "Cloudflare",
@@ -315,10 +357,6 @@ impl Tool for IpSwitcher {
         Category::Network
     }
 
-    fn requires_admin(&self) -> bool {
-        true
-    }
-
     fn ui(&mut self, ui: &mut egui::Ui, ctx: &mut AppCtx<'_>) {
         if self.adapters.is_none() {
             self.adapters = Some(adapters::list().map_err(|e| format!("{e:#}")));
@@ -377,6 +415,14 @@ impl Tool for IpSwitcher {
             .spacing([16.0, 4.0])
             .show(ui, |ui| {
                 let rows = [
+                    (
+                        "Status",
+                        if adapter.up {
+                            format!("Connected at {}", speed_text(adapter.speed_bps))
+                        } else {
+                            "Disconnected".to_owned()
+                        },
+                    ),
                     ("Description", adapter.description.clone()),
                     ("MAC address", adapter.mac.clone()),
                     (
@@ -476,7 +522,26 @@ impl Tool for IpSwitcher {
         show_message(ui, &self.message);
         ui.separator();
 
-        ui.strong("Profiles");
+        ui.horizontal(|ui| {
+            ui.strong("Profiles");
+            let mut on = starts_with_windows();
+            if ui
+                .checkbox(&mut on, "Open IP Switcher when I sign in")
+                .on_hover_text("Handy on a laptop that moves between networks.")
+                .changed()
+            {
+                self.message = Some(if ctx.config.dry_run {
+                    Ok(ctx.i18n.tr("common-dry-run-skip"))
+                } else {
+                    set_start_with_windows(ctx, on)
+                        .map(|()| "Saved.".into())
+                        .map_err(|e| format!("{e:#}"))
+                });
+            }
+        });
+        if !ctx.elevated {
+            ui.weak("Applying a profile or DNS needs the app to run as administrator; profiles can be made and saved without.");
+        }
         let profiles = self.profiles.clone().unwrap_or_default();
         let mut delete = None;
         for (i, p) in profiles.iter().enumerate() {
@@ -531,6 +596,19 @@ impl Tool for IpSwitcher {
                 ui.checkbox(&mut self.form.dhcp, "Obtain address automatically");
                 if ui.small_button("Fill from current").clicked() {
                     self.form = Form::from_config(&self.form.name, &IpConfig::of(&adapter));
+                }
+                if ui
+                    .small_button("New")
+                    .on_hover_text("Clear the form for a new profile")
+                    .clicked()
+                {
+                    self.form = Form {
+                        dhcp: true,
+                        ..Default::default()
+                    };
+                }
+                if profiles.iter().any(|p| p.name == self.form.name.trim()) {
+                    ui.weak("Saving replaces this profile.");
                 }
             });
             ui.add_enabled_ui(!self.form.dhcp, |ui| {
@@ -687,5 +765,28 @@ mod tests {
         ];
         save_profiles(&path, &profiles).unwrap();
         assert_eq!(load_profiles(&path), profiles);
+    }
+
+    #[test]
+    fn start_with_windows_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let journal =
+            wm_core::safety::ChangeJournal::open(&dir.path().join("j.json"), &dir.path().join("b")).unwrap();
+        let mut config = wm_core::config::Config::default();
+        let i18n = wm_core::i18n::I18n::new("en-US");
+        let ctx = AppCtx {
+            config: &mut config,
+            journal: &journal,
+            i18n: &i18n,
+            elevated: false,
+        };
+        let before = starts_with_windows();
+        set_start_with_windows(&ctx, !before).unwrap();
+        assert_eq!(starts_with_windows(), !before);
+        let e = journal.entries().into_iter().max_by_key(|e| e.id).unwrap();
+        journal.undo(e.id).unwrap();
+        assert_eq!(starts_with_windows(), before, "undo restores the user's setting");
+        assert_eq!(speed_text(1_000_000_000), "1 Gbps");
+        assert_eq!(speed_text(100_000_000), "100 Mbps");
     }
 }
