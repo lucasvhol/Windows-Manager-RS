@@ -95,10 +95,19 @@ pub fn ensure_com() {
 /// Opens a program, document, `.msc`/`.cpl` file or URI (e.g. `ms-settings:display`)
 /// the way Explorer would.
 pub fn shell_open(target: &str, args: &str) -> Result<()> {
+    shell_execute("open", target, args)
+}
+
+/// Like [`shell_open`], but asks Windows to run it as administrator (UAC prompt).
+pub fn shell_open_as_admin(target: &str, args: &str) -> Result<()> {
+    shell_execute("runas", target, args)
+}
+
+fn shell_execute(verb: &str, target: &str, args: &str) -> Result<()> {
     let r = unsafe {
         ShellExecuteW(
             None,
-            windows::core::w!("open"),
+            &HSTRING::from(verb),
             &HSTRING::from(target),
             &HSTRING::from(args),
             windows::core::PCWSTR::null(),
