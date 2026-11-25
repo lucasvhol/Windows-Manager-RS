@@ -64,6 +64,19 @@ fn run_headless(action: &str) -> i32 {
 fn main() -> eframe::Result {
     let _guard = init_logging();
     let args: Vec<String> = std::env::args().collect();
+    // Desktop shortcuts made by Registry Tools: open Registry Editor at a key and exit.
+    if let Some(i) = args.iter().position(|a| a == "--regjump") {
+        let key = args.get(i + 1).map(String::as_str).unwrap_or_default();
+        let code = match wm_core::registry::open_in_regedit(key) {
+            Ok(()) => 0,
+            Err(e) => {
+                tracing::error!("--regjump {key} failed: {e:#}");
+                1
+            }
+        };
+        drop(_guard);
+        std::process::exit(code);
+    }
     if let Some(i) = args.iter().position(|a| a == "--run") {
         let action = args.get(i + 1).map(String::as_str).unwrap_or_default();
         let code = run_headless(action);

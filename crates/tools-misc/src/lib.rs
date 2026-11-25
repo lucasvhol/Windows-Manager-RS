@@ -2,6 +2,7 @@
 //! launcher for Windows' built-in administrative tools.
 
 pub mod file_splitter;
+mod registry_extra;
 mod registry_tools;
 pub mod super_copy;
 mod windows_utilities;

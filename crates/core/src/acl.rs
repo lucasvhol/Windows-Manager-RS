@@ -158,6 +158,68 @@ pub fn reset_reg_dacl(key: &str) -> Result<()> {
     }
 }
 
+/// The SID of the account running this program, as `S-1-5-21-…`.
+pub fn current_user_sid() -> Result<String> {
+    use windows::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows::Win32::Security::Authorization::ConvertSidToStringSidW;
+    use windows::Win32::Security::{GetTokenInformation, TOKEN_QUERY, TOKEN_USER, TokenUser};
+    use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+    unsafe {
+        let mut token = HANDLE::default();
+        OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token)?;
+        let mut buf = vec![0u64; 64];
+        let mut len = 0u32;
+        let r = GetTokenInformation(
+            token,
+            TokenUser,
+            Some(buf.as_mut_ptr().cast()),
+            (buf.len() * 8) as u32,
+            &mut len,
+        );
+        let _ = CloseHandle(token);
+        r?;
+        let user = &*(buf.as_ptr() as *const TOKEN_USER);
+        let mut s = PWSTR::null();
+        ConvertSidToStringSidW(user.User.Sid, &mut s)?;
+        let text = s.to_string().unwrap_or_default();
+        let _ = LocalFree(Some(HLOCAL(s.0.cast())));
+        Ok(text)
+    }
+}
+
+/// An account name for a SID string or SDDL alias (`BA`, `S-1-5-18`…); the input
+/// itself when Windows doesn't know it.
+pub fn account_name(sid: &str) -> String {
+    use windows::Win32::Security::Authorization::ConvertStringSidToSidW;
+    use windows::Win32::Security::{LookupAccountSidW, PSID, SID_NAME_USE};
+    unsafe {
+        let mut psid = PSID::default();
+        if ConvertStringSidToSidW(&HSTRING::from(sid), &mut psid).is_err() {
+            return sid.to_owned();
+        }
+        let (mut name, mut domain) = ([0u16; 256], [0u16; 256]);
+        let (mut nlen, mut dlen) = (name.len() as u32, domain.len() as u32);
+        let mut use_ = SID_NAME_USE(0);
+        let ok = LookupAccountSidW(
+            None,
+            psid,
+            Some(PWSTR(name.as_mut_ptr())),
+            &mut nlen,
+            Some(PWSTR(domain.as_mut_ptr())),
+            &mut dlen,
+            &mut use_,
+        )
+        .is_ok();
+        let _ = LocalFree(Some(HLOCAL(psid.0)));
+        if !ok {
+            return sid.to_owned();
+        }
+        let n = String::from_utf16_lossy(&name[..nlen as usize]);
+        let d = String::from_utf16_lossy(&domain[..dlen as usize]);
+        if d.is_empty() { n } else { format!(r"{d}\{n}") }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
