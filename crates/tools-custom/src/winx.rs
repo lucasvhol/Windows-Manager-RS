@@ -982,9 +982,14 @@ mod tests {
         assert_eq!(label_of(Path::new("Custom.lnk")), "Custom");
     }
 
+    /// Tests that read or change the real Win+X folder take turns, so one never reads
+    /// another's temporary group while its shortcuts are half-written.
+    static REAL_FOLDER: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     /// The hash scheme reproduces every hash Windows stored on its own file shortcuts.
     #[test]
     fn hash_matches_windows_own_shortcuts() {
+        let _turn = REAL_FOLDER.lock().unwrap_or_else(|e| e.into_inner());
         let items = list(&winx_dir(), false);
         assert!(!items.is_empty(), "the Win+X folder should contain shortcuts");
         let mut checked = 0;
@@ -1037,6 +1042,7 @@ mod tests {
     /// Win+X folder, then undo each change through the journal.
     #[test]
     fn edit_entries_in_temporary_groups_with_undo() {
+        let _turn = REAL_FOLDER.lock().unwrap_or_else(|e| e.into_inner());
         let dir = tempfile::tempdir().unwrap();
         let journal =
             wm_core::safety::ChangeJournal::open(&dir.path().join("j.json"), &dir.path().join("b")).unwrap();
