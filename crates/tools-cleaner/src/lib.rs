@@ -8,6 +8,7 @@ mod disk_analyzer;
 mod duplicates;
 pub mod junk;
 pub mod registry_cleaner;
+pub mod registry_defrag;
 pub(crate) mod uninstaller;
 
 use wm_core::Tool;
@@ -22,5 +23,6 @@ pub fn tools() -> Vec<Box<dyn Tool>> {
         Box::new(apps::AppsUninstaller::default()),
         Box::new(component_store::ComponentStoreCleaner::default()),
         Box::new(registry_cleaner::RegistryCleaner::default()),
+        Box::new(registry_defrag::RegistryDefrag::default()),
     ]
 }

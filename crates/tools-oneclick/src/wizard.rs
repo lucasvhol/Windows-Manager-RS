@@ -143,7 +143,7 @@ struct Step {
     tips: &'static [&'static str],
 }
 
-const STEPS: [Step; 13] = [
+const STEPS: [Step; 14] = [
     Step {
         title: "Before you start",
         page: Page::Start,
@@ -221,6 +221,15 @@ const STEPS: [Step; 13] = [
         page: Page::Drives,
         why: "Hard disks get slower as files fragment. Solid-state drives do not; Windows only needs to trim them, which it does on a schedule.",
         tips: &[],
+    },
+    Step {
+        title: "Registry defrag",
+        page: Page::Tool("regdefrag"),
+        why: "Deleted keys leave empty space in the registry files. Compacting rebuilds them without it; Windows restarts to finish.",
+        tips: &[
+            "It comes last because Windows restarts right after compacting.",
+            "Needs the app to run as administrator. Skip it if the analysis finds little to save.",
+        ],
     },
     Step {
         title: "Finish",
@@ -752,6 +761,7 @@ mod tests {
             "services",
             "junk",
             "regclean",
+            "regdefrag",
         ];
         let tool_steps: Vec<&str> = STEPS
             .iter()

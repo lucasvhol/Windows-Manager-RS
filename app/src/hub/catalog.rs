@@ -83,7 +83,7 @@ pub fn related(id: &str) -> &'static [&'static str] {
         "explorertweaks" => &["navpane", "thispc"],
         "startup" => &["services", "tasks"],
         "fixer" => &["repair"],
-        "regclean" => &["regtools"],
+        "regclean" => &["regdefrag", "regtools"],
         _ => &[],
     }
 }
@@ -124,6 +124,7 @@ pub fn tool_icon(id: &str) -> &'static str {
         "junk" => i::BROOM,
         "duplicates" => i::COPY,
         "regclean" => i::DATABASE,
+        "regdefrag" => i::STACK,
         "explorertweaks" => i::FOLDER_OPEN,
         "navpane" => i::TREE_VIEW,
         "thispc" => i::MONITOR,

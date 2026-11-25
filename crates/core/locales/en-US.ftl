@@ -79,6 +79,7 @@ uninstaller-title = Smart Uninstaller
 apps-title = Windows Apps Uninstaller
 winsxs-title = Component Store Cleaner
 regclean-title = Registry Cleaner
+regdefrag-title = Registry Defrag
 
 ## Customization tools
 visual-title = Visual Customizer
@@ -157,6 +158,7 @@ desktop-desc = Tidy up desktop items you rarely use.
 junk-desc = Remove temporary files, caches, logs and other junk.
 duplicates-desc = Find identical files and reclaim the space they use.
 regclean-desc = Remove registry entries that point to things that no longer exist.
+regdefrag-desc = Rebuild the registry files without their empty space.
 customsystem-desc = Desktop, taskbar, Start, notifications, sign-in and keyboard options.
 appsettings-desc = Where apps install from, background apps, suggested apps and Windows' app pages.
 systemnetwork-desc = Remote Desktop, sharing, name resolution, internet time and network resets.

@@ -15,6 +15,7 @@ use wm_core::{
 };
 use wm_tools_cleaner::junk::{CleanReport, Rule, RuleScan};
 use wm_tools_cleaner::registry_cleaner::{self, Issue};
+use wm_tools_cleaner::registry_defrag;
 use wm_tools_security::privacy::{self, Trace};
 
 use crate::actions;
@@ -22,6 +23,9 @@ use crate::actions;
 const ID: &str = "oneclickclean";
 /// Seconds Windows waits before shutting down, so the user can still cancel.
 const SHUTDOWN_DELAY: u32 = 60;
+/// Seconds before the restart that finishes a registry defrag. Longer than the
+/// Registry Defrag tool's, as silent mode restarts without asking first.
+const DEFRAG_DELAY: u32 = 60;
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(default)]
@@ -34,6 +38,9 @@ pub struct Settings {
     pub silent: bool,
     /// Shut Windows down after a clean started from the window.
     pub shutdown: bool,
+    /// Compact the registry after a clean started from the window, then restart.
+    /// Takes the place of `shutdown`; scheduled cleans never do it.
+    pub defrag: bool,
     /// Unix time of the last clean.
     pub last_clean: Option<i64>,
     pub last_summary: String,
@@ -47,6 +54,7 @@ impl Default for Settings {
             traces: [true, true, true, false, false],
             silent: false,
             shutdown: false,
+            defrag: false,
             last_clean: None,
             last_summary: String::new(),
         }
@@ -217,6 +225,7 @@ pub struct OneClickCleaner {
     clean_after_scan: bool,
     result: Option<ScanResult>,
     clean: Option<BackgroundTask<Option<CleanReport>>>,
+    defrag: Option<BackgroundTask<registry_defrag::Scheduled>>,
     shutdown_pending: bool,
     confirm: Confirm<()>,
     message: Message,
@@ -230,6 +239,7 @@ impl Default for OneClickCleaner {
             clean_after_scan: false,
             result: None,
             clean: None,
+            defrag: None,
             shutdown_pending: false,
             confirm: Confirm::default(),
             message: None,
@@ -288,12 +298,31 @@ impl OneClickCleaner {
                 self.settings.mark_done(&summary);
                 self.save();
                 self.message = Some(Ok(summary));
-                if self.settings.shutdown {
+                if self.settings.defrag && ctx.elevated {
+                    self.defrag = Some(BackgroundTask::spawn(ui.ctx(), |_| {
+                        registry_defrag::compact(&registry_defrag::hives())
+                    }));
+                } else if self.settings.shutdown {
                     match schedule_shutdown() {
                         Ok(()) => self.shutdown_pending = true,
                         Err(e) => self.message = Some(Err(format!("Shutting down: {e:#}"))),
                     }
                 }
+            }
+        }
+        if let Some(t) = &mut self.defrag {
+            t.poll();
+            if let Some(r) = t.take_result() {
+                self.defrag = None;
+                let cleaned = match &self.message {
+                    Some(Ok(s)) => s.clone(),
+                    _ => String::new(),
+                };
+                self.message = Some(match r {
+                    Ok(s) => registry_defrag::finish_compact(ctx, &s, DEFRAG_DELAY)
+                        .map(|m| format!("{cleaned} {m}")),
+                    Err(e) => Err(format!("{cleaned} Registry defrag: {e}")),
+                });
             }
         }
     }
@@ -330,7 +359,7 @@ impl Tool for OneClickCleaner {
         });
         ui.add_space(6.0);
 
-        let busy = self.scan.is_some() || self.clean.is_some();
+        let busy = self.scan.is_some() || self.clean.is_some() || self.defrag.is_some();
         let before = self.settings.clone();
         let res = self.result.clone();
         ui.strong("Items to clean");
@@ -391,6 +420,14 @@ impl Tool for OneClickCleaner {
             .on_hover_text(format!(
                 "Windows shuts down {SHUTDOWN_DELAY} seconds after the clean, and you can still cancel. Scheduled cleans never shut down."
             ));
+        ui.add_enabled(
+            ctx.elevated,
+            egui::Checkbox::new(&mut self.settings.defrag, "Compact the registry, then restart"),
+        )
+        .on_hover_text(format!(
+            "After the clean, the registry files are rebuilt without their empty space and Windows restarts {DEFRAG_DELAY} seconds later to finish (instead of shutting down). Don't change settings before the restart. Scheduled cleans never do this."
+        ))
+        .on_disabled_hover_text("Needs the app to run as administrator.");
         if self.settings != before {
             self.save();
         }
@@ -427,7 +464,9 @@ impl Tool for OneClickCleaner {
                     )
                     .clicked()
             {
-                let question = if self.settings.shutdown {
+                let question = if self.settings.defrag && ctx.elevated {
+                    "Clean the selected items now? The registry is then compacted and Windows restarts."
+                } else if self.settings.shutdown {
                     "Clean the selected items now? Windows shuts down when the clean is done."
                 } else {
                     "Clean the selected items now?"
@@ -446,6 +485,12 @@ impl Tool for OneClickCleaner {
             ui.horizontal(|ui| {
                 ui.spinner();
                 ui.label("Cleaning…");
+            });
+        }
+        if self.defrag.is_some() {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label("Compacting the registry…");
             });
         }
         show_message(ui, &self.message);
