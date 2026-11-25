@@ -8,6 +8,7 @@ mod ip_switcher;
 mod net_monitor;
 mod net_scan;
 mod net_tools;
+mod shares;
 mod wifi;
 
 use wm_core::{Category, Tool, tweaks::TweakTool};
@@ -22,11 +23,9 @@ pub fn tools() -> Vec<Box<dyn Tool>> {
         Box::new(hosts::UrlManager::default()),
         Box::new(net_tools::NetworkTools::default()),
         Box::new(net_monitor::NetworkMonitor::default()),
-        Box::new(TweakTool::new(
-            Category::Network,
-            "systemnetwork",
-            "",
-            NETWORK_TWEAKS,
-        )),
+        Box::new(
+            TweakTool::new(Category::Network, "systemnetwork", "", NETWORK_TWEAKS)
+                .with_extra(Box::new(shares::SharesSetting::default())),
+        ),
     ]
 }

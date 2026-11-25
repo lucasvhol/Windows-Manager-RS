@@ -15,7 +15,7 @@ sysinfo = "0.40.4"
 toml = "1.2.2"
 tracing = "0.1.44"
 walkdir = "2.5.1"
-windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_NetworkManagement_IpHelper", "Win32_NetworkManagement_Ndis", "Win32_Networking_WinSock", "Win32_NetworkManagement_WiFi", "Win32_NetworkManagement_Dns"] }
+windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_NetworkManagement_IpHelper", "Win32_NetworkManagement_NetManagement", "Win32_Storage_FileSystem", "Win32_NetworkManagement_Ndis", "Win32_Networking_WinSock", "Win32_NetworkManagement_WiFi", "Win32_NetworkManagement_Dns"] }
 wm-core = { version = "0.1.0", path = "../core" }
 
 [dev-dependencies]
