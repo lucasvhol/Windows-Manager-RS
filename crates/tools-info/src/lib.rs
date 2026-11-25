@@ -3,6 +3,7 @@
 mod device_manager;
 mod disk_bench;
 mod event_viewer;
+mod gpu_counters;
 mod hardware_monitor;
 mod process_manager;
 mod system_info;
