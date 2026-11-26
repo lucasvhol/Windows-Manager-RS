@@ -928,6 +928,21 @@ impl Tool for AppLocker {
             .as_ref()
             .and_then(|k| rules.iter().find(|r| &r.key == k))
             .cloned();
+        // The original Security Lock's heading band.
+        egui::Panel::top("applocker-band")
+            .resizable(false)
+            .frame(egui::Frame::new().inner_margin(egui::Margin::symmetric(12, 8)))
+            .show(ui, |ui| {
+                ui.vertical_centered(|ui| {
+                    ui.label(
+                        egui::RichText::new(
+                            "Locks files, folders, programs and some system features to improve system security",
+                        )
+                        .strong()
+                        .size(15.0),
+                    );
+                });
+            });
         match frame::toolbar(
             ui,
             &[
