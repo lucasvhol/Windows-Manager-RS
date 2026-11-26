@@ -3,7 +3,7 @@
 use std::path::Path;
 
 use wm_core::{
-    AppCtx, Category, Tool,
+    AppCtx, Category, Layout, Tool,
     config::Theme,
     egui,
     i18n::LANGUAGES,
@@ -11,7 +11,7 @@ use wm_core::{
     safety::{UndoAction, restore_point},
     task::BackgroundTask,
     tweaks::{self, SavedTweaks, Tweak},
-    ui::{Message, section_nav, show_message},
+    ui::{Message, frame, section, section_nav, show_message},
 };
 
 /// Every tweak definition in the app (for saving and restoring them all).
@@ -365,28 +365,28 @@ impl Tool for Settings {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, ctx: &mut AppCtx<'_>) {
-        ui.horizontal_top(|ui| {
-            ui.vertical(|ui| {
-                ui.set_width(190.0);
-                if section_nav(ui, &SECTIONS, &mut self.section) {
-                    self.message = None;
-                }
-            });
-            ui.separator();
-            ui.vertical(|ui| {
-                ui.heading(SECTIONS[self.section].1);
-                ui.add_space(6.0);
-                match self.section {
+        if frame::left(ui, 200.0, |ui| section_nav(ui, &SECTIONS, &mut self.section)) {
+            self.message = None;
+        }
+        frame::central(ui, |ui| {
+            show_message(ui, &self.message);
+            section(
+                ui,
+                SECTIONS[self.section].1,
+                |_| {},
+                |ui| match self.section {
                     0 => self.general(ui, ctx),
                     1 => self.safety(ui, ctx),
                     2 => self.password(ui, ctx),
                     3 => self.tweak_backup(ui, ctx),
                     _ => self.program_data(ui, ctx),
-                }
-                ui.add_space(8.0);
-                show_message(ui, &self.message);
-            });
+                },
+            );
         });
+    }
+
+    fn layout(&self) -> Layout {
+        Layout::Fill
     }
 }
 
