@@ -27,15 +27,15 @@ use fonts::{Element, Metrics, Size};
 const ID: &str = "visual";
 
 const SECTIONS: [(&str, &str); 9] = [
-    (glyph::SLIDERS, "System settings"),
-    (glyph::PENCIL_SIMPLE, "Font and size"),
-    (glyph::DESKTOP, "System icons"),
-    (glyph::IMAGE, "Other icons"),
-    (glyph::FILE_TEXT, "File-type icons"),
-    (glyph::FOLDERS, "Folder colorizer"),
-    (glyph::PAINT_BRUSH, "Theme changer"),
-    (glyph::LOCK, "Lock-screen pictures"),
-    (glyph::GLOBE, "Bing pictures"),
+    (glyph::GEAR, "System Settings"),
+    (glyph::PENCIL_SIMPLE, "Font & Size"),
+    (glyph::DESKTOP, "System Icon"),
+    (glyph::IMAGE, "Other Icon"),
+    (glyph::FILE_TEXT, "File Type Icon"),
+    (glyph::FOLDERS, "Folder Colorizer"),
+    (glyph::PAINT_BRUSH, "Theme Changer"),
+    (glyph::LOCK, "Lock Screen Extractor"),
+    (glyph::GLOBE, "Bing Images Downloader"),
 ];
 
 /// Extensions whose icon this tool changed (only those get a Restore button, so an
@@ -512,7 +512,20 @@ impl Tool for VisualCustomizer {
     fn ui(&mut self, ui: &mut egui::Ui, ctx: &mut AppCtx<'_>) {
         self.handle_confirm(ui, ctx);
         self.gallery.poll(ui.ctx(), ctx, &mut self.message);
-        if frame::left(ui, 190.0, |ui| section_nav(ui, &SECTIONS, &mut self.section)) {
+        // The original's heading band.
+        egui::Panel::top("visual-band")
+            .resizable(false)
+            .frame(egui::Frame::new().inner_margin(egui::Margin::symmetric(12, 8)))
+            .show(ui, |ui| {
+                ui.vertical_centered(|ui| {
+                    ui.label(
+                        egui::RichText::new("Customize Windows visual appearance and interface styles")
+                            .strong()
+                            .size(15.0),
+                    );
+                });
+            });
+        if frame::left(ui, 210.0, |ui| section_nav(ui, &SECTIONS, &mut self.section)) {
             self.message = None;
         }
         if self.section == 0 {

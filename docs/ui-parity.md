@@ -66,8 +66,8 @@ Tools reachable only from a dropdown: Windows Features (System Protection), App 
 | (hub) File Explorer Tweaker | explorertweaks | Hub-only window in the original; could not be captured | | | | ➖ |
 | NavigationPaneManager.exe | navpane | "Navigation pane" tree in pane order, action column on the right, Edit group (Title, Path) at the bottom, status line | Right column: Place on Top, Add Folder, Up, Down, Disable, Enable, Remove, This PC, Options | Add Utility is missing; the tree lists the items we can manage (This PC, Network and removable drives are not listed); Options opens our tweaks as a page with a back strip | Kept: Move to Top, Icon field, Open, Refresh, Restart Explorer | 🟡 |
 | ThisPCManager.exe | thispc | List of what This PC shows, action column on the right, Edit group (Title, Parameter, Path) at the bottom, status line | Right column: Add File (+ Parameter box), Add Folder, Add Utility, Desktop Icon Settings, Enable, Remove, Remove All, This PC | Add Windows App is missing; Add Utility opens a list of Windows tools inside the column instead of a dialog | Kept: Personal Folders page, Icon field, Open, Refresh, Restart Explorer | 🟡 |
-| WinXMenuEditor.exe | winx | | | | | ❌ |
-| VisualCustomizer.exe | visual | | | | | ❌ |
+| WinXMenuEditor.exe | winx | The original exits at once without a window on this Windows build (26300), so it could not be captured | | | | ➖ |
+| VisualCustomizer.exe | visual | Heading band "Customize Windows visual appearance and interface styles", section list on the left, page on the right with Restore / Save at the bottom | Sections System Settings, Font & Size, System Icon, Other Icon, File Type Icon, Folder Colorizer, Theme Changer, Lock Screen Extractor, Bing Images Downloader | System Settings groups its switches in a second list (Theme, Taskbar, Windows) instead of numbered Properties tabs; the footer says Restore defaults | | 🟡 |
 | BingImagesDownloader.exe | bing | | | | | ❌ |
 | JumpListQuickLauncher.exe | jumplist | | | | | ❌ |
 | HotkeyManager.exe | hotkeys | | | | | ❌ |
