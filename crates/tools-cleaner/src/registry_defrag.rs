@@ -27,7 +27,7 @@ use wm_core::{
     registry,
     safety::UndoAction,
     task::BackgroundTask,
-    ui::{Confirm, Message, ToolButton, frame, show_message},
+    ui::{Confirm, Message, frame, show_message},
 };
 
 const TOOL: &str = "regdefrag";
@@ -523,18 +523,75 @@ impl Tool for RegistryDefrag {
         let busy = self.job.is_some();
         let can = ctx.elevated && !busy && !self.scheduled;
         let chosen = self.chosen().len();
-        let compact_label = format!("Compact ({chosen})");
-        let backups_label = format!("Delete backups ({})", mb(backups));
-        match frame::toolbar(
+        let status = match &self.job {
+            Some(Job::Analyze(t)) => t.status.clone(),
+            Some(Job::Compact(_)) => "Saving compact copies…".into(),
+            None if !ctx.elevated => ctx.i18n.tr("shell-needs-admin"),
+            None if self.scheduled => {
+                "The compact copies replace the registry files at the next restart".into()
+            }
+            None => "Welcome to Registry Defrag".into(),
+        };
+        frame::status(ui, &status, |ui| {
+            if busy {
+                ui.spinner();
+            }
+            ui.weak(format!("{} ", icons::INFO)).on_hover_text(
+                "Windows also tidies the registry by itself about once a week at startup, so the saving is often small.",
+            );
+        });
+        // The original's dialog layout: a heading band, the hive list, and
+        // Analyze / Compact / Cancel along the bottom (plus our backup clean-up).
+        egui::Panel::top("regdefrag-band")
+            .resizable(false)
+            .frame(egui::Frame::new().inner_margin(egui::Margin::symmetric(12, 10)))
+            .show(ui, |ui| {
+                ui.vertical_centered(|ui| {
+                    ui.label(
+                        egui::RichText::new("Rebuild and defragment registry to fix errors and corruption")
+                            .strong()
+                            .size(15.0),
+                    );
+                });
+            });
+        let mut clicked = None;
+        let mut cleanup = false;
+        frame::footer(
             ui,
-            &[
-                Some(ToolButton::new(icons::MAGNIFYING_GLASS, "Analyze").enabled(can)),
-                Some(ToolButton::new(icons::STACK, &compact_label).enabled(can && chosen > 0)),
-                None,
-                Some(ToolButton::new(icons::TRASH, &backups_label).enabled(backups > 0 && !busy && !self.scheduled)),
-            ],
-            |_| {},
-        ) {
+            |ui| {
+                if ui
+                    .add_enabled(
+                        backups > 0 && !busy && !self.scheduled,
+                        egui::Button::new(format!("{}  Delete backups ({})", icons::TRASH, mb(backups))),
+                    )
+                    .on_hover_text("Removes the copies of the old registry files kept from earlier runs")
+                    .clicked()
+                {
+                    cleanup = true;
+                }
+            },
+            |ui| {
+                if ui.button("Cancel").clicked() {
+                    ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+                if ui
+                    .add_enabled(
+                        can && chosen > 0,
+                        egui::Button::new(format!("Compact ({chosen})")),
+                    )
+                    .clicked()
+                {
+                    clicked = Some(1);
+                }
+                if ui.add_enabled(can, egui::Button::new("Analyze")).clicked() {
+                    clicked = Some(0);
+                }
+            },
+        );
+        if cleanup {
+            clicked = Some(3);
+        }
+        match clicked {
             Some(0) => {
                 self.message = None;
                 self.job = Some(Job::Analyze(BackgroundTask::spawn(ui.ctx(), analyze)));
@@ -553,20 +610,6 @@ impl Tool for RegistryDefrag {
             }
             _ => {}
         }
-        let status = match &self.job {
-            Some(Job::Analyze(t)) => t.status.clone(),
-            Some(Job::Compact(_)) => "Saving compact copies…".into(),
-            None if !ctx.elevated => ctx.i18n.tr("shell-needs-admin"),
-            None => "Rebuilds the registry files without the gaps left by deleted keys".into(),
-        };
-        frame::status(ui, &status, |ui| {
-            if busy {
-                ui.spinner();
-            }
-            ui.weak(format!("{} ", icons::INFO)).on_hover_text(
-                "Windows also tidies the registry by itself about once a week at startup, so the saving is often small.",
-            );
-        });
         frame::central_fixed(ui, |ui| self.table(ui));
     }
 
@@ -581,22 +624,24 @@ impl RegistryDefrag {
         if self.rows.is_empty() {
             return;
         }
+        let scheduled = self.scheduled;
+        ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
         egui_extras::TableBuilder::new(ui)
             .striped(true)
-            .column(egui_extras::Column::auto().at_least(24.0))
-            .column(egui_extras::Column::auto().at_least(220.0))
-            .column(egui_extras::Column::auto().at_least(80.0))
-            .column(egui_extras::Column::auto().at_least(100.0))
-            .column(egui_extras::Column::auto().at_least(60.0))
+            .column(egui_extras::Column::exact(24.0))
+            .column(egui_extras::Column::initial(300.0).clip(true))
+            .column(egui_extras::Column::initial(100.0))
+            .column(egui_extras::Column::initial(110.0))
+            .column(egui_extras::Column::initial(70.0))
             .column(egui_extras::Column::remainder())
             .header(20.0, |mut h| {
                 for t in [
                     "",
-                    "Registry hive",
-                    "Current",
-                    "After compacting",
-                    "Saving",
-                    "File",
+                    "Registry Hives",
+                    "Current Size",
+                    "After Compacted",
+                    "Rate (%)",
+                    "Result",
                 ] {
                     h.col(|ui| {
                         ui.strong(t);
@@ -613,38 +658,40 @@ impl RegistryDefrag {
                             );
                         });
                         r.col(|ui| {
-                            ui.label(row.hive.label());
+                            ui.label(format!("{}  {}", icons::DATABASE, row.hive.label()))
+                                .on_hover_text(row.hive.file.display().to_string());
                         });
                         r.col(|ui| {
                             ui.label(row.current.map(mb).unwrap_or_default());
                         });
-                        r.col(|ui| match &row.error {
-                            Some(e) => {
-                                ui.weak("can't read").on_hover_text(e);
+                        r.col(|ui| {
+                            if let Some(n) = row.compacted {
+                                ui.label(mb(n));
                             }
-                            None => match row.compacted {
-                                Some(n) => {
-                                    ui.label(mb(n));
-                                }
-                                None => {
-                                    ui.weak("analyze first");
-                                }
-                            },
                         });
                         r.col(|ui| {
                             if row.compacted.is_some() {
-                                ui.label(format!("{:.1}%", row.rate()));
+                                ui.label(format!("{:.1}", row.rate()));
                             }
                         });
-                        r.col(|ui| {
-                            ui.weak(row.hive.file.display().to_string());
+                        r.col(|ui| match &row.error {
+                            Some(e) => {
+                                ui.colored_label(ui.visuals().warn_fg_color, "Can't read")
+                                    .on_hover_text(e);
+                            }
+                            None if scheduled && self.selected[i] => {
+                                ui.label("Compacted at restart");
+                            }
+                            None if row.compacted.is_some() && row.saving() == 0 => {
+                                ui.weak("Already compact");
+                            }
+                            None => {}
                         });
                     });
                 }
             });
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
