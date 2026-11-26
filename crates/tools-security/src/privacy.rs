@@ -376,13 +376,25 @@ impl Tool for PrivacyProtector {
 
     fn ui(&mut self, ui: &mut egui::Ui, ctx: &mut AppCtx<'_>) {
         let mut sel = usize::from(self.tab == Tab::Traces);
+        // The original's heading band.
+        egui::Panel::top("privacy-band")
+            .resizable(false)
+            .frame(egui::Frame::new().inner_margin(egui::Margin::symmetric(12, 8)))
+            .show(ui, |ui| {
+                ui.vertical_centered(|ui| {
+                    ui.label(
+                        egui::RichText::new(
+                            "Ensures privacy and keeps sensitive information secure by eliminating tracks",
+                        )
+                        .strong()
+                        .size(15.0),
+                    );
+                });
+            });
         frame::left(ui, 200.0, |ui| {
             section_nav(
                 ui,
-                &[
-                    (icons::SLIDERS, "Privacy settings"),
-                    (icons::BROOM, "Clear activity traces"),
-                ],
+                &[(icons::GEAR, "System Settings"), (icons::TRASH, "Clear Privacy")],
                 &mut sel,
             )
         });
