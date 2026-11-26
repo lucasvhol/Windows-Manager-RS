@@ -8,13 +8,9 @@ use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
 use crate::gpu_counters;
+use egui_extras::{Column, TableBuilder};
 use sysinfo::{Components, Disks, Networks, System};
-use wm_core::{
-    AppCtx, Category, Layout, Tool,
-    egui::{self, Color32, Vec2},
-    task::Sampler,
-    ui::{format_bytes, frame, sparkline},
-};
+use wm_core::{AppCtx, Category, Layout, Tool, egui, task::Sampler, ui::frame};
 
 const HISTORY: usize = 120;
 const INTERVAL: Duration = Duration::from_secs(1);
@@ -214,10 +210,12 @@ fn sample(s: &mut State) -> Sample {
 #[derive(Default)]
 pub struct HardwareMonitor {
     sampler: Option<Sampler<Sample>>,
-    history: VecDeque<Sample>,
+    latest: Option<Sample>,
     sensors: std::collections::BTreeMap<String, Sensor>,
-    /// Sensor whose chart is shown.
-    selected: Option<String>,
+    /// Paths of the tree groups the user folded.
+    collapsed: std::collections::HashSet<String>,
+    options_open: bool,
+    cpu_name: Option<String>,
     log: Option<SensorLog>,
     log_error: Option<String>,
     alarm_on: bool,
@@ -267,6 +265,7 @@ impl Sensor {
         self.history.push_back(value);
     }
 
+    #[cfg(test)]
     pub fn average(&self) -> f32 {
         if self.count == 0 {
             self.current
@@ -393,15 +392,32 @@ impl HardwareMonitor {
     }
 
     fn update_sensors(&mut self, s: &Sample) {
-        self.record("CPU usage".into(), s.cpu, "%");
+        const GB: f32 = 1024.0 * 1024.0 * 1024.0;
+        self.record("CPU Total".into(), s.cpu, "%");
+        for (i, c) in s.per_core.iter().enumerate() {
+            self.record(format!("CPU Core #{}", i + 1), *c, "%");
+        }
         if let Some(mhz) = s.cpu_mhz {
-            self.record("CPU clock".into(), mhz, "MHz");
+            self.record("CPU Clock".into(), mhz, "MHz");
         }
         self.record(
-            "Memory usage".into(),
+            "Memory".into(),
             s.mem_used as f32 * 100.0 / s.mem_total.max(1) as f32,
             "%",
         );
+        self.record("Used Memory".into(), s.mem_used as f32 / GB, "GB");
+        self.record(
+            "Available Memory".into(),
+            s.mem_total.saturating_sub(s.mem_used) as f32 / GB,
+            "GB",
+        );
+        if s.swap_total > 0 {
+            self.record(
+                "Page File".into(),
+                s.swap_used as f32 * 100.0 / s.swap_total as f32,
+                "%",
+            );
+        }
         for (label, t) in &s.temps {
             self.record(label.clone(), *t, "°C");
         }
@@ -431,6 +447,14 @@ impl HardwareMonitor {
                 );
             }
         }
+        self.record("Disk Read".into(), (s.disk_read / 1024.0 / 1024.0) as f32, "MB/s");
+        self.record(
+            "Disk Write".into(),
+            (s.disk_write / 1024.0 / 1024.0) as f32,
+            "MB/s",
+        );
+        self.record("Download".into(), (s.net_rx / 1024.0) as f32, "KB/s");
+        self.record("Upload".into(), (s.net_tx / 1024.0) as f32, "KB/s");
         if let Some(b) = s.battery {
             self.record("Battery charge".into(), b.percent as f32, "%");
         }
@@ -469,212 +493,240 @@ impl HardwareMonitor {
     }
 }
 
-fn series(history: &VecDeque<Sample>, f: impl Fn(&Sample) -> f32) -> Vec<f32> {
-    history.iter().map(f).collect()
+/// One row of the sensor tree, like the original's: a group or a sensor (`key` into
+/// the sensor map).
+struct Node {
+    label: String,
+    icon: Option<&'static str>,
+    key: Option<String>,
+    children: Vec<Node>,
 }
 
-/// Upper bound for auto-scaled charts (at least `floor`).
-fn auto_max(values: &[f32], floor: f32) -> f32 {
-    values.iter().copied().fold(floor, f32::max) * 1.1
+fn group(label: impl Into<String>, icon: Option<&'static str>, children: Vec<Node>) -> Node {
+    Node {
+        label: label.into(),
+        icon,
+        key: None,
+        children,
+    }
 }
 
-fn card(ui: &mut egui::Ui, title: &str, value: String, values: &[f32], max: f32, color: Color32) {
-    ui.vertical(|ui| {
-        ui.horizontal(|ui| {
-            ui.strong(title);
-            ui.label(value);
-        });
-        sparkline(ui, values, max, Vec2::new(340.0, 70.0), color);
-    });
+fn leaf(label: impl Into<String>, key: impl Into<String>) -> Node {
+    Node {
+        label: label.into(),
+        icon: None,
+        key: Some(key.into()),
+        children: Vec::new(),
+    }
 }
 
-impl Tool for HardwareMonitor {
-    fn id(&self) -> &'static str {
-        "hwmon"
-    }
+/// A flattened, visible tree row: (depth, path, node).
+type Row<'a> = (usize, String, &'a Node);
 
-    fn category(&self) -> Category {
-        Category::Information
+fn flatten<'a>(
+    node: &'a Node,
+    depth: usize,
+    parent: &str,
+    collapsed: &std::collections::HashSet<String>,
+    out: &mut Vec<Row<'a>>,
+) {
+    let path = format!("{parent}/{}", node.label);
+    out.push((depth, path.clone(), node));
+    if !collapsed.contains(&path) {
+        for c in &node.children {
+            flatten(c, depth + 1, &path, collapsed, out);
+        }
     }
+}
 
-    fn ui(&mut self, ui: &mut egui::Ui, ctx: &mut AppCtx<'_>) {
-        let sampler = self
-            .sampler
-            .get_or_insert_with(|| Sampler::spawn(ui.ctx(), INTERVAL, init, sample));
-        let fresh = sampler.drain();
-        for s in fresh {
-            if self.history.len() == HISTORY {
-                self.history.pop_front();
-            }
-            // Statistics, alarm and log advance once per sample, not per frame.
-            self.update_sensors(&s);
-            self.check_alarm();
-            if let Some(log) = &mut self.log
-                && let Err(e) = log.write(&self.sensors)
-            {
-                self.log_error = Some(format!("Logging stopped: {e}"));
-                self.log = None;
-            }
-            self.history.push_back(s);
-        }
-        let Some(now) = self.history.back().cloned() else {
-            let loading = ctx.i18n.tr("common-loading");
-            frame::central(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.spinner();
-                    ui.weak(loading);
-                });
-            });
-            return;
-        };
-        if self.alarm_c == 0.0 {
-            self.alarm_c = 85.0;
-        }
-        frame::options(ui, |ui| {
-            ui.checkbox(&mut self.alarm_on, "Warn me when a temperature reaches");
-            ui.add(
-                egui::DragValue::new(&mut self.alarm_c)
-                    .range(40.0..=120.0)
-                    .suffix(" °C"),
-            );
-            if ui.button("Reset statistics").clicked() {
-                self.sensors.clear();
-            }
-            ui.separator();
-            self.sensor_log_controls(ui);
-        });
-        let mut status = Vec::new();
-        if now.swap_total > 0 {
-            status.push(format!(
-                "Page file: {} / {}",
-                format_bytes(now.swap_used),
-                format_bytes(now.swap_total)
-            ));
-        }
-        if let Some(b) = now.battery {
-            status.push(format!(
-                "Battery: {}%{}",
-                b.percent,
-                if b.charging {
-                    ", charging"
-                } else if b.on_ac {
-                    ", plugged in"
-                } else {
-                    ", on battery"
-                }
-            ));
-        }
-        let alarm = self.alarm_text.clone();
-        frame::status(ui, &status.join(" · "), |ui| {
-            if let Some(text) = alarm {
-                ui.colored_label(
-                    ui.visuals().error_fg_color,
-                    format!("{}  {text}", wm_core::icons::WARNING),
-                );
-            }
-        });
-        frame::central(ui, |ui| self.body(ui, ctx, &now));
-    }
-
-    fn layout(&self) -> Layout {
-        Layout::Fill
-    }
+fn cpu_name() -> String {
+    wm_core::registry::read_raw(
+        r"HKLM\HARDWARE\DESCRIPTION\System\CentralProcessor\0",
+        "ProcessorNameString",
+    )
+    .map(|v| wm_core::registry::decode_string(&v).trim().to_owned())
+    .filter(|s| !s.is_empty())
+    .unwrap_or_else(|| "Processor".into())
 }
 
 impl HardwareMonitor {
-    fn body(&mut self, ui: &mut egui::Ui, ctx: &AppCtx<'_>, now: &Sample) {
-        let now = now.clone();
-        let accent = ui.visuals().selection.bg_fill;
-        let warm = Color32::from_rgb(230, 140, 60);
-        egui::Grid::new("hwmon_cards")
-            .num_columns(2)
-            .spacing([24.0, 16.0])
-            .show(ui, |ui| {
-                card(
-                    ui,
-                    "CPU",
-                    match now.cpu_mhz {
-                        Some(m) => format!("{:.0}% · {:.2} GHz", now.cpu, m / 1000.0),
-                        None => format!("{:.0}%", now.cpu),
-                    },
-                    &series(&self.history, |s| s.cpu),
-                    100.0,
-                    accent,
-                );
-                let mem_pct = |s: &Sample| s.mem_used as f32 * 100.0 / s.mem_total.max(1) as f32;
-                card(
-                    ui,
-                    "Memory",
-                    format!(
-                        "{} / {} ({:.0}%)",
-                        format_bytes(now.mem_used),
-                        format_bytes(now.mem_total),
-                        mem_pct(&now)
+    /// Leaves for the sensors that exist, dropping groups left empty.
+    fn leaves(&self, items: &[(&str, String)]) -> Vec<Node> {
+        items
+            .iter()
+            .filter(|(_, key)| self.sensors.contains_key(key))
+            .map(|(label, key)| leaf(*label, key.clone()))
+            .collect()
+    }
+
+    /// The sensor tree: this PC › CPU / Memory / each GPU / Drives / Network / Battery.
+    fn tree(&self, now: &Sample) -> Node {
+        fn nonempty(groups: Vec<Node>) -> Vec<Node> {
+            groups
+                .into_iter()
+                .filter(|g| g.key.is_some() || !g.children.is_empty())
+                .collect()
+        }
+        let mut cpu_load = vec![leaf("CPU Total", "CPU Total")];
+        cpu_load.extend((1..=now.per_core.len()).map(|i| {
+            let k = format!("CPU Core #{i}");
+            leaf(k.clone(), k)
+        }));
+        let temps: Vec<Node> = now
+            .temps
+            .iter()
+            .map(|(label, _)| leaf(label.clone(), label.clone()))
+            .collect();
+        let cpu = group(
+            self.cpu_name.clone().unwrap_or_default(),
+            Some(wm_core::icons::CPU),
+            nonempty(vec![
+                group("Load", None, cpu_load),
+                group("Clocks", None, self.leaves(&[("CPU", "CPU Clock".into())])),
+                group("Temperatures", None, temps),
+            ]),
+        );
+        let memory = group(
+            "Generic Memory",
+            Some(wm_core::icons::STACK),
+            nonempty(vec![
+                group(
+                    "Load",
+                    None,
+                    self.leaves(&[("Memory", "Memory".into()), ("Page File", "Page File".into())]),
+                ),
+                group(
+                    "Data",
+                    None,
+                    self.leaves(&[
+                        ("Used Memory", "Used Memory".into()),
+                        ("Available Memory", "Available Memory".into()),
+                    ]),
+                ),
+            ]),
+        );
+        let mut children = vec![cpu, memory];
+        for g in &now.gpus {
+            let k = |what: &str| format!("{} {what}", g.name);
+            children.push(group(
+                g.name.clone(),
+                Some(wm_core::icons::MONITOR),
+                nonempty(vec![
+                    group(
+                        "Load",
+                        None,
+                        self.leaves(&[("GPU Core", k("load")), ("GPU Memory", k("memory"))]),
                     ),
-                    &series(&self.history, mem_pct),
-                    100.0,
-                    accent,
-                );
-                ui.end_row();
+                    group(
+                        "Temperatures",
+                        None,
+                        self.leaves(&[("GPU Core", k("temperature"))]),
+                    ),
+                    group("Clocks", None, self.leaves(&[("GPU Core", k("clock"))])),
+                    group(
+                        "Fans",
+                        None,
+                        self.leaves(&[("GPU Fan", k("fan")), ("GPU Fan Speed", k("fan speed"))]),
+                    ),
+                    group(
+                        "Powers",
+                        None,
+                        self.leaves(&[("GPU Power", k("power")), ("GPU Power Limit", k("power draw"))]),
+                    ),
+                ]),
+            ));
+        }
+        let disk_temps: Vec<Node> = self
+            .disk_temps
+            .iter()
+            .map(|(label, _)| leaf(label.trim_start_matches("Disk: ").to_owned(), label.clone()))
+            .collect();
+        children.push(group(
+            "Drives",
+            Some(wm_core::icons::HARD_DRIVES),
+            nonempty(vec![
+                group(
+                    "Throughput",
+                    None,
+                    self.leaves(&[
+                        ("Read Rate", "Disk Read".into()),
+                        ("Write Rate", "Disk Write".into()),
+                    ]),
+                ),
+                group("Temperatures", None, disk_temps),
+            ]),
+        ));
+        children.push(group(
+            "Network",
+            Some(wm_core::icons::NETWORK),
+            nonempty(vec![group(
+                "Throughput",
+                None,
+                self.leaves(&[
+                    ("Download Speed", "Download".into()),
+                    ("Upload Speed", "Upload".into()),
+                ]),
+            )]),
+        ));
+        if let Some(b) = now.battery {
+            let state = if b.charging {
+                "charging"
+            } else if b.on_ac {
+                "plugged in"
+            } else {
+                "on battery"
+            };
+            children.push(group(
+                format!("Battery ({state})"),
+                Some(wm_core::icons::LIGHTNING),
+                self.leaves(&[("Charge Level", "Battery charge".into())]),
+            ));
+        }
+        group(
+            std::env::var("COMPUTERNAME").unwrap_or_else(|_| "This PC".into()),
+            Some(wm_core::icons::DESKTOP),
+            nonempty(children),
+        )
+    }
 
-                let rx = series(&self.history, |s| s.net_rx as f32);
-                let tx = series(&self.history, |s| s.net_tx as f32);
-                card(
-                    ui,
-                    "Network ↓",
-                    format!("{}/s", format_bytes(now.net_rx as u64)),
-                    &rx,
-                    auto_max(&rx, 1024.0),
-                    accent,
+    fn options_window(&mut self, ui: &egui::Ui) {
+        if !self.options_open {
+            return;
+        }
+        let modal = egui::Modal::new(egui::Id::unique("hwmon-options")).show(ui.ctx(), |ui| {
+            ui.set_max_width(460.0);
+            ui.strong("Options");
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                ui.checkbox(&mut self.alarm_on, "Warn me when a temperature reaches");
+                ui.add(
+                    egui::DragValue::new(&mut self.alarm_c)
+                        .range(40.0..=120.0)
+                        .suffix(" °C"),
                 );
-                card(
-                    ui,
-                    "Network ↑",
-                    format!("{}/s", format_bytes(now.net_tx as u64)),
-                    &tx,
-                    auto_max(&tx, 1024.0),
-                    warm,
-                );
-                ui.end_row();
-
-                let dr = series(&self.history, |s| s.disk_read as f32);
-                let dw = series(&self.history, |s| s.disk_write as f32);
-                card(
-                    ui,
-                    "Disk read",
-                    format!("{}/s", format_bytes(now.disk_read as u64)),
-                    &dr,
-                    auto_max(&dr, 1024.0 * 1024.0),
-                    accent,
-                );
-                card(
-                    ui,
-                    "Disk write",
-                    format!("{}/s", format_bytes(now.disk_write as u64)),
-                    &dw,
-                    auto_max(&dw, 1024.0 * 1024.0),
-                    warm,
-                );
-                ui.end_row();
             });
+            self.sensor_log_controls(ui);
+            if ui.button("Reset the Maximum column").clicked() {
+                self.sensors.clear();
+            }
+            ui.add_space(6.0);
+            ui.weak(
+                "Temperatures come from ACPI thermal zones, NVIDIA cards and, when running as administrator, \
+                 the disks. Voltages, fan speeds and CPU package power need a kernel driver, which this app doesn't install.",
+            );
+            ui.add_space(8.0);
+            if ui.button("OK").clicked() {
+                self.options_open = false;
+            }
+        });
+        if modal.should_close() {
+            self.options_open = false;
+        }
+    }
 
-        ui.add_space(12.0);
-        egui::CollapsingHeader::new(format!("CPU cores ({})", now.per_core.len()))
-            .default_open(true)
-            .show(ui, |ui| {
-                ui.horizontal_wrapped(|ui| {
-                    for (i, usage) in now.per_core.iter().enumerate() {
-                        ui.add(
-                            egui::ProgressBar::new(usage / 100.0)
-                                .desired_width(120.0)
-                                .text(format!("#{i} {usage:.0}%")),
-                        );
-                    }
-                });
-            });
-
-        // SMART disk temperatures, once a minute (administrator only).
-        if ctx.elevated
+    /// SMART disk temperatures, once a minute (administrator only).
+    fn poll_disk_temperatures(&mut self, ui: &egui::Ui, elevated: bool) {
+        if elevated
             && self.disk_task.is_none()
             && self
                 .disk_checked
@@ -692,107 +744,166 @@ impl HardwareMonitor {
                 self.disk_task = None;
             }
         }
+    }
+}
 
-        for g in &now.gpus {
-            egui::CollapsingHeader::new(&g.name)
-                .default_open(true)
-                .show(ui, |ui| {
-                    ui.horizontal_wrapped(|ui| {
-                        if let Some(u) = g.util {
-                            ui.add(
-                                egui::ProgressBar::new(u / 100.0)
-                                    .desired_width(160.0)
-                                    .text(format!("Load {u:.0}%")),
-                            );
-                        }
-                        if g.mem_total > 0 {
-                            ui.add(
-                                egui::ProgressBar::new(g.mem_used as f32 / g.mem_total as f32)
-                                    .desired_width(220.0)
-                                    .text(format!(
-                                        "Memory {} / {}",
-                                        format_bytes(g.mem_used),
-                                        format_bytes(g.mem_total)
-                                    )),
-                            );
-                        }
-                        if let Some(t) = g.temp {
-                            ui.label(format!("{t:.0} °C"));
-                        }
-                        if let Some(p) = g.power_w {
-                            ui.label(format!("{p:.0} W"));
-                        }
-                        if let Some(f) = g.fan {
-                            ui.label(format!("fan {f:.0}%"));
-                        }
-                        if let Some(r) = g.fan_rpm {
-                            ui.label(format!("fan {r:.0} RPM"));
-                        }
-                        if let Some(p) = g.power_pct {
-                            ui.label(format!("power {p:.0}%"));
-                        }
+impl Tool for HardwareMonitor {
+    fn id(&self) -> &'static str {
+        "hwmon"
+    }
+
+    fn category(&self) -> Category {
+        Category::Information
+    }
+
+    fn ui(&mut self, ui: &mut egui::Ui, ctx: &mut AppCtx<'_>) {
+        let sampler = self
+            .sampler
+            .get_or_insert_with(|| Sampler::spawn(ui.ctx(), INTERVAL, init, sample));
+        for s in sampler.drain() {
+            // Statistics, alarm and log advance once per sample, not per frame.
+            self.update_sensors(&s);
+            self.check_alarm();
+            if let Some(log) = &mut self.log
+                && let Err(e) = log.write(&self.sensors)
+            {
+                self.log_error = Some(format!("Logging stopped: {e}"));
+                self.log = None;
+            }
+            self.latest = Some(s);
+        }
+        self.poll_disk_temperatures(ui, ctx.elevated);
+        if self.alarm_c == 0.0 {
+            self.alarm_c = 85.0;
+        }
+        if self.cpu_name.is_none() {
+            self.cpu_name = Some(cpu_name());
+        }
+        self.options_window(ui);
+
+        let all_open = self.collapsed.is_empty();
+        let alarm = self.alarm_text.clone();
+        let mut toggle_all = false;
+        frame::footer(
+            ui,
+            |ui| {
+                let (icon, tip) = if all_open {
+                    (wm_core::icons::ARROW_UP, "Collapse all")
+                } else {
+                    (wm_core::icons::ARROW_DOWN, "Expand all")
+                };
+                toggle_all = ui.button(icon).on_hover_text(tip).clicked();
+                if let Some(text) = alarm {
+                    ui.colored_label(
+                        ui.visuals().error_fg_color,
+                        format!("{}  {text}", wm_core::icons::WARNING),
+                    );
+                }
+            },
+            |ui| {
+                if ui.button("Exit").clicked() {
+                    ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+                if ui.button("Options").clicked() {
+                    self.options_open = true;
+                }
+            },
+        );
+
+        let Some(now) = self.latest.clone() else {
+            let loading = ctx.i18n.tr("common-loading");
+            frame::central(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.weak(loading);
+                });
+            });
+            return;
+        };
+        let tree = self.tree(&now);
+        if toggle_all {
+            if all_open {
+                // Fold everything below the CPU, memory, GPU… level.
+                let mut rows = Vec::new();
+                flatten(&tree, 0, "", &Default::default(), &mut rows);
+                self.collapsed = rows
+                    .iter()
+                    .filter(|(d, _, n)| *d >= 2 && !n.children.is_empty())
+                    .map(|(_, p, _)| p.clone())
+                    .collect();
+            } else {
+                self.collapsed.clear();
+            }
+        }
+        let mut rows = Vec::new();
+        flatten(&tree, 0, "", &self.collapsed, &mut rows);
+        let mut toggle = None;
+        frame::central_fixed(ui, |ui| {
+            if let Some(e) = &self.log_error {
+                ui.colored_label(ui.visuals().error_fg_color, e);
+            }
+            let accent = ui.visuals().selection.bg_fill;
+            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
+            TableBuilder::new(ui)
+                .striped(true)
+                .column(Column::remainder().at_least(260.0).clip(true))
+                .column(Column::exact(130.0))
+                .column(Column::exact(130.0))
+                .header(22.0, |mut h| {
+                    for t in ["Sensor", "Current", "Maximum"] {
+                        h.col(|ui| {
+                            ui.strong(t);
+                        });
+                    }
+                })
+                .body(|body| {
+                    body.rows(22.0, rows.len(), |mut row| {
+                        let (depth, path, node) = &rows[row.index()];
+                        let sensor = node.key.as_ref().and_then(|k| self.sensors.get(k));
+                        row.col(|ui| {
+                            ui.horizontal(|ui| {
+                                ui.add_space(*depth as f32 * 18.0);
+                                if node.children.is_empty() {
+                                    ui.add_space(18.0);
+                                } else {
+                                    let folded = self.collapsed.contains(path);
+                                    let caret = if folded { "▸" } else { "▾" };
+                                    if ui.add(egui::Button::new(caret).frame(false)).clicked() {
+                                        toggle = Some(path.clone());
+                                    }
+                                }
+                                if let Some(icon) = node.icon {
+                                    ui.label(egui::RichText::new(icon).color(accent));
+                                }
+                                if node.key.is_none() && *depth <= 1 {
+                                    ui.strong(&node.label);
+                                } else {
+                                    ui.label(&node.label);
+                                }
+                            });
+                        });
+                        row.col(|ui| {
+                            if let Some(s) = sensor {
+                                ui.label(fmt_value(s.current, s.unit));
+                            }
+                        });
+                        row.col(|ui| {
+                            if let Some(s) = sensor {
+                                ui.label(fmt_value(s.max, s.unit));
+                            }
+                        });
                     });
                 });
-        }
-
-        egui::CollapsingHeader::new("Sensors").default_open(true).show(ui, |ui| {
-            if let Some(name) = self.selected.clone() {
-                match self.sensors.get(&name) {
-                    Some(s) => {
-                        let values: Vec<f32> = s.history.iter().copied().collect();
-                        let max = match s.unit {
-                            "%" => 100.0,
-                            _ => auto_max(&values, 1.0),
-                        };
-                        ui.horizontal(|ui| {
-                            ui.strong(&name);
-                            ui.label(fmt_value(s.current, s.unit));
-                            ui.weak(format!("(chart top: {})", fmt_value(max, s.unit)));
-                        });
-                        sparkline(
-                            ui,
-                            &values,
-                            max,
-                            Vec2::new(ui.available_width().min(700.0), 80.0),
-                            ui.visuals().selection.bg_fill,
-                        );
-                    }
-                    None => self.selected = None,
-                }
-            } else {
-                ui.weak("Click a sensor to chart it.");
-            }
-            egui::Grid::new("sensors").num_columns(5).striped(true).spacing([24.0, 4.0]).show(ui, |ui| {
-                ui.strong("Sensor");
-                ui.strong("Current");
-                ui.strong("Minimum");
-                ui.strong("Average");
-                ui.strong("Maximum");
-                ui.end_row();
-                let mut clicked = None;
-                for (name, s) in &self.sensors {
-                    let sel = self.selected.as_deref() == Some(name.as_str());
-                    if ui.selectable_label(sel, name).clicked() {
-                        clicked = Some(name.clone());
-                    }
-                    ui.label(fmt_value(s.current, s.unit));
-                    ui.weak(fmt_value(s.min, s.unit));
-                    ui.weak(fmt_value(s.average(), s.unit));
-                    ui.weak(fmt_value(s.max, s.unit));
-                    ui.end_row();
-                }
-                if let Some(c) = clicked {
-                    self.selected = (self.selected.as_ref() != Some(&c)).then_some(c);
-                }
-            });
-            if now.temps.is_empty() && now.gpus.is_empty() && self.disk_temps.is_empty() {
-                ui.weak(
-                    "No temperature sensors are available without a kernel driver. Disk temperatures appear \
-                     when running as administrator; NVIDIA graphics cards report theirs directly.",
-                );
-            }
-            ui.weak("Voltages, fan speeds and CPU package power need a kernel driver, which this app doesn't install.");
         });
+        if let Some(p) = toggle
+            && !self.collapsed.remove(&p)
+        {
+            self.collapsed.insert(p);
+        }
+    }
+
+    fn layout(&self) -> Layout {
+        Layout::Fill
     }
 }
 
@@ -804,8 +915,40 @@ mod tests {
     fn rate_and_scale() {
         assert_eq!(rate(1000, 2.0), 500.0);
         assert_eq!(rate(1000, 0.0), 0.0);
-        assert!((auto_max(&[10.0, 50.0], 1.0) - 55.0).abs() < 1e-4);
-        assert!((auto_max(&[], 100.0) - 110.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn sensor_tree_follows_the_original() {
+        let mut m = HardwareMonitor::default();
+        let s = Sample {
+            cpu: 10.0,
+            per_core: vec![5.0, 15.0],
+            mem_used: 1 << 30,
+            mem_total: 4 << 30,
+            ..Default::default()
+        };
+        m.update_sensors(&s);
+        let tree = m.tree(&s);
+        let mut rows = Vec::new();
+        flatten(&tree, 0, "", &Default::default(), &mut rows);
+        let labels: Vec<&str> = rows.iter().map(|(_, _, n)| n.label.as_str()).collect();
+        for want in [
+            "Load",
+            "CPU Total",
+            "CPU Core #1",
+            "CPU Core #2",
+            "Used Memory",
+            "Download Speed",
+        ] {
+            assert!(labels.contains(&want), "{want} missing from {labels:?}");
+        }
+        // No temperature sensors: no Temperatures group under the CPU.
+        assert!(!labels.contains(&"Temperatures"), "{labels:?}");
+        // Folding a group hides its children.
+        let cpu_path = rows.iter().find(|(d, _, _)| *d == 1).unwrap().1.clone();
+        let mut folded = Vec::new();
+        flatten(&tree, 0, "", &[cpu_path].into_iter().collect(), &mut folded);
+        assert!(folded.len() < rows.len());
     }
 
     #[test]
