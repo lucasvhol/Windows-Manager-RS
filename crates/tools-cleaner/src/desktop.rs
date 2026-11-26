@@ -384,8 +384,28 @@ fn when(t: Option<DateTime<Local>>) -> String {
     t.map(|t| t.format("%Y-%m-%d").to_string()).unwrap_or_default()
 }
 
+fn when_time(t: Option<DateTime<Local>>) -> String {
+    t.map(|t| t.format("%Y-%m-%d %H:%M:%S").to_string())
+        .unwrap_or_default()
+}
+
+/// The Type column's name for a kind (the original shows "Folder", "Shortcut", …).
+fn kind_name(kind: Kind) -> &'static str {
+    match kind {
+        Kind::Shortcut => "Shortcut",
+        Kind::Folder => "Folder",
+        Kind::Document => "Document",
+        Kind::Image => "Image",
+        Kind::Media => "Video or audio",
+        Kind::Archive => "Archive",
+        Kind::Installer => "Installer",
+        Kind::Other => "File",
+    }
+}
+
 enum Ask {
     RecycleBroken(Vec<PathBuf>),
+    Delete(Vec<PathBuf>),
     Move {
         items: Vec<Item>,
         target: PathBuf,
@@ -399,6 +419,9 @@ pub struct DesktopCleaner {
     items: Option<Vec<Item>>,
     load: Option<BackgroundTask<Vec<Item>>>,
     checked: Vec<bool>,
+    /// Index of the highlighted row (Launch and Open Folder act on it).
+    selected: Option<usize>,
+    filter: String,
     show_options: bool,
     scheduled: Option<bool>,
     confirm: Confirm<Ask>,
@@ -414,6 +437,8 @@ impl Default for DesktopCleaner {
             items: None,
             load: None,
             checked: Vec::new(),
+            selected: None,
+            filter: String::new(),
             show_options: false,
             scheduled: None,
             confirm: Confirm::default(),
@@ -437,7 +462,10 @@ impl DesktopCleaner {
         t.poll();
         if let Some(r) = t.take_result() {
             self.load = None;
-            let items = r.unwrap_or_default();
+            let mut items = r.unwrap_or_default();
+            // Least recently used first, like the original's Last Access Time order.
+            items.sort_by_key(|i| i.last_used());
+            self.selected = None;
             // Nothing is ticked at first; "Select unused" ticks by usage.
             self.checked = vec![false; items.len()];
             let _ = ctx;
@@ -536,6 +564,15 @@ impl DesktopCleaner {
                 )
                 .map(|_| format!("Moved {} broken shortcuts to the Recycle Bin.", paths.len()))
                 .map_err(|e| format!("{e:#}")),
+            Ask::Delete(paths) => ctx
+                .journal
+                .recycle(
+                    TOOL,
+                    format!("Recycled {} desktop items", paths.len()),
+                    paths.clone(),
+                )
+                .map(|_| format!("Moved {} items to the Recycle Bin.", paths.len()))
+                .map_err(|e| format!("{e:#}")),
             Ask::Move {
                 items,
                 target,
@@ -581,24 +618,37 @@ impl Tool for DesktopCleaner {
             .map(|(i, _)| i.clone())
             .collect();
         let has = !chosen.is_empty();
-        let broken_label = format!("Broken ({})", broken.len());
+        let selected = self.selected.and_then(|i| items.get(i)).cloned();
+        let all_ticked = !items.is_empty() && items.iter().zip(&self.checked).all(|(i, c)| *c || !usable(i));
 
+        // The original's toolbar. Its Organize and Task drop-downs are the
+        // Organize and Schedule buttons here, with the unused-item actions in the
+        // strip below.
         let clicked = frame::toolbar(
             ui,
             &[
                 Some(ToolButton::new(icons::ARROWS_CLOCKWISE, "Refresh").enabled(self.load.is_none())),
+                Some(
+                    ToolButton::new(
+                        icons::LIST_CHECKS,
+                        if all_ticked { "Select None" } else { "Select All" },
+                    )
+                    .enabled(!items.is_empty()),
+                ),
                 None,
-                Some(ToolButton::new(icons::CLOCK, "Select unused").enabled(!items.is_empty())),
-                Some(ToolButton::new(icons::ARCHIVE, "Move unused").enabled(has)),
+                Some(ToolButton::new(icons::PLAY, "Launch").enabled(selected.is_some())),
+                Some(ToolButton::new(icons::X, "Delete").enabled(has)),
+                None,
+                Some(ToolButton::new(icons::FOLDER_OPEN, "Open Folder")),
                 Some(ToolButton::new(icons::FOLDERS, "Organize").enabled(has)),
-                None,
-                Some(ToolButton::new(icons::FILE_X, &broken_label).enabled(!broken.is_empty())),
-                None,
                 Some(ToolButton::new(
                     icons::CALENDAR_CHECK,
-                    if scheduled { "Unschedule" } else { "Schedule" },
+                    if scheduled { "Unschedule" } else { "Task" },
                 )),
-                Some(ToolButton::new(icons::SLIDERS, "Options")),
+                None,
+                Some(ToolButton::new(icons::GEAR, "Options")),
+                None,
+                Some(ToolButton::new(icons::SIGN_OUT, "Exit")),
             ],
             |_| {},
         );
@@ -607,32 +657,32 @@ impl Tool for DesktopCleaner {
                 self.refresh();
                 self.message = None;
             }
-            Some(2) => {
-                let unused: Vec<PathBuf> = unused_items(&items, &self.opts, ctx.elevated)
-                    .into_iter()
-                    .map(|i| i.path.clone())
-                    .collect();
+            Some(1) => {
                 for (i, c) in items.iter().zip(self.checked.iter_mut()) {
-                    *c = unused.contains(&i.path);
+                    *c = !all_ticked && usable(i);
                 }
-                self.message = Some(Ok(format!(
-                    "Ticked {} items not used in the last {} days.",
-                    unused.len(),
-                    self.opts.unused_days
-                )));
             }
-            Some(3) => match self.opts.unused_dir() {
-                Ok(target) => self.confirm.ask(
-                    format!("Move {} items to {}?", chosen.len(), target.display()),
-                    Ask::Move {
-                        items: chosen.clone(),
-                        target,
-                        by_type: false,
-                    },
+            Some(3) => {
+                if let Some(i) = &selected {
+                    let _ = wm_core::shell::shell_open(&i.path.display().to_string(), "");
+                }
+            }
+            Some(4) => self.confirm.ask(
+                format!(
+                    "Move {} desktop items to the Recycle Bin? Undo in the Change Journal restores them.",
+                    chosen.len()
                 ),
-                Err(e) => self.message = Some(Err(format!("{e:#}"))),
+                Ask::Delete(chosen.iter().map(|i| i.path.clone()).collect()),
+            ),
+            Some(6) => match &selected {
+                Some(i) => reveal_in_explorer(&i.path),
+                None => {
+                    if let Ok(d) = known_folder(KnownFolder::Desktop) {
+                        let _ = std::process::Command::new("explorer").arg(d).spawn();
+                    }
+                }
             },
-            Some(4) => {
+            Some(7) => {
                 let target = self.opts.organize_dir();
                 self.confirm.ask(
                     format!(
@@ -652,13 +702,6 @@ impl Tool for DesktopCleaner {
                     },
                 );
             }
-            Some(6) => self.confirm.ask(
-                format!(
-                    "Move {} shortcuts whose targets no longer exist to the Recycle Bin?",
-                    broken.len()
-                ),
-                Ask::RecycleBroken(broken.clone()),
-            ),
             Some(8) => {
                 self.message = Some(if ctx.config.dry_run {
                     Ok(ctx.i18n.tr("common-dry-run-skip"))
@@ -687,26 +730,97 @@ impl Tool for DesktopCleaner {
                 });
                 self.scheduled = None;
             }
-            Some(9) => self.show_options = !self.show_options,
+            Some(10) => self.show_options = !self.show_options,
+            Some(12) => ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close),
             _ => {}
         }
-        let total: u64 = items.iter().map(|i| i.size).sum();
+
+        let mut action = None;
+        frame::options(ui, |ui| {
+            if ui
+                .add_enabled(
+                    !items.is_empty(),
+                    egui::Button::new(format!("{}  Select unused", icons::CLOCK)),
+                )
+                .on_hover_text(format!(
+                    "Ticks items not used in the last {} days",
+                    self.opts.unused_days
+                ))
+                .clicked()
+            {
+                action = Some(0);
+            }
+            if ui
+                .add_enabled(
+                    has,
+                    egui::Button::new(format!("{}  Move to unused folder", icons::ARCHIVE)),
+                )
+                .on_hover_text(format!(
+                    "Moves the ticked items to Desktop\\{}",
+                    self.opts.unused_folder
+                ))
+                .clicked()
+            {
+                action = Some(1);
+            }
+            if ui
+                .add_enabled(
+                    !broken.is_empty(),
+                    egui::Button::new(format!("{}  Broken shortcuts ({})", icons::FILE_X, broken.len())),
+                )
+                .clicked()
+            {
+                action = Some(2);
+            }
+        });
+        match action {
+            Some(0) => {
+                let unused: Vec<PathBuf> = unused_items(&items, &self.opts, ctx.elevated)
+                    .into_iter()
+                    .map(|i| i.path.clone())
+                    .collect();
+                for (i, c) in items.iter().zip(self.checked.iter_mut()) {
+                    *c = unused.contains(&i.path);
+                }
+                self.message = Some(Ok(format!(
+                    "Ticked {} items not used in the last {} days.",
+                    unused.len(),
+                    self.opts.unused_days
+                )));
+            }
+            Some(1) => match self.opts.unused_dir() {
+                Ok(target) => self.confirm.ask(
+                    format!("Move {} items to {}?", chosen.len(), target.display()),
+                    Ask::Move {
+                        items: chosen.clone(),
+                        target,
+                        by_type: false,
+                    },
+                ),
+                Err(e) => self.message = Some(Err(format!("{e:#}"))),
+            },
+            Some(2) => self.confirm.ask(
+                format!(
+                    "Move {} shortcuts whose targets no longer exist to the Recycle Bin?",
+                    broken.len()
+                ),
+                Ask::RecycleBroken(broken.clone()),
+            ),
+            _ => {}
+        }
+
         let status = if self.load.is_some() {
             "Reading the desktop…".to_owned()
         } else {
-            format!(
-                "{} items, {}{}",
-                items.len(),
-                format_bytes(total),
-                if has {
-                    format!(" · {} ticked", chosen.len())
-                } else {
-                    String::new()
-                }
-            )
+            format!("Selected: {}/{} items", chosen.len(), items.len())
         };
         let loading = self.load.is_some();
         frame::status(ui, &status, |ui| {
+            ui.add(
+                egui::TextEdit::singleline(&mut self.filter)
+                    .hint_text(format!("{}  Search", icons::MAGNIFYING_GLASS))
+                    .desired_width(180.0),
+            );
             if loading {
                 ui.spinner();
             }
@@ -742,55 +856,71 @@ impl DesktopCleaner {
         let usable = |i: &Item| !i.public || elevated;
         let now = Local::now();
         let days = self.opts.unused_days;
-        let mut open = None;
+        let f = self.filter.to_lowercase();
+        let rows: Vec<usize> = (0..items.len())
+            .filter(|&i| f.is_empty() || items[i].name().to_lowercase().contains(&f))
+            .collect();
+        let mut launch = None;
+        let mut select = None;
         ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
         TableBuilder::new(ui)
             .striped(true)
+            .sense(egui::Sense::click())
             .column(Column::exact(24.0))
             .column(Column::initial(250.0).clip(true))
-            .column(Column::initial(110.0))
+            .column(Column::initial(100.0))
             .column(Column::initial(80.0))
             .column(Column::initial(80.0))
-            .column(Column::initial(90.0))
+            .column(Column::initial(140.0))
             .column(Column::initial(50.0))
             .column(Column::remainder().clip(true))
             .header(22.0, |mut h| {
-                for t in ["", "Name", "Type", "Size", "Owner", "Last used", "Runs", "Status"] {
+                for t in [
+                    "",
+                    "Name",
+                    "User",
+                    "Size",
+                    "Type",
+                    "Last Access Time",
+                    "Hits",
+                    "Status",
+                ] {
                     h.col(|ui| {
                         ui.strong(t);
                     });
                 }
             })
             .body(|body| {
-                body.rows(21.0, items.len(), |mut row| {
-                    let idx = row.index();
+                body.rows(21.0, rows.len(), |mut row| {
+                    let idx = rows[row.index()];
                     let item = &items[idx];
+                    row.set_selected(self.selected == Some(idx));
                     row.col(|ui| {
                         ui.add_enabled(usable(item), egui::Checkbox::without_text(&mut self.checked[idx]))
                             .on_disabled_hover_text("Needs administrator rights");
                     });
                     row.col(|ui| {
-                        if ui
-                            .link(item.name())
-                            .on_hover_text(item.path.display().to_string())
-                            .clicked()
-                        {
-                            open = Some(item.path.clone());
-                        }
+                        let icon = match item.kind {
+                            Kind::Folder => icons::FOLDER_OPEN,
+                            Kind::Shortcut => icons::LINK,
+                            _ => icons::FILE_TEXT,
+                        };
+                        ui.label(format!("{icon}  {}", item.name()))
+                            .on_hover_text(item.path.display().to_string());
                     });
                     row.col(|ui| {
-                        ui.weak(item.kind.label());
+                        ui.label(if item.public { "All Users" } else { "Current User" });
                     });
                     row.col(|ui| {
                         ui.label(format_bytes(item.size));
                     });
                     row.col(|ui| {
-                        ui.weak(if item.public { "All users" } else { "You" });
+                        ui.label(kind_name(item.kind));
                     });
                     row.col(|ui| {
                         let last = item.last_used();
                         if last.is_some() {
-                            ui.label(when(last));
+                            ui.label(when_time(last));
                         } else {
                             ui.weak("Not recorded")
                                 .on_hover_text(format!("Added {}", when(item.created)));
@@ -808,10 +938,20 @@ impl DesktopCleaner {
                             ui.weak(format!("Unused for {days}+ days"));
                         }
                     });
+                    let r = row.response();
+                    if r.clicked() {
+                        select = Some(idx);
+                    }
+                    if r.double_clicked() {
+                        launch = Some(item.path.clone());
+                    }
                 });
             });
-        if let Some(p) = open {
-            reveal_in_explorer(&p);
+        if select.is_some() {
+            self.selected = select;
+        }
+        if let Some(p) = launch {
+            let _ = wm_core::shell::shell_open(&p.display().to_string(), "");
         }
     }
 }
