@@ -5,7 +5,7 @@
 use std::net::IpAddr;
 use std::path::PathBuf;
 
-use crate::favorites;
+use crate::{browser_policy, favorites};
 use anyhow::{Context, Result, bail};
 use wm_core::{
     AppCtx, Category, Tool, egui, paths,
@@ -102,10 +102,12 @@ enum Tab {
     #[default]
     Hosts,
     Favorites,
+    Browsers,
 }
 
 pub struct UrlManager {
     tab: Tab,
+    browsers: browser_policy::BrowserLists,
     marks: Option<Vec<favorites::Bookmark>>,
     status: Vec<Option<favorites::Status>>,
     check: Option<BackgroundTask<Vec<favorites::Status>>>,
@@ -122,6 +124,7 @@ impl Default for UrlManager {
     fn default() -> Self {
         Self {
             tab: Tab::Hosts,
+            browsers: browser_policy::BrowserLists::default(),
             marks: None,
             status: Vec::new(),
             check: None,
@@ -167,12 +170,14 @@ impl Tool for UrlManager {
     fn ui(&mut self, ui: &mut egui::Ui, ctx: &mut AppCtx<'_>) {
         ui.horizontal(|ui| {
             ui.selectable_value(&mut self.tab, Tab::Hosts, "Block or redirect sites");
+            ui.selectable_value(&mut self.tab, Tab::Browsers, "Browser lists");
             ui.selectable_value(&mut self.tab, Tab::Favorites, "Check favorites");
         });
         ui.separator();
         match self.tab {
             Tab::Hosts => self.hosts_ui(ui, ctx),
             Tab::Favorites => self.favorites_ui(ui, ctx),
+            Tab::Browsers => self.browsers.ui(ui, ctx),
         }
     }
 }

@@ -2,6 +2,7 @@
 //! diagnostics (ping, traceroute, DNS, ports, whois) and a connection monitor.
 
 pub mod adapters;
+mod browser_policy;
 mod favorites;
 mod hosts;
 mod ip_switcher;
