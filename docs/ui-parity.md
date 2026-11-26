@@ -48,11 +48,11 @@ Tools reachable only from a dropdown: Windows Features (System Protection), App 
 | EventViewer.exe | events | Grouped by event ID, foldable Query side panel, totals + Export to CSV + search | Columns as the original | — | — | ✅ |
 | DeviceManager.exe | devices | Device tree under Windows' class names, original toolbar, Details panel, count + combo + search | As the original | Per-row checkboxes for batch actions | USB Storage History added | 🟡 |
 | HardwareMonitor.exe | hwmon | Sensor tree with Current / Maximum, Options / Exit | Group names as the original (Load, Clocks, Temperatures, Data…) | — | Voltages, fan speeds and CPU power need a kernel driver | ✅ |
-| (hub) System Speed | speed | | | | | ❌ |
-| (hub) Boot Configuration | boot | | | | | ❌ |
-| StartupManager.exe | startup | | | | | ❌ |
-| ServiceManager.exe | services | | | | | ❌ |
-| TaskSchedulerManager.exe | tasks | | | | | ❌ |
+| (hub) System Speed | speed | Only reachable from the hub's tile, which ignores posted clicks, so it could not be captured | — | — | — | ➖ |
+| (hub) Boot Configuration | boot | Only reachable from the hub's tile, which ignores posted clicks, so it could not be captured | — | — | — | ➖ |
+| StartupManager.exe | startup | Location tree (General › Startup Folder / Registry › All Users / Current User › Run, Run Once, Run (Wow64); Windows Apps; Other › Advanced Startup, Service Manager, Task Scheduler Manager), list with details below, Total: n | Columns Name, Path, Available, Running, Digital Signature; toolbar Refresh, Start, Disable/Enable, Batch, Add, Delete, Move to, Open File Location, Edit, Query, Settings, Exit | Batch is one action (disable non-Microsoft items), not a menu | Run Once (Wow64) and the "Other" registry nodes: no entries to show here | ✅ |
+| ServiceManager.exe | services | Services / Drivers toggle + search, list grouped under Non-Microsoft / Microsoft, details below, "Services Total: n" | Columns Name, Title, Status, Startup Type, Log On As, Creation Date, Command Line; toolbar Optimize, Refresh, File Properties, Open File Location, Query, Start, Stop, Restart, Backup, Restore, Defaults, Delete, Exit | Startup Type ▾ in the toolbar (ours is in the details pane); Backup/Delete are buttons, not menus | — | ✅ |
+| TaskSchedulerManager.exe | tasks | One folder/task tree, details below, Total: n + search | Columns Name, Description, Status, Author, Next Run Time, Trigger; toolbar Refresh, Expand/Collapse All, Optimize Task, Create Task, Enable/Disable, Run/End, Delete, Import, Export, Task Scheduler, Exit | — | — | ✅ |
 | DiskAnalyzer.exe | diskanalyzer | | | | | ❌ |
 | (hub) Component Store Cleaner | winsxs | | | | | ❌ |
 | SmartUninstaller.exe | uninstaller | | | | | ❌ |

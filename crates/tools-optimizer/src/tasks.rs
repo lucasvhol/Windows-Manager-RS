@@ -816,6 +816,8 @@ pub struct TaskSchedulerManager {
     filter: String,
     hide_microsoft: bool,
     folder: Option<String>,
+    /// Folded folders of the task tree.
+    collapsed: BTreeSet<String>,
     selected: Option<String>,
     confirm: Confirm<Ask>,
     form: Option<Form>,
@@ -883,59 +885,6 @@ impl TaskSchedulerManager {
         if let Some(ask) = self.confirm.show(ui.ctx(), ctx.i18n) {
             self.run_ask(ui, ctx, ask);
         }
-    }
-
-    fn folder_tree(&mut self, ui: &mut egui::Ui, counts: &BTreeMap<String, usize>, total: usize) {
-        if ui
-            .selectable_label(
-                self.folder.is_none(),
-                format!("{}  All tasks ({total})", icons::LIST_CHECKS),
-            )
-            .clicked()
-        {
-            self.folder = None;
-        }
-        self.folder_node(ui, counts, "\\");
-    }
-
-    fn folder_node(&mut self, ui: &mut egui::Ui, counts: &BTreeMap<String, usize>, folder: &str) {
-        let children: Vec<&String> = counts
-            .keys()
-            .filter(|k| k.as_str() != "\\" && folder_of(k) == folder)
-            .collect();
-        let label = if folder == "\\" {
-            "Task Scheduler Library".to_owned()
-        } else {
-            folder.rsplit('\\').next().unwrap_or(folder).to_owned()
-        };
-        let n = counts.get(folder).copied().unwrap_or(0);
-        let text = if n > 0 {
-            format!("{}  {label} ({n})", icons::FOLDER_OPEN)
-        } else {
-            format!("{}  {label}", icons::FOLDER_OPEN)
-        };
-        let selected = self.folder.as_deref() == Some(folder);
-        if children.is_empty() {
-            ui.horizontal(|ui| {
-                ui.add_space(18.0);
-                if ui.selectable_label(selected, text).clicked() {
-                    self.folder = Some(folder.to_owned());
-                }
-            });
-            return;
-        }
-        let id = ui.make_persistent_id(("task_folder", folder));
-        egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, folder == "\\")
-            .show_header(ui, |ui| {
-                if ui.selectable_label(selected, text).clicked() {
-                    self.folder = Some(folder.to_owned());
-                }
-            })
-            .body(|ui| {
-                for c in children {
-                    self.folder_node(ui, counts, c);
-                }
-            });
     }
 
     fn form_ui(&mut self, ui: &egui::Ui, ctx: &AppCtx<'_>) {
@@ -1216,43 +1165,65 @@ impl Tool for TaskSchedulerManager {
         let idle = self.action.is_none();
         let can = |t: &TaskRow| idle && (ctx.elevated || !t.is_microsoft());
         let sel = selected.as_ref().filter(|t| can(t));
+        let all_open = self.collapsed.is_empty();
+        let enabled = sel.is_some_and(|t| t.enabled);
+        let running = sel.is_some_and(|t| t.state == "Running");
+        // The original's toolbar order.
         let buttons = [
             Some(ToolButton::new(icons::ARROWS_CLOCKWISE, "Refresh").enabled(self.load.is_none())),
+            Some(ToolButton::new(
+                icons::TREE_STRUCTURE,
+                if all_open { "Collapse All" } else { "Expand All" },
+            )),
             None,
-            Some(ToolButton::new(icons::PLUS, "New").enabled(idle)),
+            Some(ToolButton::new(icons::MAGIC_WAND, "Optimize Task").enabled(idle && ctx.elevated)),
+            Some(ToolButton::new(icons::PLUS, "Create Task").enabled(idle)),
+            Some(
+                ToolButton::new(
+                    if enabled { icons::PAUSE } else { icons::CHECK },
+                    if enabled { "Disable" } else { "Enable" },
+                )
+                .enabled(sel.is_some()),
+            ),
+            Some(
+                ToolButton::new(
+                    if running { icons::STOP } else { icons::PLAY },
+                    if running { "End" } else { "Run" },
+                )
+                .enabled(sel.is_some()),
+            ),
+            Some(ToolButton::new(icons::X, "Delete").enabled(sel.is_some())),
+            None,
             Some(ToolButton::new(icons::DOWNLOAD, "Import").enabled(idle)),
             Some(ToolButton::new(icons::UPLOAD, "Export").enabled(selected.is_some())),
-            None,
-            Some(ToolButton::new(icons::PLAY, "Run").enabled(sel.is_some_and(|t| t.state != "Running"))),
-            Some(ToolButton::new(icons::STOP, "End").enabled(sel.is_some_and(|t| t.state == "Running"))),
-            Some(ToolButton::new(icons::CHECK, "Enable").enabled(sel.is_some_and(|t| !t.enabled))),
-            Some(ToolButton::new(icons::PAUSE, "Disable").enabled(sel.is_some_and(|t| t.enabled))),
-            Some(ToolButton::new(icons::TRASH, "Delete").enabled(sel.is_some())),
-            None,
-            Some(ToolButton::new(icons::MAGIC_WAND, "Optimize").enabled(idle && ctx.elevated)),
             Some(ToolButton::new(icons::ARROW_SQUARE_OUT, "Task Scheduler")),
+            None,
+            Some(ToolButton::new(icons::SIGN_OUT, "Exit")),
         ];
         match frame::toolbar(ui, &buttons, |_| {}) {
             Some(0) => {
                 self.tasks = None;
                 self.message = None;
             }
-            Some(2) => self.form = Some(Form::new(self.folder.as_deref().unwrap_or("\\"))),
-            Some(3) => self.import(ui, ctx),
-            Some(4) => {
-                if let Some(t) = &selected {
-                    self.export(t);
+            Some(1) => {
+                if all_open {
+                    let refs: Vec<&TaskRow> = tasks.iter().collect();
+                    self.collapsed = folder_counts(&refs).into_keys().filter(|k| k != "\\").collect();
+                } else {
+                    self.collapsed.clear();
                 }
             }
-            Some(i @ 6..=10) => {
+            Some(3) => self.optimize = Some(vec![true; QUESTIONS.len()]),
+            Some(4) => self.form = Some(Form::new(self.folder.as_deref().unwrap_or("\\"))),
+            Some(i @ 5..=7) => {
                 if let Some(t) = sel.cloned() {
-                    let action = [
-                        Action::Run,
-                        Action::End,
-                        Action::Enable,
-                        Action::Disable,
-                        Action::Delete,
-                    ][i - 6];
+                    let action = match i {
+                        5 if t.enabled => Action::Disable,
+                        5 => Action::Enable,
+                        6 if t.state == "Running" => Action::End,
+                        6 => Action::Run,
+                        _ => Action::Delete,
+                    };
                     match action {
                         Action::Delete => {
                             let warning = if t.is_microsoft() {
@@ -1276,39 +1247,27 @@ impl Tool for TaskSchedulerManager {
                     }
                 }
             }
-            Some(12) => self.optimize = Some(vec![true; QUESTIONS.len()]),
-            Some(13) => {
+            Some(9) => self.import(ui, ctx),
+            Some(10) => {
+                if let Some(t) = &selected {
+                    self.export(t);
+                }
+            }
+            Some(11) => {
                 let _ = wm_core::shell::shell_open("taskschd.msc", "");
             }
+            Some(13) => ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close),
             _ => {}
         }
-
-        let filter_hint = ctx.i18n.tr("common-filter");
-        frame::options(ui, |ui| {
-            ui.add(
-                egui::TextEdit::singleline(&mut self.filter)
-                    .hint_text(format!("{}  {filter_hint}", icons::MAGNIFYING_GLASS))
-                    .desired_width(220.0),
-            );
-            if ui
-                .checkbox(&mut self.hide_microsoft, "Hide Windows tasks")
-                .changed()
-                && self.hide_microsoft
-            {
-                self.folder = None;
-            }
-        });
 
         let f = self.filter.to_lowercase();
         let scoped: Vec<&TaskRow> = tasks
             .iter()
             .filter(|t| !(self.hide_microsoft && t.is_microsoft()))
             .collect();
-        let counts = folder_counts(&scoped);
         let visible: Vec<&TaskRow> = scoped
             .iter()
             .copied()
-            .filter(|t| self.folder.as_deref().is_none_or(|fo| t.folder() == fo))
             .filter(|t| {
                 f.is_empty()
                     || t.path.to_lowercase().contains(&f)
@@ -1320,16 +1279,19 @@ impl Tool for TaskSchedulerManager {
 
         let total = scoped.len();
         let busy = self.load.is_some() || self.action.is_some();
-        frame::status(
-            ui,
-            &format!("{} of {} tasks shown", visible.len(), tasks.len()),
-            |ui| {
-                if busy {
-                    ui.spinner();
-                }
-            },
-        );
-        frame::left(ui, 230.0, |ui| self.folder_tree(ui, &counts, total));
+        let search_hint = format!("{}  {}", icons::MAGNIFYING_GLASS, ctx.i18n.tr("common-filter"));
+        let (filter, hide) = (&mut self.filter, &mut self.hide_microsoft);
+        frame::status(ui, &format!("Total: {}", visible.len()), |ui| {
+            ui.add(
+                egui::TextEdit::singleline(filter)
+                    .hint_text(search_hint)
+                    .desired_width(200.0),
+            );
+            ui.checkbox(hide, "Hide Windows tasks");
+            if busy {
+                ui.spinner();
+            }
+        });
 
         let mut detail_open = selected.is_some();
         egui::Panel::bottom("task_detail")
@@ -1348,6 +1310,7 @@ impl Tool for TaskSchedulerManager {
                             ("Triggers", t.triggers.clone()),
                             ("Actions", t.actions.clone()),
                             ("Author", t.author.clone()),
+                            ("Last run", t.last_run.clone().unwrap_or_else(|| "Never".into())),
                             ("Last result", result_text(t.last_result)),
                         ] {
                             if !v.is_empty() {
@@ -1378,31 +1341,81 @@ impl Tool for TaskSchedulerManager {
     }
 }
 
+/// A row of the original's single folder/task tree.
+#[derive(Debug, PartialEq)]
+enum TreeRow<'a> {
+    Folder {
+        path: String,
+        depth: usize,
+        count: usize,
+    },
+    Task(&'a TaskRow, usize),
+}
+
+/// Folders (with sub-folders first, then their tasks by name), skipping the
+/// contents of collapsed folders.
+fn tree_rows<'a>(visible: &[&'a TaskRow], collapsed: &BTreeSet<String>) -> Vec<TreeRow<'a>> {
+    fn walk<'a>(
+        folder: &str,
+        depth: usize,
+        counts: &BTreeMap<String, usize>,
+        visible: &[&'a TaskRow],
+        collapsed: &BTreeSet<String>,
+        out: &mut Vec<TreeRow<'a>>,
+    ) {
+        let prefix = format!("{}\\", folder.trim_end_matches('\\'));
+        let count = visible
+            .iter()
+            .filter(|t| t.folder() == folder || t.folder().starts_with(&prefix))
+            .count();
+        out.push(TreeRow::Folder {
+            path: folder.to_owned(),
+            depth,
+            count,
+        });
+        if collapsed.contains(folder) {
+            return;
+        }
+        for c in counts
+            .keys()
+            .filter(|k| k.as_str() != "\\" && folder_of(k) == folder)
+        {
+            walk(c, depth + 1, counts, visible, collapsed, out);
+        }
+        let mut tasks: Vec<&TaskRow> = visible.iter().copied().filter(|t| t.folder() == folder).collect();
+        tasks.sort_by_key(|t| t.name.to_lowercase());
+        out.extend(tasks.into_iter().map(|t| TreeRow::Task(t, depth + 1)));
+    }
+    let counts = folder_counts(visible);
+    let mut out = Vec::new();
+    walk("\\", 0, &counts, visible, collapsed, &mut out);
+    out
+}
+
 impl TaskSchedulerManager {
     fn table(&mut self, ui: &mut egui::Ui, visible: &[&TaskRow]) {
+        let rows = tree_rows(visible, &self.collapsed);
         let mut clicked = None;
+        let mut fold = None;
         let weak = ui.visuals().weak_text_color();
+        ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
         TableBuilder::new(ui)
             .striped(true)
             .sense(egui::Sense::click())
-            .column(Column::initial(210.0).clip(true))
-            .column(Column::initial(70.0))
-            .column(Column::initial(150.0).clip(true))
-            .column(Column::initial(115.0))
-            .column(Column::initial(115.0))
-            .column(Column::initial(100.0).clip(true))
-            .column(Column::initial(120.0).clip(true))
+            .column(Column::initial(260.0).clip(true))
+            .column(Column::initial(220.0).clip(true))
+            .column(Column::initial(75.0))
+            .column(Column::initial(130.0).clip(true))
+            .column(Column::initial(130.0))
             .column(Column::remainder().clip(true))
             .header(22.0, |mut h| {
                 for title in [
                     "Name",
-                    "Status",
-                    "Triggers",
-                    "Next run",
-                    "Last run",
-                    "Last result",
-                    "Author",
                     "Description",
+                    "Status",
+                    "Author",
+                    "Next Run Time",
+                    "Trigger",
                 ] {
                     h.col(|ui| {
                         ui.strong(title);
@@ -1410,44 +1423,73 @@ impl TaskSchedulerManager {
                 }
             })
             .body(|body| {
-                body.rows(20.0, visible.len(), |mut row| {
-                    let t = visible[row.index()];
-                    row.set_selected(self.selected.as_deref() == Some(t.path.as_str()));
-                    row.col(|ui| {
-                        ui.label(&t.name);
-                    });
-                    row.col(|ui| {
-                        if t.enabled {
-                            ui.label(t.state);
-                        } else {
-                            ui.colored_label(weak, t.state);
+                body.rows(22.0, rows.len(), |mut row| match &rows[row.index()] {
+                    TreeRow::Folder { path, depth, count } => {
+                        let open = !self.collapsed.contains(path);
+                        row.set_selected(self.selected.is_none() && self.folder.as_deref() == Some(path));
+                        row.col(|ui| {
+                            ui.horizontal(|ui| {
+                                ui.add_space(*depth as f32 * 16.0);
+                                ui.label(if open { "▾" } else { "▸" });
+                                let name = if path == "\\" {
+                                    "Task Scheduler Library"
+                                } else {
+                                    path.rsplit('\\').next().unwrap_or(path)
+                                };
+                                ui.label(format!("{}  {name}", icons::FOLDER_OPEN));
+                                ui.weak(format!("({count})"));
+                            });
+                        });
+                        for _ in 0..5 {
+                            row.col(|_| {});
                         }
-                    });
-                    row.col(|ui| {
-                        ui.label(&t.triggers);
-                    });
-                    row.col(|ui| {
-                        ui.label(t.next_run.as_deref().unwrap_or("—"));
-                    });
-                    row.col(|ui| {
-                        ui.label(t.last_run.as_deref().unwrap_or("Never"));
-                    });
-                    row.col(|ui| {
-                        ui.weak(result_text(t.last_result));
-                    });
-                    row.col(|ui| {
-                        ui.weak(&t.author);
-                    });
-                    row.col(|ui| {
-                        ui.weak(&t.description);
-                    });
-                    if row.response().clicked() {
-                        clicked = Some(t.path.clone());
+                        if row.response().clicked() {
+                            fold = Some(path.clone());
+                        }
+                    }
+                    TreeRow::Task(t, depth) => {
+                        row.set_selected(self.selected.as_deref() == Some(t.path.as_str()));
+                        row.col(|ui| {
+                            ui.horizontal(|ui| {
+                                ui.add_space(*depth as f32 * 16.0 + 14.0);
+                                ui.label(&t.name);
+                            });
+                        });
+                        row.col(|ui| {
+                            ui.weak(&t.description).on_hover_text(&t.description);
+                        });
+                        row.col(|ui| {
+                            if t.enabled {
+                                ui.label(t.state);
+                            } else {
+                                ui.colored_label(weak, t.state);
+                            }
+                        });
+                        row.col(|ui| {
+                            ui.label(&t.author);
+                        });
+                        row.col(|ui| {
+                            ui.label(t.next_run.as_deref().unwrap_or(""));
+                        });
+                        row.col(|ui| {
+                            ui.label(&t.triggers);
+                        });
+                        if row.response().clicked() {
+                            clicked = Some((t.path.clone(), t.folder().to_owned()));
+                        }
                     }
                 });
             });
-        if clicked.is_some() {
-            self.selected = clicked;
+        if let Some(f) = fold {
+            if !self.collapsed.remove(&f) {
+                self.collapsed.insert(f.clone());
+            }
+            self.folder = Some(f);
+            self.selected = None;
+        }
+        if let Some((path, folder)) = clicked {
+            self.selected = Some(path);
+            self.folder = Some(folder);
         }
     }
 }
@@ -1471,6 +1513,34 @@ mod tests {
             triggers: String::new(),
             programs: Vec::new(),
         }
+    }
+
+    #[test]
+    fn tree_lists_subfolders_before_tasks_and_folds() {
+        let (a, b, c) = (row("\\A"), row("\\Microsoft\\Windows\\B"), row("\\Microsoft\\C"));
+        let visible = [&a, &b, &c];
+        let shape = |collapsed: &[&str]| -> Vec<String> {
+            let set = collapsed.iter().map(|s| (*s).to_owned()).collect();
+            tree_rows(&visible, &set)
+                .into_iter()
+                .map(|r| match r {
+                    TreeRow::Folder { path, depth, count } => format!("{depth}F{path}({count})"),
+                    TreeRow::Task(t, depth) => format!("{depth}T{}", t.name),
+                })
+                .collect()
+        };
+        assert_eq!(
+            shape(&[]),
+            [
+                "0F\\(3)",
+                "1F\\Microsoft(2)",
+                "2F\\Microsoft\\Windows(1)",
+                "3TB",
+                "2TC",
+                "1TA"
+            ]
+        );
+        assert_eq!(shape(&["\\Microsoft"]), ["0F\\(3)", "1F\\Microsoft(2)", "1TA"]);
     }
 
     #[test]
