@@ -13,14 +13,14 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::{Result, bail};
 use egui_extras::{Column, TableBuilder};
 use wm_core::{
-    AppCtx, Category, Tool, egui,
+    AppCtx, Category, Layout, Tool, egui,
     fileinfo::{self, FileInfo, Signature},
     icons,
     process::exe_from_command,
     registry::{self, ValueSnapshot},
     safety::UndoAction,
     task::BackgroundTask,
-    ui::{Confirm, Message, ToolButton, show_message, toolbar},
+    ui::{Confirm, Message, ToolButton, frame, show_message},
 };
 
 const RUN: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
@@ -740,7 +740,7 @@ impl StartupManager {
             None,
             Some(ToolButton::new(icons::STOP_CIRCLE, "Disable others")),
         ];
-        match toolbar(ui, &buttons) {
+        match frame::toolbar(ui, &buttons, |_| {}) {
             Some(0) => {
                 self.refresh();
                 self.message = None;
@@ -818,7 +818,7 @@ impl StartupManager {
         if let (Some(item), Some(cmd)) = (&selected, &mut self.editing) {
             let mut save = false;
             let mut cancel = false;
-            ui.horizontal(|ui| {
+            frame::options(ui, |ui| {
                 ui.label("Command:");
                 ui.add(egui::TextEdit::singleline(cmd).desired_width(480.0));
                 save = ui.button(format!("{}  Save", icons::FLOPPY_DISK)).clicked();
@@ -841,18 +841,81 @@ impl StartupManager {
         }
 
         let enabled = items.iter().filter(|i| i.enabled).count();
-        ui.horizontal(|ui| {
-            ui.weak(format!("{} items, {enabled} enabled", items.len()));
-            if self.info_task.is_some() {
-                ui.spinner();
+        let checking = self.info_task.is_some();
+        frame::status(ui, &format!("{} items, {enabled} enabled", items.len()), |ui| {
+            if checking {
                 ui.weak("checking signatures…");
+                ui.spinner();
             }
         });
-        show_message(ui, &self.message);
+        self.add_strip(ui, ctx);
+        frame::central_fixed(ui, |ui| self.items_table(ui, ctx, items));
+    }
 
+    /// The pinned strip above the status bar: add an entry, and the Run-key blocks.
+    fn add_strip(&mut self, ui: &mut egui::Ui, ctx: &mut AppCtx<'_>) {
+        let fill = ui.visuals().faint_bg_color;
+        egui::Panel::bottom("startup-add")
+            .resizable(false)
+            .frame(egui::Frame::new().fill(fill).inner_margin(egui::Margin::symmetric(12, 6)))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("Add for current user:");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.new_name)
+                            .hint_text("Name")
+                            .desired_width(140.0),
+                    );
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.new_command)
+                            .hint_text(r#""C:\Path\App.exe" --args"#)
+                            .desired_width(320.0),
+                    );
+                    if ui.button("Browse…").clicked()
+                        && let Some(p) = rfd_pick_exe()
+                    {
+                        self.new_command = format!("\"{}\"", p.display());
+                        if self.new_name.is_empty() {
+                            self.new_name = p
+                                .file_stem()
+                                .map(|s| s.to_string_lossy().into_owned())
+                                .unwrap_or_default();
+                        }
+                    }
+                    if ui.button("Add").clicked() {
+                        self.add_entry(ctx);
+                    }
+                });
+                ui.horizontal(|ui| {
+                    for machine in [false, true] {
+                        let mut blocked = auto_start_blocked(machine);
+                        let label = if machine { "Block the Run keys for all users" } else { "Block the Run keys for me" };
+                        let r = ui.add_enabled(!machine || ctx.elevated, egui::Checkbox::new(&mut blocked, label));
+                        if r.changed() {
+                            if blocked {
+                                self.confirm.ask(
+                                    "Stop Windows starting every program in the Run and RunOnce keys at sign-in? \
+                                     Startup-folder shortcuts and services are not affected. Undo it here or in the Change Journal.",
+                                    Ask::Block(machine),
+                                );
+                            } else {
+                                self.message = Some(
+                                    set_auto_start_blocked(ctx, machine, false)
+                                        .map(|()| "Automatic startup is allowed again.".into())
+                                        .map_err(|e| format!("{e:#}")),
+                                );
+                            }
+                        }
+                    }
+                });
+            });
+    }
+
+    fn items_table(&mut self, ui: &mut egui::Ui, ctx: &mut AppCtx<'_>, items: &[StartupItem]) {
+        show_message(ui, &self.message);
         let mut toggle: Option<(StartupItem, bool)> = None;
         let mut clicked = None;
-        let table_height = ui.available_height() - 70.0;
+        let table_height = ui.available_height() - 30.0;
         let warn = ui.visuals().warn_fg_color;
         TableBuilder::new(ui)
             .striped(true)
@@ -957,68 +1020,36 @@ impl StartupManager {
             });
             self.items = None;
         }
-
-        ui.separator();
-        ui.horizontal(|ui| {
-            ui.label("Add for current user:");
-            ui.add(
-                egui::TextEdit::singleline(&mut self.new_name)
-                    .hint_text("Name")
-                    .desired_width(140.0),
-            );
-            ui.add(
-                egui::TextEdit::singleline(&mut self.new_command)
-                    .hint_text(r#""C:\Path\App.exe" --args"#)
-                    .desired_width(320.0),
-            );
-            if ui.button("Browse…").clicked()
-                && let Some(p) = rfd_pick_exe()
-            {
-                self.new_command = format!("\"{}\"", p.display());
-                if self.new_name.is_empty() {
-                    self.new_name = p
-                        .file_stem()
-                        .map(|s| s.to_string_lossy().into_owned())
-                        .unwrap_or_default();
-                }
-            }
-            if ui.button("Add").clicked() {
-                self.add_entry(ctx);
-            }
-        });
-        ui.horizontal(|ui| {
-            for machine in [false, true] {
-                let mut blocked = auto_start_blocked(machine);
-                let label = if machine { "Block the Run keys for all users" } else { "Block the Run keys for me" };
-                let r = ui.add_enabled(!machine || ctx.elevated, egui::Checkbox::new(&mut blocked, label));
-                if r.changed() {
-                    if blocked {
-                        self.confirm.ask(
-                            "Stop Windows starting every program in the Run and RunOnce keys at sign-in? \
-                             Startup-folder shortcuts and services are not affected. Undo it here or in the Change Journal.",
-                            Ask::Block(machine),
-                        );
-                    } else {
-                        self.message = Some(
-                            set_auto_start_blocked(ctx, machine, false)
-                                .map(|()| "Automatic startup is allowed again.".into())
-                                .map_err(|e| format!("{e:#}")),
-                        );
-                    }
-                }
-            }
-        });
     }
 
     fn advanced_page(&mut self, ui: &mut egui::Ui) {
-        ui.label(
-            "Other places Windows starts programs from. Unusual entries are highlighted: they are often \
-             left by malware or old software. This page is read-only; open an entry in Registry Editor to change it.",
-        );
-        if ui.button("Refresh").clicked() {
+        if frame::toolbar(
+            ui,
+            &[Some(ToolButton::new(icons::ARROWS_CLOCKWISE, "Refresh"))],
+            |_| {},
+        ) == Some(0)
+        {
             self.advanced = None;
         }
         let list = self.advanced.get_or_insert_with(advanced_locations).clone();
+        let unusual = list.iter().filter(|a| a.unusual).count();
+        frame::status(
+            ui,
+            &format!(
+                "{} entries, {unusual} unusual · read-only: open an entry in Registry Editor to change it",
+                list.len()
+            ),
+            |_| {},
+        );
+        frame::central(ui, |ui| self.advanced_grid(ui, &list));
+    }
+
+    fn advanced_grid(&mut self, ui: &mut egui::Ui, list: &[Advanced]) {
+        ui.weak(
+            "Other places Windows starts programs from. Unusual entries are highlighted: they are often \
+             left by malware or old software.",
+        );
+        ui.add_space(6.0);
         let warn = ui.visuals().warn_fg_color;
         egui::Grid::new("advanced")
             .striped(true)
@@ -1028,7 +1059,7 @@ impl StartupManager {
                     ui.strong(h);
                 }
                 ui.end_row();
-                for a in &list {
+                for a in list {
                     if a.unusual {
                         ui.colored_label(warn, format!("{}  {}", icons::WARNING, a.location));
                     } else {
@@ -1049,6 +1080,10 @@ impl StartupManager {
 }
 
 impl Tool for StartupManager {
+    fn layout(&self) -> Layout {
+        Layout::Fill
+    }
+
     fn id(&self) -> &'static str {
         "startup"
     }
@@ -1113,19 +1148,18 @@ impl Tool for StartupManager {
             None => {}
         }
 
-        ui.horizontal(|ui| {
-            ui.selectable_value(
-                &mut self.page,
-                Page::Items,
-                format!("{}  Startup items", icons::ROCKET),
-            );
-            ui.selectable_value(
-                &mut self.page,
-                Page::Advanced,
-                format!("{}  Advanced locations", icons::TREE_STRUCTURE),
-            );
+        let mut sel = usize::from(self.page == Page::Advanced);
+        frame::left(ui, 190.0, |ui| {
+            wm_core::ui::section_nav(
+                ui,
+                &[
+                    (icons::ROCKET, "Startup items"),
+                    (icons::TREE_STRUCTURE, "Advanced locations"),
+                ],
+                &mut sel,
+            )
         });
-        ui.add_space(4.0);
+        self.page = if sel == 1 { Page::Advanced } else { Page::Items };
         match self.page {
             Page::Items => self.items_page(ui, ctx, &items),
             Page::Advanced => self.advanced_page(ui),

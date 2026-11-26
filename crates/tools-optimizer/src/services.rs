@@ -20,14 +20,14 @@ use windows::Win32::System::Services::{
 };
 use windows::core::{HSTRING, PCWSTR, PWSTR};
 use wm_core::{
-    AppCtx, Category, Tool, egui,
+    AppCtx, Category, Layout, Tool, egui,
     fileinfo::{self, FileInfo, Signature},
     icons,
     paths::expand_env,
     process::{exe_from_command, hidden_command},
     safety::UndoAction,
     task::BackgroundTask,
-    ui::{Confirm, Message, ToolButton, show_message, toolbar},
+    ui::{Confirm, Message, ToolButton, frame, show_message},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1175,32 +1175,39 @@ impl Tool for ServiceManager {
         }
         self.poll(ui, ctx);
 
-        ui.horizontal(|ui| {
-            for (k, icon, label) in [
-                (Kind::Service, icons::GEAR, "Services"),
-                (Kind::Driver, icons::CPU, "Drivers"),
-            ] {
-                if ui
-                    .selectable_label(self.kind == k, format!("{icon}  {label}"))
-                    .clicked()
-                    && self.kind != k
-                    && self.load.is_none()
-                {
-                    self.kind = k;
-                    self.selected = None;
-                }
-            }
+        let mut sel = usize::from(self.kind == Kind::Driver);
+        let loading = self.load.is_some();
+        frame::left(ui, 170.0, |ui| {
+            ui.add_enabled_ui(!loading, |ui| {
+                wm_core::ui::section_nav(
+                    ui,
+                    &[(icons::GEAR, "Services"), (icons::CPU, "Drivers")],
+                    &mut sel,
+                )
+            })
         });
-        ui.add_space(2.0);
+        let k = if sel == 1 { Kind::Driver } else { Kind::Service };
+        if k != self.kind && !loading {
+            self.kind = k;
+            self.selected = None;
+        }
 
         let list = match self.list() {
             Some(Ok(s)) => s.clone(),
             Some(Err(e)) => {
-                ui.colored_label(ui.visuals().error_fg_color, e);
+                let e = e.clone();
+                frame::central(ui, |ui| {
+                    ui.colored_label(ui.visuals().error_fg_color, e);
+                });
                 return;
             }
             None => {
-                ui.spinner();
+                frame::central(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.weak("Reading services…");
+                    });
+                });
                 return;
             }
         };
@@ -1245,7 +1252,7 @@ impl Tool for ServiceManager {
             Some(ToolButton::new(icons::CLOCK_COUNTER_CLOCKWISE, "Defaults").enabled(can)),
             Some(ToolButton::new(icons::MAGIC_WAND, "Optimize").enabled(can)),
         ];
-        match toolbar(ui, &buttons) {
+        match frame::toolbar(ui, &buttons, |_| {}) {
             Some(0) => {
                 *self.list_mut() = None;
                 self.message = None;
@@ -1342,14 +1349,15 @@ impl Tool for ServiceManager {
             }
             _ => {}
         }
-        show_message(ui, &self.message);
 
-        ui.horizontal(|ui| {
+        let filter_hint = ctx.i18n.tr("common-filter");
+        frame::options(ui, |ui| {
             ui.add(
                 egui::TextEdit::singleline(&mut self.filter)
-                    .hint_text(ctx.i18n.tr("common-filter"))
+                    .hint_text(format!("{}  {filter_hint}", icons::MAGNIFYING_GLASS))
                     .desired_width(220.0),
             );
+            ui.separator();
             for (s, label) in [
                 (Show::All, "All"),
                 (Show::Running, "Running"),
@@ -1358,12 +1366,6 @@ impl Tool for ServiceManager {
                 (Show::NonMicrosoft, "Non-Microsoft"),
             ] {
                 ui.selectable_value(&mut self.show, s, label);
-            }
-            if self.load.is_some() || self.action.is_some() {
-                ui.spinner();
-            }
-            if self.info_task.is_some() {
-                ui.weak("checking signatures…");
             }
         });
 
@@ -1387,12 +1389,25 @@ impl Tool for ServiceManager {
                     || s.description.to_lowercase().contains(&f)
             })
             .collect();
-        ui.weak(format!(
-            "{} {} shown, {} running",
-            visible.len(),
-            if svc { "services" } else { "drivers" },
-            list.iter().filter(|s| s.state == RunState::Running).count()
-        ));
+        let busy = self.load.is_some() || self.action.is_some();
+        let checking = self.info_task.is_some();
+        frame::status(
+            ui,
+            &format!(
+                "{} {} shown, {} running",
+                visible.len(),
+                if svc { "services" } else { "drivers" },
+                list.iter().filter(|s| s.state == RunState::Running).count()
+            ),
+            |ui| {
+                if busy {
+                    ui.spinner();
+                }
+                if checking {
+                    ui.weak("checking signatures…");
+                }
+            },
+        );
 
         let mut detail_open = selected.is_some();
         egui::Panel::bottom("service_detail")
@@ -1404,6 +1419,17 @@ impl Tool for ServiceManager {
                 }
             });
 
+        frame::central_fixed(ui, |ui| self.table(ui, &visible));
+    }
+
+    fn layout(&self) -> Layout {
+        Layout::Fill
+    }
+}
+
+impl ServiceManager {
+    fn table(&mut self, ui: &mut egui::Ui, visible: &[&Service]) {
+        show_message(ui, &self.message);
         let mut clicked = None;
         let (green, weak) = (
             egui::Color32::from_rgb(90, 180, 110),

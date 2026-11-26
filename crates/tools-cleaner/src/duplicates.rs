@@ -16,7 +16,7 @@ use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use walkdir::WalkDir;
 use wm_core::{
-    AppCtx, Category, Tool,
+    AppCtx, Category, Layout, Tool,
     egui::{self, Vec2},
     icons,
     paths::{move_path, wildcard_match},
@@ -24,7 +24,7 @@ use wm_core::{
     shell::reveal_in_explorer,
     task::{BackgroundTask, Progress},
     tool_settings,
-    ui::{Confirm, Message, ToolButton, drive_picker, format_bytes, show_message, status_bar, toolbar},
+    ui::{Confirm, Message, ToolButton, drive_picker, empty_state, format_bytes, frame, show_message},
 };
 
 use crate::desktop::unique_destination;
@@ -676,15 +676,6 @@ impl Tool for DuplicateFinder {
             }
         }
 
-        egui::Panel::left("dup-criteria")
-            .resizable(true)
-            .default_size(270.0)
-            .size_range(220.0..=420.0)
-            .show(ui, |ui| {
-                ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
-                egui::ScrollArea::vertical().show(ui, |ui| self.criteria_panel(ui));
-            });
-
         let busy = self.task.is_some();
         let marked: Vec<PathBuf> = self
             .groups
@@ -710,7 +701,7 @@ impl Tool for DuplicateFinder {
             .map(|f| f.path.clone());
         let can_search = !self.criteria.folders.is_empty() || !self.criteria.only_folders;
 
-        match toolbar(
+        let clicked = frame::toolbar(
             ui,
             &[
                 Some(if busy {
@@ -725,7 +716,9 @@ impl Tool for DuplicateFinder {
                 Some(ToolButton::new(icons::PENCIL_SIMPLE, "Rename").enabled(focused.is_some())),
                 Some(ToolButton::new(icons::ARROW_SQUARE_OUT, "Show").enabled(focused.is_some())),
             ],
-        ) {
+            |_| {},
+        );
+        match clicked {
             Some(0) if busy => {
                 if let Some(t) = &self.task {
                     t.cancel();
@@ -771,11 +764,31 @@ impl Tool for DuplicateFinder {
             }
             _ => {}
         }
-        if let Some(t) = &self.task {
-            ui.add(egui::ProgressBar::new(t.progress).text(t.status.clone()));
-        }
+        // Status bar: progress while searching, totals afterwards.
+        let wasted: u64 = self.groups.iter().map(Group::wasted).sum();
+        let status = match &self.task {
+            Some(t) => t.status.clone(),
+            None if self.groups.is_empty() => "Ready".into(),
+            None => format!(
+                "{} groups, {} reclaimable · {} marked ({})",
+                self.groups.len(),
+                format_bytes(wasted),
+                marked.len(),
+                format_bytes(marked_bytes)
+            ),
+        };
+        let progress = self.task.as_ref().map(|t| t.progress);
+        frame::status(ui, &status, |ui| {
+            if let Some(p) = progress {
+                ui.add(egui::ProgressBar::new(p).desired_width(200.0).show_percentage());
+            }
+        });
+        frame::left(ui, 270.0, |ui| {
+            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
+            self.criteria_panel(ui);
+        });
         if !self.groups.is_empty() {
-            ui.horizontal_wrapped(|ui| {
+            frame::options(ui, |ui| {
                 ui.label("Mark all but the");
                 let mut preset = None;
                 for (label, p) in [
@@ -805,27 +818,31 @@ impl Tool for DuplicateFinder {
                 }
             });
         }
-        show_message(ui, &self.message);
+        frame::central_fixed(ui, |ui| self.results(ui, busy));
+    }
 
+    fn layout(&self) -> Layout {
+        Layout::Fill
+    }
+}
+
+impl DuplicateFinder {
+    /// The results list (or a placeholder before the first search).
+    fn results(&mut self, ui: &mut egui::Ui, busy: bool) {
+        show_message(ui, &self.message);
         if self.groups.is_empty() {
             if self.scanned && !busy {
-                ui.label("No duplicate files found.");
+                empty_state(ui, icons::SHIELD_CHECK, "No duplicate files found", "");
             } else if !busy {
-                ui.weak("Choose where to look and how to compare, then press Find.");
+                empty_state(
+                    ui,
+                    icons::COPY,
+                    "Find files stored more than once",
+                    "Choose where to look and how to compare on the left, then press Find.",
+                );
             }
             return;
         }
-        let wasted: u64 = self.groups.iter().map(Group::wasted).sum();
-        let status = format!(
-            "{} groups, {} reclaimable; {} marked ({})",
-            self.groups.len(),
-            format_bytes(wasted),
-            marked.len(),
-            format_bytes(marked_bytes)
-        );
-        egui::Panel::bottom("dup-status")
-            .frame(egui::Frame::NONE)
-            .show(ui, |ui| status_bar(ui, &status, |_| {}));
 
         // One flat list (group headers and files) so only visible rows are drawn.
         let rows: Vec<(usize, Option<usize>)> = self

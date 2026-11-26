@@ -52,6 +52,17 @@ pub struct AppCtx<'a> {
     pub elevated: bool,
 }
 
+/// How the host places a tool in its window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Layout {
+    /// The tool draws top to bottom inside a scroll area with margins.
+    #[default]
+    Scroll,
+    /// The tool gets the whole window body and arranges it with
+    /// [`crate::ui::frame`] regions (toolbar, options, left pane, results, status bar).
+    Fill,
+}
+
 /// A single utility inside the suite (e.g. Startup Manager).
 ///
 /// Implementations must never block in [`Tool::ui`]; long work goes through
@@ -64,6 +75,10 @@ pub trait Tool {
     /// Tools needing admin rights show a "restart as administrator" banner when not elevated.
     fn requires_admin(&self) -> bool {
         false
+    }
+    /// See [`Layout`]. Tools move to [`Layout::Fill`] as they adopt the frame regions.
+    fn layout(&self) -> Layout {
+        Layout::Scroll
     }
     fn ui(&mut self, ui: &mut egui::Ui, ctx: &mut AppCtx<'_>);
 

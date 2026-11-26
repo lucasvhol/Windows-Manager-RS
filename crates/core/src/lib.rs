@@ -32,7 +32,7 @@ pub mod update;
 pub mod user_assist;
 
 pub use eframe::egui;
-pub use tool::{AppCtx, Category, Tool};
+pub use tool::{AppCtx, Category, Layout, Tool};
 
 /// Display name of the application. Change here to rebrand.
 pub const APP_NAME: &str = "Win Manager RS";

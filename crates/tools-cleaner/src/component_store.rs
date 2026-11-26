@@ -3,12 +3,12 @@
 
 use anyhow::{Result, bail};
 use wm_core::{
-    AppCtx, Category, Tool,
+    AppCtx, Category, Layout, Tool,
     command::{percent_in, run_streaming},
     egui, icons,
     safety::UndoAction,
     task::BackgroundTask,
-    ui::{Confirm, Message, ToolButton, show_message, toolbar},
+    ui::{Confirm, Message, ToolButton, empty_state, frame, show_message},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -198,15 +198,11 @@ impl Tool for ComponentStoreCleaner {
         true
     }
 
+    fn layout(&self) -> Layout {
+        Layout::Fill
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, ctx: &mut AppCtx<'_>) {
-        if !ctx.elevated {
-            ui.label(
-                "The component store (WinSxS) keeps Windows components and the older versions \
-                 that updates replaced, so updates can be uninstalled.",
-            );
-            ui.weak(ctx.i18n.tr("shell-needs-admin"));
-            return;
-        }
         if let Some(op) = self.confirm.show(ui.ctx(), ctx.i18n) {
             if ctx.config.dry_run {
                 self.message = Some(Ok(ctx.i18n.tr("common-dry-run-skip")));
@@ -216,17 +212,45 @@ impl Tool for ComponentStoreCleaner {
         }
 
         let busy = self.task.is_some();
-        match toolbar(
+        let can = ctx.elevated && !busy;
+        let clicked = frame::toolbar(
             ui,
             &[
-                Some(ToolButton::new(icons::MAGNIFYING_GLASS, "Analyze").enabled(!busy)),
-                Some(ToolButton::new(icons::BROOM, "Clean up").enabled(!busy)),
+                Some(ToolButton::new(icons::MAGNIFYING_GLASS, "Analyze").enabled(can)),
+                Some(ToolButton::new(icons::BROOM, "Clean up").enabled(can)),
                 None,
-                Some(ToolButton::new(icons::SHIELD_CHECK, "Quick check").enabled(!busy)),
-                Some(ToolButton::new(icons::FILE_SEARCH, "Scan health").enabled(!busy)),
-                Some(ToolButton::new(icons::FIRST_AID_KIT, "Repair").enabled(!busy)),
+                Some(ToolButton::new(icons::SHIELD_CHECK, "Quick check").enabled(can)),
+                Some(ToolButton::new(icons::FILE_SEARCH, "Scan health").enabled(can)),
+                Some(ToolButton::new(icons::FIRST_AID_KIT, "Repair").enabled(can)),
             ],
-        ) {
+            |_| {},
+        );
+        frame::options(ui, |ui| {
+            ui.add_enabled(
+                can,
+                egui::Checkbox::new(&mut self.reset_base, "Clean up: also reset the base (/ResetBase)"),
+            )
+            .on_hover_text("Frees more space, but the updates installed now can no longer be uninstalled.");
+            ui.separator();
+            ui.add_enabled(
+                can,
+                egui::Checkbox::new(
+                    &mut self.limit_access,
+                    "Repair: don't use Windows Update (/LimitAccess)",
+                ),
+            )
+            .on_hover_text("Repairs only from files already on this PC.");
+        });
+        let status = match (&self.task, &self.last) {
+            (Some((op, t)), _) => format!("{}… {:.0}%", op.title(), t.progress * 100.0),
+            (None, Some(out)) => format!("Last run: {}", out.op.title()),
+            (None, None) if !ctx.elevated => ctx.i18n.tr("shell-needs-admin"),
+            (None, None) => "Ready".into(),
+        };
+        frame::status(ui, &status, |_| {});
+        frame::central(ui, |ui| self.body(ui, ctx));
+
+        match clicked {
             Some(0) => self.start(ui.ctx(), Op::Analyze),
             Some(1) => {
                 let extra = if self.reset_base {
@@ -256,59 +280,59 @@ impl Tool for ComponentStoreCleaner {
             ),
             _ => {}
         }
+    }
+}
 
-        ui.horizontal(|ui| {
-            ui.add_enabled(
-                !busy,
-                egui::Checkbox::new(&mut self.reset_base, "Clean up: also reset the base (/ResetBase)"),
-            )
-            .on_hover_text("Frees more space, but the updates installed now can no longer be uninstalled.");
-            ui.separator();
-            ui.add_enabled(
-                !busy,
-                egui::Checkbox::new(
-                    &mut self.limit_access,
-                    "Repair: don't use Windows Update (/LimitAccess)",
-                ),
-            );
-        });
-        ui.weak(
-            "Analyze shows the store's real size and whether cleanup is recommended. Quick check reads \
-             corruption Windows has already recorded (seconds); Scan health checks every component \
-             (several minutes); Repair fixes what the scan found.",
-        );
-        ui.add_space(4.0);
-
+impl ComponentStoreCleaner {
+    /// The results area: progress while DISM runs, then the summary and its output.
+    fn body(&mut self, ui: &mut egui::Ui, ctx: &AppCtx<'_>) {
         self.poll(ui, ctx);
         show_message(ui, &self.message);
-
-        if let Some(out) = &self.last {
-            ui.add_space(6.0);
-            let text = out.lines.join("\n");
-            let lines = summary_lines(&text);
-            if out.op == Op::Analyze && !lines.is_empty() {
-                egui::Grid::new("dism_summary")
-                    .num_columns(2)
-                    .striped(true)
-                    .spacing([16.0, 4.0])
-                    .show(ui, |ui| {
-                        for (k, v) in &lines {
-                            ui.weak(k);
-                            ui.strong(v);
-                            ui.end_row();
-                        }
-                    });
+        let Some(out) = &self.last else {
+            if self.task.is_none() {
+                empty_state(
+                    ui,
+                    icons::STACK,
+                    if ctx.elevated {
+                        "Press Analyze to measure the component store"
+                    } else {
+                        "The component store needs administrator rights"
+                    },
+                    "Analyze shows WinSxS's real size and whether cleanup is recommended. Quick check \
+                     reads corruption Windows already recorded (seconds); Scan health checks every \
+                     component (minutes); Repair fixes what the scan found.",
+                );
             }
-            egui::CollapsingHeader::new("Full DISM output")
-                .default_open(out.op != Op::Analyze)
+            return;
+        };
+        ui.add_space(4.0);
+        let text = out.lines.join("\n");
+        let lines = summary_lines(&text);
+        if out.op == Op::Analyze && !lines.is_empty() {
+            egui::Frame::new()
+                .fill(ui.visuals().faint_bg_color)
+                .corner_radius(6)
+                .inner_margin(egui::Margin::same(12))
                 .show(ui, |ui| {
-                    egui::ScrollArea::vertical().max_height(260.0).show(ui, |ui| {
-                        ui.add(
-                            egui::Label::new(egui::RichText::new(text).monospace().small()).selectable(true),
-                        );
-                    });
+                    ui.set_width(ui.available_width());
+                    egui::Grid::new("dism_summary")
+                        .num_columns(2)
+                        .spacing([24.0, 6.0])
+                        .show(ui, |ui| {
+                            for (k, v) in &lines {
+                                ui.weak(k);
+                                ui.strong(v);
+                                ui.end_row();
+                            }
+                        });
                 });
+            ui.add_space(6.0);
         }
+        egui::CollapsingHeader::new("DISM output")
+            .default_open(out.op != Op::Analyze)
+            .show(ui, |ui| {
+                ui.add(egui::Label::new(egui::RichText::new(text).monospace().small()).selectable(true));
+            });
     }
 }
 

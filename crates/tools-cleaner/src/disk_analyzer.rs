@@ -14,14 +14,14 @@ use anyhow::{Context, Result};
 use egui_extras::{Column, TableBuilder};
 use rayon::prelude::*;
 use wm_core::{
-    AppCtx, Category, Tool,
+    AppCtx, Category, Layout, Tool,
     drives::{self, DriveInfo},
     egui::{self, Color32, Pos2, Rect, Sense, Stroke, Vec2},
     explorer_verb::{self, Target, Verb},
     icons,
     shell::reveal_in_explorer,
     task::{BackgroundTask, Progress},
-    ui::{Confirm, Message, ToolButton, show_message, status_bar, toolbar},
+    ui::{Confirm, Message, ToolButton, empty_state, frame, show_message},
 };
 
 const LARGEST: usize = 200;
@@ -868,7 +868,22 @@ impl Tool for DiskAnalyzer {
 
         let busy = self.task.is_some();
         let has = self.result.is_some();
-        ui.horizontal(|ui| {
+        let clicked = frame::toolbar(
+            ui,
+            &[
+                Some(
+                    ToolButton::new(icons::HARD_DRIVES, "Analyze drive")
+                        .enabled(!busy && !self.drives.is_empty()),
+                ),
+                Some(ToolButton::new(icons::FOLDER_OPEN, "Analyze folder").enabled(!busy)),
+                None,
+                Some(ToolButton::new(icons::ARROWS_CLOCKWISE, "Rescan branch").enabled(!busy && has)),
+                Some(ToolButton::new(icons::ARROW_SQUARE_OUT, "Explore").enabled(has)),
+                Some(ToolButton::new(icons::UPLOAD, "Export").enabled(!busy && has)),
+            ],
+            |_| {},
+        );
+        frame::options(ui, |ui| {
             ui.label("Drive:");
             let selected = self
                 .drives
@@ -909,27 +924,33 @@ impl Tool for DiskAnalyzer {
                 });
         });
 
-        let menu_label = if installed {
-            "Remove from menu"
-        } else {
-            "Add to menu"
+        // Status bar: totals on the left, the Explorer menu entry on the right (like
+        // the original's "Add to Context Menu").
+        let status = match &self.result {
+            Some(r) => format!(
+                "{} files, {}{}",
+                r.total_files,
+                self.unit.format(r.root.size),
+                if r.errors > 0 {
+                    format!(", {} folders not readable", r.errors)
+                } else {
+                    String::new()
+                }
+            ),
+            None => "Ready".into(),
         };
-        match toolbar(
-            ui,
-            &[
-                Some(
-                    ToolButton::new(icons::HARD_DRIVES, "Analyze drive")
-                        .enabled(!busy && !self.drives.is_empty()),
-                ),
-                Some(ToolButton::new(icons::FOLDER_OPEN, "Analyze folder").enabled(!busy)),
-                None,
-                Some(ToolButton::new(icons::ARROWS_CLOCKWISE, "Rescan branch").enabled(!busy && has)),
-                Some(ToolButton::new(icons::ARROW_SQUARE_OUT, "Explore").enabled(has)),
-                Some(ToolButton::new(icons::UPLOAD, "Export").enabled(!busy && has)),
-                None,
-                Some(ToolButton::new(icons::MOUSE_SIMPLE, menu_label)),
-            ],
-        ) {
+        let mut toggle_menu = false;
+        frame::status(ui, &status, |ui| {
+            let mut on = installed;
+            toggle_menu = ui
+                .checkbox(&mut on, "Add to Explorer's right-click menu")
+                .changed();
+        });
+        if toggle_menu {
+            self.toggle_menu(ctx);
+        }
+
+        match clicked {
             Some(0) => {
                 if let Some(d) = self.drives.get(self.drive) {
                     let root = d.root.clone();
@@ -949,46 +970,102 @@ impl Tool for DiskAnalyzer {
                 }
             }
             Some(5) => self.export_current(),
-            Some(7) => self.toggle_menu(ctx),
             _ => {}
         }
 
-        self.poll_task(ui, ctx);
-        show_message(ui, &self.message);
-
-        let Some(result) = self.result.clone() else {
-            if self.task.is_none() {
-                ui.weak("Choose a drive or folder to see what is using the space.");
+        // Left: the folder tree, like the original's navigation pane.
+        if let Some(result) = self.result.clone() {
+            let mut pick = None;
+            frame::left(ui, 230.0, |ui| {
+                folder_tree(
+                    ui,
+                    &result.root,
+                    &mut Vec::new(),
+                    &self.trail,
+                    self.unit,
+                    &mut pick,
+                );
+            });
+            if let Some(t) = pick {
+                self.trail = t;
+                self.view = View::Folders;
             }
-            return;
-        };
-        ui.horizontal(|ui| {
-            ui.selectable_value(&mut self.view, View::Folders, "Folders");
-            ui.selectable_value(
-                &mut self.view,
-                View::LargestFiles,
-                format!("Largest files ({})", result.largest.len()),
-            );
-        });
-        ui.separator();
-        let status = format!(
-            "{} files, {}{}",
-            result.total_files,
-            self.unit.format(result.root.size),
-            if result.errors > 0 {
-                format!(", {} folders not readable", result.errors)
-            } else {
-                String::new()
-            }
-        );
-        egui::Panel::bottom("da-status")
-            .frame(egui::Frame::NONE)
-            .show(ui, |ui| status_bar(ui, &status, |_| {}));
-        match self.view {
-            View::Folders => self.folders_view(ui, &result),
-            View::LargestFiles => self.largest_view(ui, &result),
         }
+
+        frame::central_fixed(ui, |ui| {
+            self.poll_task(ui, ctx);
+            show_message(ui, &self.message);
+            let Some(result) = self.result.clone() else {
+                if self.task.is_none() {
+                    empty_state(
+                        ui,
+                        icons::HARD_DRIVES,
+                        "Analyze a drive or a folder",
+                        "See which folders and files use the space, as a map and a list. \
+                         Pick the drive above, or choose a folder.",
+                    );
+                }
+                return;
+            };
+            ui.horizontal(|ui| {
+                ui.selectable_value(&mut self.view, View::Folders, "Folders");
+                ui.selectable_value(
+                    &mut self.view,
+                    View::LargestFiles,
+                    format!("Largest files ({})", result.largest.len()),
+                );
+            });
+            ui.separator();
+            match self.view {
+                View::Folders => self.folders_view(ui, &result),
+                View::LargestFiles => self.largest_view(ui, &result),
+            }
+        });
     }
+
+    fn layout(&self) -> Layout {
+        Layout::Fill
+    }
+}
+
+/// Folder tree for the left pane. Folders with subfolders expand; clicking a folder
+/// shows it in the main area. `at` is the path of indices to `node`.
+fn folder_tree(
+    ui: &mut egui::Ui,
+    node: &DirNode,
+    at: &mut Vec<usize>,
+    trail: &[usize],
+    unit: Unit,
+    pick: &mut Option<Vec<usize>>,
+) {
+    let selected = at.as_slice() == trail;
+    let label = egui::RichText::new(format!("{}  {}", node.name, unit.format(node.size)));
+    let label = if selected { label.strong() } else { label };
+    if node.children.is_empty() {
+        if ui.selectable_label(selected, label).clicked() {
+            *pick = Some(at.clone());
+        }
+        return;
+    }
+    let id = ui.make_persistent_id(("da-tree", at.clone()));
+    // Open along the selected path so the tree follows navigation in the main area.
+    let on_path = trail.starts_with(at);
+    egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, at.is_empty() || on_path)
+        .show_header(ui, |ui| {
+            if ui.selectable_label(selected, label).clicked() {
+                *pick = Some(at.clone());
+            }
+        })
+        .body(|ui| {
+            for (i, c) in node.children.iter().enumerate().take(200) {
+                if c.children.is_empty() && c.size == 0 {
+                    continue;
+                }
+                at.push(i);
+                folder_tree(ui, c, at, trail, unit, pick);
+                at.pop();
+            }
+        });
 }
 
 #[cfg(test)]

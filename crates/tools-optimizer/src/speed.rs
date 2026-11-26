@@ -25,13 +25,18 @@ impl Tool for SystemSpeed {
         Category::Optimizer
     }
 
+    fn layout(&self) -> wm_core::Layout {
+        wm_core::Layout::Fill
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, ctx: &mut AppCtx<'_>) {
-        ui.label(
-            "Each tweak changes documented Windows settings. Turning a tweak off restores the Windows \
-             default; every change can also be undone exactly from the Change Journal.",
-        );
-        ui.add_space(8.0);
-        self.panel.ui(ui, ctx);
+        wm_core::ui::frame::options(ui, |ui| {
+            ui.weak(
+                "Each tweak changes documented Windows settings. Turning one off restores the Windows \
+                 default, and every change can be undone from the Change Journal.",
+            );
+        });
+        self.panel.ui_framed(ui, ctx);
     }
 }
 

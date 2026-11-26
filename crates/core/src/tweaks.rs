@@ -531,12 +531,18 @@ impl crate::Tool for TweakTool {
         false
     }
 
+    fn layout(&self) -> crate::Layout {
+        crate::Layout::Fill
+    }
+
     fn ui(&mut self, ui: &mut Ui, ctx: &mut AppCtx<'_>) {
         if !self.note.is_empty() {
-            ui.label(self.note);
-            ui.add_space(6.0);
+            let note = self.note;
+            crate::ui::frame::options(ui, |ui| {
+                ui.weak(note);
+            });
         }
-        self.panel.ui(ui, ctx);
+        self.panel.ui_framed(ui, ctx);
     }
 }
 
@@ -610,29 +616,98 @@ impl TweakPanel {
         self.states = self.tweaks.iter().map(Tweak::state).collect();
     }
 
+    /// The panel inside another tool's content (top to bottom).
     pub fn ui(&mut self, ui: &mut Ui, ctx: &mut AppCtx<'_>) {
+        self.show(ui, ctx, false);
+    }
+
+    /// The panel as a whole tool window ([`crate::Layout::Fill`]): groups in a left
+    /// pane, settings in the middle, and the Save / Restore defaults bar pinned to the
+    /// bottom, like the original's tweak pages.
+    pub fn ui_framed(&mut self, ui: &mut Ui, ctx: &mut AppCtx<'_>) {
+        self.show(ui, ctx, true);
+    }
+
+    fn switch_counts(&self) -> (usize, usize) {
+        let toggles = self.tweaks.iter().filter(|t| t.kind == Kind::Toggle).count();
+        let applied = self.states.iter().filter(|s| **s == State::Applied).count();
+        (applied, toggles)
+    }
+
+    /// Save / Restore defaults / Cancel, laid out right to left.
+    fn footer_buttons(&mut self, ui: &mut Ui, ctx: &AppCtx<'_>, batch: &mut Vec<(usize, bool)>) {
+        let n = self.staged.len();
+        if ui
+            .add_enabled(
+                n > 0,
+                egui::Button::new(format!("{}  Save", crate::icons::FLOPPY_DISK)),
+            )
+            .clicked()
+        {
+            let risky: Vec<&str> = self
+                .staged
+                .iter()
+                .filter(|(i, on)| **on && self.tweaks[**i].warning.is_some())
+                .map(|(i, _)| self.tweaks[*i].title.as_str())
+                .collect();
+            if risky.is_empty() {
+                *batch = std::mem::take(&mut self.staged).into_iter().collect();
+            } else {
+                self.warn_confirm.ask(
+                    format!(
+                        "These settings lower your PC's protection:\n\n• {}\n\nSave anyway? You can undo them from the Change Journal.",
+                        risky.join("\n• ")
+                    ),
+                    (),
+                );
+            }
+        }
+        if ui
+            .button(format!(
+                "{}  Restore defaults",
+                crate::icons::ARROW_COUNTER_CLOCKWISE
+            ))
+            .clicked()
+        {
+            self.restore_confirm.ask(
+                "Turn off every switch on this page, restoring the Windows defaults? Each change is recorded in the Change Journal.",
+                (),
+            );
+        }
+        if n > 0 && ui.button(ctx.i18n.tr("common-cancel")).clicked() {
+            self.staged.clear();
+        }
+    }
+
+    fn restart_explorer(&mut self) {
+        self.message = Some(
+            crate::process::restart_explorer()
+                .map(|()| "Explorer restarted.".to_owned())
+                .map_err(|e| format!("{e:#}")),
+        );
+        self.explorer_restart_pending = false;
+    }
+
+    fn show(&mut self, ui: &mut Ui, ctx: &mut AppCtx<'_>, framed: bool) {
         if self.states.len() != self.tweaks.len() {
             self.refresh();
         }
-        ui.horizontal(|ui| {
-            if ui.button(ctx.i18n.tr("common-refresh")).clicked() {
-                self.refresh();
-                self.message = None;
-            }
-            let toggles = self.tweaks.iter().filter(|t| t.kind == Kind::Toggle).count();
-            let applied = self.states.iter().filter(|s| **s == State::Applied).count();
-            if toggles > 0 {
-                ui.weak(format!("{applied} of {toggles} switches on"));
-            }
-            if self.explorer_restart_pending && ui.button("Restart Explorer to apply").clicked() {
-                self.message = Some(
-                    crate::process::restart_explorer()
-                        .map(|()| "Explorer restarted.".to_owned())
-                        .map_err(|e| format!("{e:#}")),
-                );
-                self.explorer_restart_pending = false;
-            }
-        });
+        if !framed {
+            ui.horizontal(|ui| {
+                if ui.button(ctx.i18n.tr("common-refresh")).clicked() {
+                    self.refresh();
+                    self.message = None;
+                }
+                let (applied, toggles) = self.switch_counts();
+                if toggles > 0 {
+                    ui.weak(format!("{applied} of {toggles} switches on"));
+                }
+                if self.explorer_restart_pending && ui.button("Restart Explorer to apply").clicked() {
+                    self.restart_explorer();
+                }
+            });
+        }
+        let mut running_title = None;
         if let Some((i, task)) = &mut self.running {
             task.poll();
             if let Some(result) = task.take_result() {
@@ -647,15 +722,19 @@ impl TweakPanel {
                 self.running = None;
                 self.refresh();
             } else {
-                let title = self.tweaks[*i].title.clone();
+                running_title = Some(self.tweaks[*i].title.clone());
+            }
+        }
+        if !framed {
+            if let Some(title) = &running_title {
                 ui.horizontal(|ui| {
                     ui.spinner();
                     ui.weak(format!("Running {title}…"));
                 });
             }
+            show_message(ui, &self.message);
+            ui.add_space(6.0);
         }
-        show_message(ui, &self.message);
-        ui.add_space(6.0);
 
         let mut groups: Vec<String> = Vec::new();
         for g in self
@@ -677,7 +756,12 @@ impl TweakPanel {
         let mut op: Option<Op> = None;
         let query = self.filter.trim().to_lowercase();
         // Many groups: left section list (one group at a time), as in the original's pages.
-        let use_nav = groups.len() > 3;
+        // A whole tool window always uses it when there is more than one group.
+        let use_nav = if framed {
+            groups.len() > 1
+        } else {
+            groups.len() > 3
+        };
         self.group_sel = self.group_sel.min(groups.len().saturating_sub(1));
         let shown: Vec<String> = if use_nav && query.is_empty() {
             groups.get(self.group_sel).cloned().into_iter().collect()
@@ -858,7 +942,79 @@ Apply \"{}\" anyway?",
             }
         };
         let many = self.tweaks.len() > 12;
-        if use_nav {
+        let has_toggles = self.tweaks.iter().any(|t| t.kind == Kind::Toggle);
+        let mut batch: Vec<(usize, bool)> = Vec::new();
+        if self.restore_confirm.show(ui.ctx(), ctx.i18n).is_some() {
+            batch = (0..self.tweaks.len())
+                .filter(|&i| self.tweaks[i].kind == Kind::Toggle && self.states[i] != State::NotApplied)
+                .filter(|&i| !self.tweaks[i].needs_admin() || ctx.elevated)
+                .map(|i| (i, false))
+                .collect();
+            self.staged.clear();
+        }
+        if self.warn_confirm.show(ui.ctx(), ctx.i18n).is_some() {
+            batch = std::mem::take(&mut self.staged).into_iter().collect();
+        }
+        if framed {
+            let (applied, toggles) = self.switch_counts();
+            let n = self.staged.len();
+            let text = if n > 0 {
+                format!("{n} unsaved change{}", if n == 1 { "" } else { "s" })
+            } else if toggles > 0 {
+                format!("{applied} of {toggles} switches on")
+            } else {
+                String::new()
+            };
+            crate::ui::frame::status(ui, &text, |ui| {
+                if has_toggles {
+                    self.footer_buttons(ui, ctx, &mut batch);
+                }
+                ui.separator();
+                if ui.button(ctx.i18n.tr("common-refresh")).clicked() {
+                    self.refresh();
+                    self.message = None;
+                }
+                if self.explorer_restart_pending && ui.button("Restart Explorer to apply").clicked() {
+                    self.restart_explorer();
+                }
+            });
+            if use_nav {
+                let items: Vec<(&str, &str)> = groups
+                    .iter()
+                    .map(|g| (crate::icons::SLIDERS, g.as_str()))
+                    .collect();
+                let (filter, group_sel) = (&mut self.filter, &mut self.group_sel);
+                crate::ui::frame::left(ui, 230.0, |ui| {
+                    ui.add(
+                        egui::TextEdit::singleline(filter)
+                            .hint_text(format!("{}  Find a setting", crate::icons::MAGNIFYING_GLASS))
+                            .desired_width(f32::INFINITY),
+                    );
+                    ui.add_space(6.0);
+                    if crate::ui::section_nav(ui, &items, group_sel) {
+                        filter.clear();
+                    }
+                });
+            }
+            crate::ui::frame::central(ui, |ui| {
+                if let Some(title) = &running_title {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.weak(format!("Running {title}…"));
+                    });
+                }
+                show_message(ui, &self.message);
+                if !use_nav && many {
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.filter)
+                            .hint_text(format!("{}  Find a setting", crate::icons::MAGNIFYING_GLASS))
+                            .desired_width(240.0),
+                    );
+                    ui.add_space(4.0);
+                }
+                draw(ui, self);
+            });
+        } else if use_nav {
             ui.horizontal_top(|ui| {
                 ui.vertical(|ui| {
                     ui.set_width(210.0);
@@ -892,55 +1048,18 @@ Apply \"{}\" anyway?",
         }
 
         // Footer: Restore defaults / Save, as in the original's tweak pages.
-        let has_toggles = self.tweaks.iter().any(|t| t.kind == Kind::Toggle);
-        let mut batch: Vec<(usize, bool)> = Vec::new();
-        if self.restore_confirm.show(ui.ctx(), ctx.i18n).is_some() {
-            batch = (0..self.tweaks.len())
-                .filter(|&i| self.tweaks[i].kind == Kind::Toggle && self.states[i] != State::NotApplied)
-                .filter(|&i| !self.tweaks[i].needs_admin() || ctx.elevated)
-                .map(|i| (i, false))
-                .collect();
-            self.staged.clear();
-        }
-        if self.warn_confirm.show(ui.ctx(), ctx.i18n).is_some() {
-            batch = std::mem::take(&mut self.staged).into_iter().collect();
-        }
-        if has_toggles {
+        if !framed && has_toggles {
             ui.separator();
             ui.horizontal(|ui| {
                 let n = self.staged.len();
                 if n > 0 {
-                    ui.colored_label(crate::ui::ACCENT, format!("{n} unsaved change{}", if n == 1 { "" } else { "s" }));
-                    if ui.small_button(ctx.i18n.tr("common-cancel")).clicked() {
-                        self.staged.clear();
-                    }
+                    ui.colored_label(
+                        crate::ui::ACCENT,
+                        format!("{n} unsaved change{}", if n == 1 { "" } else { "s" }),
+                    );
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.add_enabled(n > 0, egui::Button::new(format!("{}  Save", crate::icons::FLOPPY_DISK))).clicked() {
-                        let risky: Vec<&str> = self
-                            .staged
-                            .iter()
-                            .filter(|(i, on)| **on && self.tweaks[**i].warning.is_some())
-                            .map(|(i, _)| self.tweaks[*i].title.as_str())
-                            .collect();
-                        if risky.is_empty() {
-                            batch = std::mem::take(&mut self.staged).into_iter().collect();
-                        } else {
-                            self.warn_confirm.ask(
-                                format!(
-                                    "These settings lower your PC's protection:\n\n• {}\n\nSave anyway? You can undo them from the Change Journal.",
-                                    risky.join("\n• ")
-                                ),
-                                (),
-                            );
-                        }
-                    }
-                    if ui.button(format!("{}  Restore defaults", crate::icons::ARROW_COUNTER_CLOCKWISE)).clicked() {
-                        self.restore_confirm.ask(
-                            "Turn off every switch on this page, restoring the Windows defaults? Each change is recorded in the Change Journal.",
-                            (),
-                        );
-                    }
+                    self.footer_buttons(ui, ctx, &mut batch);
                 });
             });
         }

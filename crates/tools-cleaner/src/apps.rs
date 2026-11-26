@@ -13,7 +13,7 @@ use anyhow::{Context, Result, bail};
 use egui_extras::{Column, TableBuilder};
 use serde::Deserialize;
 use wm_core::{
-    AppCtx, Category, Tool,
+    AppCtx, Category, Layout, Tool,
     egui::{self, Color32, Vec2},
     icons,
     process::{hidden_command, json_list, powershell_json, run_checked},
@@ -21,7 +21,7 @@ use wm_core::{
     safety::UndoAction,
     shell::{KnownFolder, create_item_shortcut, known_folder},
     task::BackgroundTask,
-    ui::{Confirm, Message, ToolButton, show_message, status_bar, toolbar},
+    ui::{Confirm, Message, ToolButton, frame, show_message},
 };
 
 /// Packages that keep the Store, app installation and security UI working.
@@ -720,11 +720,19 @@ impl Tool for AppsUninstaller {
         let packages = match &self.packages {
             Some(Ok(p)) => p.clone(),
             Some(Err(e)) => {
-                ui.colored_label(ui.visuals().error_fg_color, e);
+                let e = e.clone();
+                frame::central(ui, |ui| {
+                    ui.colored_label(ui.visuals().error_fg_color, e);
+                });
                 return;
             }
             None => {
-                ui.spinner();
+                frame::central(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.weak("Reading the installed apps…");
+                    });
+                });
                 return;
             }
         };
@@ -763,7 +771,7 @@ impl Tool for AppsUninstaller {
             })
             .collect();
 
-        match toolbar(
+        let clicked = frame::toolbar(
             ui,
             &[
                 Some(ToolButton::new(icons::TRASH, &remove_label).enabled(!busy && !targets.is_empty())),
@@ -783,7 +791,9 @@ impl Tool for AppsUninstaller {
                 Some(ToolButton::new(icons::UPLOAD, "Export")),
                 Some(ToolButton::new(icons::ARROWS_CLOCKWISE, "Refresh").enabled(!busy)),
             ],
-        ) {
+            |_| {},
+        );
+        match clicked {
             Some(i @ (0 | 1)) => {
                 let all = i == 1;
                 let names: Vec<&str> = targets.iter().map(|p| p.display_name.as_str()).collect();
@@ -853,8 +863,13 @@ impl Tool for AppsUninstaller {
             _ => {}
         }
 
-        ui.horizontal(|ui| {
-            ui.add(egui::TextEdit::singleline(&mut self.filter).hint_text(ctx.i18n.tr("common-filter")));
+        let filter_hint = ctx.i18n.tr("common-filter");
+        frame::options(ui, |ui| {
+            ui.add(
+                egui::TextEdit::singleline(&mut self.filter)
+                    .hint_text(format!("{}  {filter_hint}", icons::MAGNIFYING_GLASS))
+                    .desired_width(220.0),
+            );
             egui::ComboBox::from_id_salt("apps-kind")
                 .selected_text(self.kind.label())
                 .show_ui(ui, |ui| {
@@ -875,38 +890,40 @@ impl Tool for AppsUninstaller {
                 self.marked.clear();
             }
         });
-        if let Some(t) = &self.working {
-            ui.horizontal(|ui| {
+        let status = match &self.working {
+            Some(t) => t.status.clone(),
+            None => format!(
+                "{} of {} removable apps shown{}",
+                visible.len(),
+                packages.len(),
+                if self.marked.is_empty() {
+                    String::new()
+                } else {
+                    format!(" · {} ticked", self.marked.len())
+                }
+            ),
+        };
+        let tiles = self.tiles;
+        frame::status(ui, &status, |ui| {
+            if busy {
                 ui.spinner();
-                ui.weak(&t.status);
-            });
-        }
-        show_message(ui, &self.message);
-
-        let status = format!(
-            "{} of {} removable apps shown{}",
-            visible.len(),
-            packages.len(),
-            if self.marked.is_empty() {
-                String::new()
-            } else {
-                format!(", {} ticked", self.marked.len())
             }
-        );
-        egui::Panel::bottom("apps-status")
-            .frame(egui::Frame::NONE)
-            .show(ui, |ui| {
-                status_bar(ui, &status, |ui| {
-                    if self.tiles {
-                        ui.weak("Ctrl+click ticks, double-click launches");
-                    }
-                })
-            });
-        if self.tiles {
-            self.tile_view(ui, &visible);
-        } else {
-            self.list_view(ui, &visible);
-        }
+            if tiles {
+                ui.weak("Ctrl+click ticks, double-click launches");
+            }
+        });
+        frame::central_fixed(ui, |ui| {
+            show_message(ui, &self.message);
+            if self.tiles {
+                self.tile_view(ui, &visible);
+            } else {
+                self.list_view(ui, &visible);
+            }
+        });
+    }
+
+    fn layout(&self) -> Layout {
+        Layout::Fill
     }
 }
 

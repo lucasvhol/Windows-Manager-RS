@@ -12,13 +12,13 @@ use chrono::{DateTime, Local};
 use egui_extras::{Column, TableBuilder};
 use serde::{Deserialize, Serialize};
 use wm_core::{
-    AppCtx, Category, Tool, egui, icons,
+    AppCtx, Category, Layout, Tool, egui, icons,
     process::{hidden_command, run_checked},
     safety::UndoAction,
     shell::{KnownFolder, is_broken_shortcut, known_folder, reveal_in_explorer},
     task::BackgroundTask,
     tool_settings,
-    ui::{Confirm, Message, ToolButton, format_bytes, show_message, status_bar, toolbar},
+    ui::{Confirm, Message, ToolButton, empty_state, format_bytes, frame, show_message},
     user_assist::{self, Usage},
 };
 
@@ -446,7 +446,9 @@ impl DesktopCleaner {
     }
 
     fn options_panel(&mut self, ui: &mut egui::Ui, ctx: &AppCtx<'_>) {
-        egui::Frame::group(ui.style()).show(ui, |ui| {
+        ui.strong("Options");
+        ui.add_space(4.0);
+        ui.scope(|ui| {
             egui::Grid::new("desktop-opts")
                 .num_columns(2)
                 .spacing([12.0, 6.0])
@@ -581,7 +583,7 @@ impl Tool for DesktopCleaner {
         let has = !chosen.is_empty();
         let broken_label = format!("Broken ({})", broken.len());
 
-        match toolbar(
+        let clicked = frame::toolbar(
             ui,
             &[
                 Some(ToolButton::new(icons::ARROWS_CLOCKWISE, "Refresh").enabled(self.load.is_none())),
@@ -598,7 +600,9 @@ impl Tool for DesktopCleaner {
                 )),
                 Some(ToolButton::new(icons::SLIDERS, "Options")),
             ],
-        ) {
+            |_| {},
+        );
+        match clicked {
             Some(0) => {
                 self.refresh();
                 self.message = None;
@@ -686,37 +690,56 @@ impl Tool for DesktopCleaner {
             Some(9) => self.show_options = !self.show_options,
             _ => {}
         }
-        if self.show_options {
-            self.options_panel(ui, ctx);
-        }
-        show_message(ui, &self.message);
-
-        if self.load.is_some() {
-            ui.horizontal(|ui| {
-                ui.spinner();
-                ui.label("Reading the desktop…");
-            });
-            return;
-        }
-        if items.is_empty() {
-            ui.label("Your desktop is already empty; there is nothing to tidy.");
-            return;
-        }
         let total: u64 = items.iter().map(|i| i.size).sum();
-        let status = format!(
-            "{} items, {}{}",
-            items.len(),
-            format_bytes(total),
-            if has {
-                format!(", {} ticked", chosen.len())
-            } else {
-                String::new()
+        let status = if self.load.is_some() {
+            "Reading the desktop…".to_owned()
+        } else {
+            format!(
+                "{} items, {}{}",
+                items.len(),
+                format_bytes(total),
+                if has {
+                    format!(" · {} ticked", chosen.len())
+                } else {
+                    String::new()
+                }
+            )
+        };
+        let loading = self.load.is_some();
+        frame::status(ui, &status, |ui| {
+            if loading {
+                ui.spinner();
             }
-        );
-        egui::Panel::bottom("desktop-status")
-            .frame(egui::Frame::NONE)
-            .show(ui, |ui| status_bar(ui, &status, |_| {}));
+        });
+        if self.show_options {
+            frame::left(ui, 340.0, |ui| self.options_panel(ui, ctx));
+        }
+        frame::central_fixed(ui, |ui| {
+            show_message(ui, &self.message);
+            if loading {
+                return;
+            }
+            if items.is_empty() {
+                empty_state(
+                    ui,
+                    icons::DESKTOP,
+                    "Your desktop is already tidy",
+                    "There is nothing on it to move or organize.",
+                );
+                return;
+            }
+            self.table(ui, &items, ctx.elevated);
+        });
+    }
 
+    fn layout(&self) -> Layout {
+        Layout::Fill
+    }
+}
+
+impl DesktopCleaner {
+    fn table(&mut self, ui: &mut egui::Ui, items: &[Item], elevated: bool) {
+        let usable = |i: &Item| !i.public || elevated;
         let now = Local::now();
         let days = self.opts.unused_days;
         let mut open = None;

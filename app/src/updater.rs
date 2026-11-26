@@ -20,9 +20,7 @@ pub struct Updater {
 
 impl Updater {
     pub fn button(&mut self, ui: &mut egui::Ui) {
-        let label = format!("{} Update", icons::ARROWS_CLOCKWISE);
-        if ui
-            .button(label)
+        if crate::hub::widgets::header_button(ui, icons::ARROWS_CLOCKWISE, "Update")
             .on_hover_text("Check for a newer version")
             .clicked()
         {

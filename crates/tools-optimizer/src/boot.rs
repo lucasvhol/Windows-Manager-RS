@@ -9,11 +9,11 @@
 
 use anyhow::{Context, Result};
 use wm_core::{
-    AppCtx, Category, Tool, egui, icons, paths,
+    AppCtx, Category, Layout, Tool, egui, icons, paths,
     process::{hidden_command, run_checked},
     safety::UndoAction,
     task::BackgroundTask,
-    ui::{Confirm, Message, ToolButton, show_message, toolbar},
+    ui::{Confirm, Message, ToolButton, empty_state, frame, show_message},
 };
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -613,9 +613,20 @@ impl Tool for BootConfiguration {
         true
     }
 
+    fn layout(&self) -> Layout {
+        Layout::Fill
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, ctx: &mut AppCtx<'_>) {
         if !ctx.elevated {
-            ui.label("Reading and changing the boot configuration requires administrator rights.");
+            frame::central(ui, |ui| {
+                empty_state(
+                    ui,
+                    icons::SHIELD,
+                    "The boot configuration needs administrator rights",
+                    "Restart the app as administrator to see and change the boot menu.",
+                );
+            });
             return;
         }
         if self.load.is_none() && self.config.is_none() {
@@ -635,12 +646,17 @@ impl Tool for BootConfiguration {
         let cfg = match &self.config {
             Some(Ok(c)) => c.clone(),
             Some(Err(e)) => {
-                show_message(ui, &self.message);
-                ui.colored_label(ui.visuals().error_fg_color, e);
+                let e = e.clone();
+                frame::central(ui, |ui| {
+                    show_message(ui, &self.message);
+                    ui.colored_label(ui.visuals().error_fg_color, e);
+                });
                 return;
             }
             None => {
-                ui.spinner();
+                frame::central(ui, |ui| {
+                    ui.spinner();
+                });
                 return;
             }
         };
@@ -668,7 +684,7 @@ impl Tool for BootConfiguration {
             Some(ToolButton::new(icons::WRENCH, "Advanced startup")),
             Some(ToolButton::new(icons::CPU, "UEFI settings")),
         ];
-        match toolbar(ui, &buttons) {
+        match frame::toolbar(ui, &buttons, |_| {}) {
             Some(0) => {
                 self.config = None;
                 self.message = None;
@@ -732,31 +748,30 @@ impl Tool for BootConfiguration {
             ),
             _ => {}
         }
-        show_message(ui, &self.message);
-        if let Some(b) = &self.backup {
-            ui.weak(format!("Boot store backup for this session: {}", b.display()));
-        }
+        let status = match &self.backup {
+            Some(b) => format!(
+                "{} boot entries · backup for this session: {}",
+                cfg.loaders.len(),
+                b.display()
+            ),
+            None => format!("{} boot entries", cfg.loaders.len()),
+        };
+        frame::status(ui, &status, |_| {});
 
-        if let Some(name) = &mut self.new_name {
-            let mut add = false;
-            let mut cancel = false;
-            ui.horizontal(|ui| {
+        let mut add_entry = None;
+        let cancel_text = ctx.i18n.tr("common-cancel");
+        frame::options(ui, |ui| {
+            if let Some(name) = &mut self.new_name {
                 ui.label("New entry (a copy of the running Windows):");
                 ui.text_edit_singleline(name);
-                add = ui.button(format!("{}  Add", icons::PLUS)).clicked();
-                cancel = ui.button(ctx.i18n.tr("common-cancel")).clicked();
-            });
-            if add && !name.trim().is_empty() {
-                let name = name.trim().to_owned();
-                self.new_name = None;
-                self.run_ask(ctx, Ask::Add(name));
-                return;
-            } else if cancel {
-                self.new_name = None;
+                if ui.button(format!("{}  Add", icons::PLUS)).clicked() && !name.trim().is_empty() {
+                    add_entry = Some(name.trim().to_owned());
+                }
+                if ui.button(&cancel_text).clicked() {
+                    self.new_name = None;
+                }
+                ui.end_row();
             }
-        }
-
-        ui.horizontal(|ui| {
             ui.label("Show the boot menu for");
             let timeout = self.timeout_edit.get_or_insert(cfg.timeout());
             ui.add(egui::DragValue::new(timeout).range(0..=999).suffix(" s"));
@@ -799,34 +814,47 @@ impl Tool for BootConfiguration {
                     });
             }
         });
-        ui.add_space(6.0);
-
-        if cfg.loaders.is_empty() {
-            ui.label("No Windows boot loader entries found.");
+        if let Some(name) = add_entry {
+            self.new_name = None;
+            self.run_ask(ctx, Ask::Add(name));
             return;
         }
-        egui::Panel::left("boot_entries")
-            .resizable(true)
-            .default_size(240.0)
-            .show(ui, |ui| {
-                ui.strong("Boot menu");
-                for (i, l) in cfg.loaders.iter().enumerate() {
-                    let mut label = describe(l);
-                    if l.identifier() == cfg.default_id() {
-                        label += "  (default)";
-                    }
-                    if ui
-                        .selectable_label(self.selected == i, format!("{}  {label}", icons::WINDOWS_LOGO))
-                        .clicked()
-                    {
-                        self.selected = i;
-                        self.rename = None;
-                    }
-                }
+
+        if cfg.loaders.is_empty() {
+            frame::central(ui, |ui| {
+                show_message(ui, &self.message);
+                empty_state(
+                    ui,
+                    icons::WINDOWS_LOGO,
+                    "No Windows boot loader entries found",
+                    "",
+                );
             });
-        if let Some(e) = entry {
-            egui::ScrollArea::vertical().show(ui, |ui| self.entry_options(ui, ctx, &cfg, &e));
+            return;
         }
+        frame::left(ui, 240.0, |ui| {
+            ui.strong("Boot menu");
+            ui.add_space(4.0);
+            for (i, l) in cfg.loaders.iter().enumerate() {
+                let mut label = describe(l);
+                if l.identifier() == cfg.default_id() {
+                    label += "  (default)";
+                }
+                if ui
+                    .selectable_label(self.selected == i, format!("{}  {label}", icons::WINDOWS_LOGO))
+                    .clicked()
+                {
+                    self.selected = i;
+                    self.rename = None;
+                }
+            }
+        });
+        frame::central(ui, |ui| {
+            show_message(ui, &self.message);
+            if let Some(e) = entry {
+                self.entry_options(ui, ctx, &cfg, &e);
+            }
+        });
     }
 }
 

@@ -6,11 +6,11 @@ use std::path::PathBuf;
 
 use egui_extras::{Column, TableBuilder};
 use wm_core::{
-    AppCtx, Category, Tool, egui, icons,
+    AppCtx, Category, Layout, Tool, egui, icons,
     safety::UndoAction,
     shell::reveal_in_explorer,
     task::BackgroundTask,
-    ui::{Confirm, Message, ToolButton, drive_picker, format_bytes, show_message, toolbar},
+    ui::{Confirm, Message, ToolButton, drive_picker, format_bytes, frame, show_message},
 };
 
 use super::{CleanReport, Kind, Options, RULES, Rule, RuleScan, clean, parse_rules, scan_rule_with};
@@ -104,14 +104,16 @@ impl JunkCleaner {
     }
 
     fn drives_row(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal_wrapped(|ui| {
+        frame::options(ui, |ui| {
             ui.label("Drives for empty folders and zero-byte files:");
             drive_picker(ui, &mut self.opts.drives);
         });
     }
 
     fn options_panel(&mut self, ui: &mut egui::Ui) {
-        egui::Frame::group(ui.style()).show(ui, |ui| {
+        ui.strong("Options");
+        ui.add_space(4.0);
+        ui.scope(|ui| {
             ui.checkbox(&mut self.opts.skip_system, "Leave system files alone")
                 .on_hover_text("Files and folders Windows marks as system files are never cleaned.");
             ui.checkbox(
@@ -236,6 +238,10 @@ impl JunkCleaner {
 }
 
 impl Tool for JunkCleaner {
+    fn layout(&self) -> Layout {
+        Layout::Fill
+    }
+
     fn id(&self) -> &'static str {
         "junk"
     }
@@ -317,7 +323,7 @@ impl Tool for JunkCleaner {
         }
 
         let clean_label = format!("Clean {}", format_bytes(selected_bytes));
-        match toolbar(
+        let clicked = frame::toolbar(
             ui,
             &[
                 Some(ToolButton::new(icons::MAGNIFYING_GLASS, "Scan").enabled(!busy)),
@@ -325,7 +331,9 @@ impl Tool for JunkCleaner {
                 None,
                 Some(ToolButton::new(icons::SLIDERS, "Options")),
             ],
-        ) {
+            |_| {},
+        );
+        match clicked {
             Some(0) => {
                 self.message = None;
                 self.start_scan(ui.ctx(), ctx.elevated);
@@ -347,22 +355,26 @@ impl Tool for JunkCleaner {
             Some(3) => self.show_options = !self.show_options,
             _ => {}
         }
-        if self.show_options {
-            self.options_panel(ui);
-        }
         self.drives_row(ui);
-        if busy {
-            ui.horizontal(|ui| {
+        let status = match &self.scan_task {
+            Some(t) if !t.status.is_empty() => t.status.clone(),
+            Some(_) => "Scanning…".into(),
+            None if self.clean_task.is_some() => "Cleaning…".into(),
+            None if self.scans.is_some() => format!(
+                "{selected_items} items selected · {} to free",
+                format_bytes(selected_bytes)
+            ),
+            None => "Ready".into(),
+        };
+        frame::status(ui, &status, |ui| {
+            if busy {
                 ui.spinner();
-                match &self.scan_task {
-                    Some(t) => ui.weak(&t.status),
-                    None => ui.weak("Cleaning…"),
-                };
-            });
+            }
+        });
+        if self.show_options {
+            frame::left(ui, 300.0, |ui| self.options_panel(ui));
         }
-        show_message(ui, &self.message);
         self.review_panel(ui);
-        ui.add_space(4.0);
 
         let mut groups: Vec<String> = Vec::new();
         for r in &self.rules {
@@ -371,7 +383,8 @@ impl Tool for JunkCleaner {
             }
         }
         let mut rescan = false;
-        egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
+        frame::central(ui, |ui| {
+            show_message(ui, &self.message);
             for group in groups {
                 ui.strong(&group);
                 egui::Grid::new(&group)

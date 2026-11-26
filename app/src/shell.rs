@@ -6,7 +6,7 @@
 use wm_core::{
     APP_NAME, AppCtx, Category, Tool,
     config::{Config, Theme},
-    egui::{self, Color32, ViewportBuilder, ViewportClass, ViewportId},
+    egui::{self, ViewportBuilder, ViewportClass, ViewportId},
     elevation,
     i18n::I18n,
     icons,
@@ -150,48 +150,28 @@ impl Shell {
                                 icons::MAGNIFYING_GLASS,
                                 self.i18n.tr("shell-search")
                             ))
-                            .desired_width(240.0),
+                            .desired_width(220.0)
+                            .margin(egui::Margin::symmetric(8, 5)),
                     );
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui
-                            .button(format!("{} {}", icons::INFO, self.i18n.tr("hub-about")))
-                            .clicked()
-                        {
+                        // Like the original: only Update and About up here.
+                        if widgets::header_button(ui, icons::INFO, &self.i18n.tr("hub-about")).clicked() {
                             self.about_open = true;
                         }
                         self.updater.button(ui);
-                        if ui
-                            .button(format!("{} {}", icons::GEAR, self.title_of("settings")))
-                            .clicked()
-                        {
-                            self.open_tool(&ctx, "settings");
-                        }
-                        if ui
-                            .button(format!(
-                                "{} {}",
-                                icons::CLOCK_COUNTER_CLOCKWISE,
-                                self.title_of("journal")
-                            ))
-                            .clicked()
-                        {
-                            self.open_tool(&ctx, "journal");
-                        }
-                        ui.separator();
+                        ui.add_space(8.0);
                         if self.elevated {
                             ui.label(
-                                egui::RichText::new(format!(
-                                    "{} {}",
-                                    icons::SHIELD_CHECK,
-                                    self.i18n.tr("shell-admin")
-                                ))
-                                .strong(),
-                            );
+                                egui::RichText::new(icons::SHIELD_CHECK)
+                                    .size(20.0)
+                                    .color(widgets::ACCENT),
+                            )
+                            .on_hover_text(self.i18n.tr("shell-admin"));
                         } else if ui
-                            .button(format!(
-                                "{} {}",
-                                icons::SHIELD,
-                                self.i18n.tr("shell-restart-admin")
-                            ))
+                            .add(
+                                egui::Button::new(egui::RichText::new(icons::SHIELD).size(18.0)).frame(false),
+                            )
+                            .on_hover_text(self.i18n.tr("shell-restart-admin"))
                             .clicked()
                         {
                             self.restart_as_admin(&ctx);
@@ -216,6 +196,7 @@ impl Shell {
                     if widgets::rail_item(
                         ui,
                         catalog::category_icon(cat),
+                        wm_core::ui::palette::category(cat),
                         &self.i18n.tr(cat.i18n_key()),
                         selected,
                         content_fill,
@@ -226,18 +207,44 @@ impl Shell {
                         self.search.clear();
                     }
                 }
+                let mut open = None;
                 ui.with_layout(egui::Layout::bottom_up(egui::Align::Center), |ui| {
                     ui.add_space(10.0);
                     ui.weak(&self.summary.build);
                     ui.weak(&self.summary.os);
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        ui.add_space(12.0);
+                        for id in ["journal", "settings"] {
+                            let text = format!("{}  {}", catalog::tool_icon(id), self.title_of(id));
+                            if ui
+                                .add(egui::Button::new(egui::RichText::new(text).size(13.0)).frame(false))
+                                .clicked()
+                            {
+                                open = Some(id);
+                            }
+                        }
+                    });
+                    ui.separator();
                 });
+                if let Some(id) = open {
+                    let ctx = ui.ctx().clone();
+                    self.open_tool(&ctx, id);
+                }
             });
     }
 
     fn central(&mut self, root: &mut egui::Ui) {
         let ctx = root.ctx().clone();
         let mut to_open: Vec<String> = Vec::new();
-        egui::CentralPanel::default().show(root, |ui| {
+        let fill = root.visuals().panel_fill;
+        let frame = egui::Frame::new().fill(fill).inner_margin(egui::Margin {
+            left: 22,
+            right: 16,
+            top: 8,
+            bottom: 8,
+        });
+        egui::CentralPanel::default().frame(frame).show(root, |ui| {
             if let Some(err) = self.error.clone() {
                 ui.horizontal(|ui| {
                     ui.colored_label(ui.visuals().error_fg_color, err);
@@ -291,15 +298,18 @@ impl Shell {
     /// Two-column grid of tiles; returns the ids the user opened.
     fn tile_grid(&self, ui: &mut egui::Ui, ids: &[String]) -> Vec<String> {
         let mut opened = Vec::new();
-        ui.add_space(8.0);
-        let width = ((ui.available_width() - 24.0) / 2.0).max(220.0);
+        ui.add_space(14.0);
+        let gap = 28.0;
+        let width = ((ui.available_width() - gap - 8.0) / 2.0).max(220.0);
         for row in ids.chunks(2) {
             ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 0.0;
                 for id in row {
                     let r = widgets::tile(
                         ui,
                         width,
                         catalog::tool_icon(id),
+                        self.color_of(id),
                         &self.title_of(id),
                         &self.description_of(id),
                     );
@@ -327,12 +337,20 @@ impl Shell {
                             .response
                         });
                     }
-                    ui.add_space(12.0);
+                    ui.add_space(gap);
                 }
             });
-            ui.add_space(8.0);
+            ui.add_space(6.0);
         }
         opened
+    }
+
+    /// The colour of a tool's icon: its category's colour.
+    fn color_of(&self, id: &str) -> egui::Color32 {
+        self.tools
+            .iter()
+            .find(|t| t.id() == id)
+            .map_or(widgets::ACCENT, |t| wm_core::ui::palette::category(t.category()))
     }
 
     /// Draws every open tool in its own native window.
@@ -346,6 +364,7 @@ impl Shell {
             let title = self.title_of(id);
             let description = self.description_of(id);
             let icon = catalog::tool_icon(id);
+            let color = self.color_of(id);
             let (tools, config, journal, i18n, elevated) = (
                 &mut self.tools,
                 &mut self.config,
@@ -364,7 +383,7 @@ impl Shell {
                     .with_min_inner_size([640.0, 420.0]),
                 |ui, class| {
                     let mut body = |ui: &mut egui::Ui| {
-                        widgets::tool_header(ui, icon, &title, &description);
+                        widgets::tool_header(ui, icon, color, &title, &description);
                         if tool.requires_admin() && !elevated {
                             ui.horizontal(|ui| {
                                 ui.add_space(14.0);
@@ -378,19 +397,24 @@ impl Shell {
                                 ui.colored_label(ui.visuals().warn_fg_color, i18n.tr("shell-dry-run-active"));
                             });
                         }
-                        egui::Frame::new()
-                            .inner_margin(egui::Margin::symmetric(14, 8))
-                            .show(ui, |ui| {
-                                let mut app_ctx = AppCtx {
-                                    config,
-                                    journal,
-                                    i18n,
-                                    elevated,
-                                };
-                                egui::ScrollArea::vertical()
-                                    .auto_shrink(false)
-                                    .show(ui, |ui| tool.ui(ui, &mut app_ctx));
-                            });
+                        let mut app_ctx = AppCtx {
+                            config,
+                            journal,
+                            i18n,
+                            elevated,
+                        };
+                        if tool.layout() == wm_core::Layout::Fill {
+                            // The tool arranges the whole body with frame regions.
+                            tool.ui(ui, &mut app_ctx);
+                        } else {
+                            egui::Frame::new()
+                                .inner_margin(egui::Margin::symmetric(14, 8))
+                                .show(ui, |ui| {
+                                    egui::ScrollArea::vertical()
+                                        .auto_shrink(false)
+                                        .show(ui, |ui| tool.ui(ui, &mut app_ctx));
+                                });
+                        }
                     };
                     if class == ViewportClass::EmbeddedWindow {
                         let mut still_open = true;
@@ -507,12 +531,7 @@ fn apply_theme(ctx: &egui::Context, theme: Theme) {
         Theme::Dark => egui::ThemePreference::Dark,
     });
     for t in [egui::Theme::Dark, egui::Theme::Light] {
-        ctx.style_mut_of(t, |s| {
-            s.visuals.selection.bg_fill = widgets::ACCENT;
-            s.visuals.selection.stroke.color = Color32::WHITE;
-            s.visuals.hyperlink_color = widgets::ACCENT;
-            s.spacing.button_padding = egui::vec2(8.0, 4.0);
-        });
+        ctx.style_mut_of(t, |s| wm_core::ui::apply_style(s, t == egui::Theme::Dark));
     }
 }
 

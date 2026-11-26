@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use anyhow::Context as _;
 use egui_extras::{Column, TableBuilder};
 use wm_core::{
-    AppCtx, Category, Tool,
+    AppCtx, Category, Layout, Tool,
     egui::{self, Vec2},
     file_icon::{self, IconImage},
     icons,
@@ -16,7 +16,7 @@ use wm_core::{
     safety::UndoAction,
     shell::reveal_in_explorer,
     task::BackgroundTask,
-    ui::{Confirm, Message, ToolButton, format_bytes, section_nav, show_message, status_bar, toolbar},
+    ui::{Confirm, Message, ToolButton, empty_state, format_bytes, frame, section_nav, show_message},
 };
 
 use super::orphans::{self, Orphan, References};
@@ -485,7 +485,7 @@ impl SmartUninstaller {
             "Uninstall".to_owned()
         };
 
-        match toolbar(
+        let clicked_tool = frame::toolbar(
             ui,
             &[
                 Some(ToolButton::new(icons::TRASH, &uninstall_label).enabled(!busy && !targets.is_empty())),
@@ -508,7 +508,9 @@ impl SmartUninstaller {
                 Some(ToolButton::new(icons::CLOUD_SLASH, "OneDrive").enabled(!busy)),
                 Some(ToolButton::new(icons::ARROWS_CLOCKWISE, "Refresh").enabled(!busy)),
             ],
-        ) {
+            |_| {},
+        );
+        match clicked_tool {
             Some(0) => {
                 let missing: Vec<&str> = targets
                     .iter()
@@ -625,21 +627,31 @@ impl SmartUninstaller {
             _ => {}
         }
 
-        ui.horizontal(|ui| {
-            ui.add(egui::TextEdit::singleline(&mut self.filter).hint_text(ctx.i18n.tr("common-filter")));
+        let filter_hint = ctx.i18n.tr("common-filter");
+        frame::options(ui, |ui| {
+            ui.add(
+                egui::TextEdit::singleline(&mut self.filter)
+                    .hint_text(format!("{}  {filter_hint}", icons::MAGNIFYING_GLASS))
+                    .desired_width(220.0),
+            );
             ui.separator();
             ui.selectable_value(&mut self.mode, ViewMode::List, format!("{} List", icons::LIST));
-            ui.selectable_value(&mut self.mode, ViewMode::Icons, format!("{} Icons", icons::GRID_FOUR));
+            ui.selectable_value(
+                &mut self.mode,
+                ViewMode::Icons,
+                format!("{} Icons", icons::GRID_FOUR),
+            );
             ui.separator();
             ui.checkbox(&mut self.quiet, "Quiet uninstall when possible")
                 .on_hover_text("Uses the program's silent mode or MSI's /qn. Programs without one still show their uninstaller.");
-            if !self.checked.is_empty() && ui.small_button(format!("Clear {} ticks", self.checked.len())).clicked() {
+            if !self.checked.is_empty()
+                && ui
+                    .small_button(format!("Clear {} ticks", self.checked.len()))
+                    .clicked()
+            {
                 self.checked.clear();
             }
         });
-        self.poll_batch(ui);
-        show_message(ui, &self.message);
-        self.leftovers_panel(ui, ctx);
         self.rename_dialog(ui, ctx);
 
         let visible = sorted(&programs, &self.filter, self.sort);
@@ -651,12 +663,14 @@ impl SmartUninstaller {
             if self.checked.is_empty() {
                 String::new()
             } else {
-                format!(", {} ticked", self.checked.len())
+                format!(" · {} ticked", self.checked.len())
             }
         );
-        egui::Panel::bottom("uninst-status")
-            .frame(egui::Frame::NONE)
-            .show(ui, |ui| status_bar(ui, &status, |_| {}));
+        frame::status(ui, &status, |ui| {
+            if busy {
+                ui.spinner();
+            }
+        });
         if let Some((key, values)) = &self.details {
             let mut close = false;
             egui::Panel::bottom("uninst-details")
@@ -692,10 +706,15 @@ impl SmartUninstaller {
         }
 
         let mut clicked = None;
-        match self.mode {
-            ViewMode::List => self.list_view(ui, &visible, &mut clicked),
-            ViewMode::Icons => self.icon_view(ui, &visible, &mut clicked),
-        }
+        frame::central_fixed(ui, |ui| {
+            self.poll_batch(ui);
+            show_message(ui, &self.message);
+            self.leftovers_panel(ui, ctx);
+            match self.mode {
+                ViewMode::List => self.list_view(ui, &visible, &mut clicked),
+                ViewMode::Icons => self.icon_view(ui, &visible, &mut clicked),
+            }
+        });
         if let Some(k) = clicked {
             if self.details.is_some() {
                 self.details = Some((k.clone(), details(&k)));
@@ -889,34 +908,53 @@ impl SmartUninstaller {
             }
         }
         let removing = self.update_remove.is_some();
-        ui.horizontal(|ui| {
-            if ui.button(ctx.i18n.tr("common-refresh")).clicked() {
-                self.updates = None;
-            }
-            if ui.button("Open Windows Update history").clicked() {
+        let refresh = ctx.i18n.tr("common-refresh");
+        match frame::toolbar(
+            ui,
+            &[
+                Some(ToolButton::new(icons::ARROWS_CLOCKWISE, &refresh).enabled(!removing)),
+                Some(ToolButton::new(icons::CLOCK_COUNTER_CLOCKWISE, "Update history")),
+            ],
+            |_| {},
+        ) {
+            Some(0) => self.updates = None,
+            Some(1) => {
                 let _ = wm_core::shell::shell_open("ms-settings:windowsupdate-history", "");
             }
-            if removing {
-                ui.spinner();
-                ui.label("Removing the update…");
-            }
+            _ => {}
+        }
+        let status = match (&self.updates, removing) {
+            (_, true) => "Removing the update…".to_owned(),
+            (Some(Ok(l)), _) => format!("{} updates installed", l.len()),
+            (None, _) => "Reading installed updates…".to_owned(),
+            _ => String::new(),
+        };
+        frame::status(ui, &status, |ui| {
+            ui.weak("Some updates (servicing stack, many cumulative ones) can't be removed on their own.");
         });
-        ui.weak(
-            "Removing an update needs administrator rights. Some updates (servicing stack, many cumulative \
-             updates) cannot be removed on their own.",
-        );
-        show_message(ui, &self.message);
         let list = match &self.updates {
             Some(Ok(l)) => l.clone(),
             Some(Err(e)) => {
-                ui.colored_label(ui.visuals().error_fg_color, e);
+                let e = e.clone();
+                frame::central(ui, |ui| {
+                    ui.colored_label(ui.visuals().error_fg_color, e);
+                });
                 return;
             }
             None => {
-                ui.spinner();
+                frame::central(ui, |ui| {
+                    ui.spinner();
+                });
                 return;
             }
         };
+        frame::central_fixed(ui, |ui| {
+            show_message(ui, &self.message);
+            self.updates_table(ui, ctx, &list, removing);
+        });
+    }
+
+    fn updates_table(&mut self, ui: &mut egui::Ui, ctx: &AppCtx<'_>, list: &[Update], removing: bool) {
         let mut remove = None;
         TableBuilder::new(ui)
             .striped(true)
@@ -978,11 +1016,6 @@ impl SmartUninstaller {
                 }
             }
         }
-        ui.label(
-            "Folders in Program Files that no installed program, service, startup entry or App Path refers \
-             to, and whose name matches no installed program. They are often left behind by uninstallers, \
-             but check each one before removing it.",
-        );
         let busy = self.orphans_task.is_some();
         let chosen: Vec<PathBuf> = self
             .orphans
@@ -991,45 +1024,70 @@ impl SmartUninstaller {
             .filter(|o| self.orphans_checked.contains(&o.path))
             .map(|o| o.path.clone())
             .collect();
-        ui.horizontal(|ui| {
-            let label = if self.orphans.is_some() { "Scan again" } else { "Scan" };
-            if ui.add_enabled(!busy, egui::Button::new(label)).clicked() {
+        let recycle_label = format!("Recycle {}", chosen.len());
+        match frame::toolbar(
+            ui,
+            &[
+                Some(ToolButton::new(icons::MAGNIFYING_GLASS, "Scan").enabled(!busy)),
+                Some(
+                    ToolButton::new(icons::RECYCLE, &recycle_label)
+                        .enabled(ctx.elevated && !chosen.is_empty()),
+                ),
+            ],
+            |_| {},
+        ) {
+            Some(0) => {
                 self.orphans_checked.clear();
                 self.orphans_task = Some(BackgroundTask::spawn(ui.ctx(), |_| {
-                    Ok(orphans::find(&orphans::program_files_roots(), &References::collect()))
+                    Ok(orphans::find(
+                        &orphans::program_files_roots(),
+                        &References::collect(),
+                    ))
                 }));
             }
-            if ui
-                .add_enabled(
-                    ctx.elevated && !chosen.is_empty(),
-                    egui::Button::new(format!("Move {} to Recycle Bin…", chosen.len())),
-                )
-                .on_disabled_hover_text(if ctx.elevated {
-                    "Tick the folders to remove"
-                } else {
-                    "Needs administrator rights"
-                })
-                .clicked()
-            {
-                self.confirm.ask(
-                    format!(
-                        "Move {} folders to the Recycle Bin? Programs that still use them would stop working.",
-                        chosen.len()
-                    ),
-                    Ask::RecycleOrphans(chosen.clone()),
-                );
-            }
+            Some(1) => self.confirm.ask(
+                format!(
+                    "Move {} folders to the Recycle Bin? Programs that still use them would stop working.",
+                    chosen.len()
+                ),
+                Ask::RecycleOrphans(chosen.clone()),
+            ),
+            _ => {}
+        }
+        let status = match &self.orphans {
+            _ if busy => "Scanning Program Files…".to_owned(),
+            Some(l) => format!("{} unused folders · {} ticked", l.len(), chosen.len()),
+            None => "Ready".to_owned(),
+        };
+        frame::status(ui, &status, |ui| {
             if busy {
                 ui.spinner();
-                ui.label("Scanning…");
+            }
+            if !ctx.elevated {
+                ui.weak("Removing needs administrator rights");
             }
         });
-        show_message(ui, &self.message);
-        let Some(list) = self.orphans.clone() else { return };
-        if list.is_empty() {
-            ui.label("No unused folders found.");
-            return;
-        }
+        let list = self.orphans.clone();
+        frame::central_fixed(ui, |ui| {
+            show_message(ui, &self.message);
+            match list {
+                None if !busy => empty_state(
+                    ui,
+                    icons::FOLDERS,
+                    "Find folders left behind in Program Files",
+                    "Lists folders that no installed program, service, startup entry or App Path refers to. \
+                     Check each one before removing it.",
+                ),
+                Some(l) if l.is_empty() => {
+                    empty_state(ui, icons::SHIELD_CHECK, "No unused folders found", "");
+                }
+                Some(l) => self.orphans_table(ui, &l),
+                None => {}
+            }
+        });
+    }
+
+    fn orphans_table(&mut self, ui: &mut egui::Ui, list: &[Orphan]) {
         let mut toggles = Vec::new();
         TableBuilder::new(ui)
             .striped(true)
@@ -1102,20 +1160,15 @@ impl Tool for SmartUninstaller {
         Category::Cleaner
     }
 
+    fn layout(&self) -> Layout {
+        Layout::Fill
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, ctx: &mut AppCtx<'_>) {
         self.handle_confirm(ui, ctx);
-        egui::Panel::left("uninst-sections")
-            .resizable(false)
-            .exact_size(170.0)
-            .frame(egui::Frame::NONE.inner_margin(egui::Margin {
-                right: 8,
-                ..Default::default()
-            }))
-            .show(ui, |ui| {
-                if section_nav(ui, &SECTIONS, &mut self.section) {
-                    self.message = None;
-                }
-            });
+        if frame::left(ui, 180.0, |ui| section_nav(ui, &SECTIONS, &mut self.section)) {
+            self.message = None;
+        }
         match self.section {
             0 => self.programs_section(ui, ctx),
             1 => self.updates_section(ui, ctx),

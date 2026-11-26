@@ -23,11 +23,11 @@ use windows::Win32::System::TaskScheduler::{
 use windows::Win32::System::Variant::VARIANT;
 use windows::core::{BSTR, Interface};
 use wm_core::{
-    AppCtx, Category, Tool, egui, icons, paths,
+    AppCtx, Category, Layout, Tool, egui, icons, paths,
     process::{hidden_command, run_checked},
     safety::UndoAction,
     task::BackgroundTask,
-    ui::{Confirm, Message, ToolButton, show_message, toolbar},
+    ui::{Confirm, Message, ToolButton, frame, show_message},
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1171,13 +1171,19 @@ impl Tool for TaskSchedulerManager {
         let tasks = match &self.tasks {
             Some(Ok(t)) => t.clone(),
             Some(Err(e)) => {
-                ui.colored_label(ui.visuals().error_fg_color, e);
+                let e = e.clone();
+                frame::central(ui, |ui| {
+                    ui.colored_label(ui.visuals().error_fg_color, e);
+                });
                 return;
             }
             None => {
-                ui.horizontal(|ui| {
-                    ui.spinner();
-                    ui.label(ctx.i18n.tr("common-loading"));
+                let loading = ctx.i18n.tr("common-loading");
+                frame::central(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.weak(loading);
+                    });
                 });
                 return;
             }
@@ -1208,7 +1214,7 @@ impl Tool for TaskSchedulerManager {
             Some(ToolButton::new(icons::MAGIC_WAND, "Optimize").enabled(idle && ctx.elevated)),
             Some(ToolButton::new(icons::ARROW_SQUARE_OUT, "Task Scheduler")),
         ];
-        match toolbar(ui, &buttons) {
+        match frame::toolbar(ui, &buttons, |_| {}) {
             Some(0) => {
                 self.tasks = None;
                 self.message = None;
@@ -1258,12 +1264,12 @@ impl Tool for TaskSchedulerManager {
             }
             _ => {}
         }
-        show_message(ui, &self.message);
 
-        ui.horizontal(|ui| {
+        let filter_hint = ctx.i18n.tr("common-filter");
+        frame::options(ui, |ui| {
             ui.add(
                 egui::TextEdit::singleline(&mut self.filter)
-                    .hint_text(ctx.i18n.tr("common-filter"))
+                    .hint_text(format!("{}  {filter_hint}", icons::MAGNIFYING_GLASS))
                     .desired_width(220.0),
             );
             if ui
@@ -1272,9 +1278,6 @@ impl Tool for TaskSchedulerManager {
                 && self.hide_microsoft
             {
                 self.folder = None;
-            }
-            if self.load.is_some() || self.action.is_some() {
-                ui.spinner();
             }
         });
 
@@ -1298,24 +1301,17 @@ impl Tool for TaskSchedulerManager {
             .collect();
 
         let total = scoped.len();
-        egui::Panel::left("task_folders")
-            .resizable(true)
-            .default_size(230.0)
-            .show(ui, |ui| {
-                egui::ScrollArea::both().auto_shrink(false).show(ui, |ui| {
-                    self.folder_tree(ui, &counts, total);
-                });
-            });
-
-        ui.weak(format!("{} of {} tasks shown", visible.len(), tasks.len()));
-        if total == 0 && !tasks.is_empty() {
-            ui.horizontal(|ui| {
-                ui.label("No third-party scheduled tasks were found; all tasks belong to Windows.");
-                if ui.button("Show Windows tasks").clicked() {
-                    self.hide_microsoft = false;
+        let busy = self.load.is_some() || self.action.is_some();
+        frame::status(
+            ui,
+            &format!("{} of {} tasks shown", visible.len(), tasks.len()),
+            |ui| {
+                if busy {
+                    ui.spinner();
                 }
-            });
-        }
+            },
+        );
+        frame::left(ui, 230.0, |ui| self.folder_tree(ui, &counts, total));
 
         let mut detail_open = selected.is_some();
         egui::Panel::bottom("task_detail")
@@ -1345,6 +1341,27 @@ impl Tool for TaskSchedulerManager {
                     });
             });
 
+        frame::central_fixed(ui, |ui| {
+            show_message(ui, &self.message);
+            if total == 0 && !tasks.is_empty() {
+                ui.horizontal(|ui| {
+                    ui.label("No third-party scheduled tasks were found; all tasks belong to Windows.");
+                    if ui.button("Show Windows tasks").clicked() {
+                        self.hide_microsoft = false;
+                    }
+                });
+            }
+            self.table(ui, &visible);
+        });
+    }
+
+    fn layout(&self) -> Layout {
+        Layout::Fill
+    }
+}
+
+impl TaskSchedulerManager {
+    fn table(&mut self, ui: &mut egui::Ui, visible: &[&TaskRow]) {
         let mut clicked = None;
         let weak = ui.visuals().weak_text_color();
         TableBuilder::new(ui)

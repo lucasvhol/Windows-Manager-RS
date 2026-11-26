@@ -4,10 +4,10 @@
 use std::collections::HashSet;
 
 use wm_core::{
-    AppCtx, Category, Tool, egui, icons, registry,
+    AppCtx, Category, Layout, Tool, egui, icons, registry,
     safety::restore_point,
     task::BackgroundTask,
-    ui::{Confirm, Message, ToolButton, show_message, status_bar, toolbar},
+    ui::{Confirm, Message, ToolButton, frame, show_message},
 };
 
 use super::{Backup, Issue, Kind, Options, export_backup, fix, import_reg, scan_with};
@@ -62,7 +62,9 @@ impl RegistryCleaner {
     }
 
     fn options_panel(&mut self, ui: &mut egui::Ui, ctx: &AppCtx<'_>) {
-        egui::Frame::group(ui.style()).show(ui, |ui| {
+        ui.strong("Options");
+        ui.add_space(4.0);
+        ui.scope(|ui| {
             ui.strong("Backup before fixing");
             ui.radio_value(
                 &mut self.opts.backup,
@@ -158,6 +160,10 @@ impl RegistryCleaner {
 }
 
 impl Tool for RegistryCleaner {
+    fn layout(&self) -> Layout {
+        Layout::Fill
+    }
+
     fn id(&self) -> &'static str {
         "regclean"
     }
@@ -201,7 +207,7 @@ impl Tool for RegistryCleaner {
         let busy = self.task.is_some();
         let fix_label = format!("Fix {}", chosen.len());
         let focused = self.focused.and_then(|i| issues.get(i)).cloned();
-        match toolbar(
+        let clicked = frame::toolbar(
             ui,
             &[
                 Some(ToolButton::new(icons::MAGNIFYING_GLASS, "Scan").enabled(!busy)),
@@ -213,7 +219,9 @@ impl Tool for RegistryCleaner {
                 Some(ToolButton::new(icons::DOWNLOAD, "Import .reg")),
                 Some(ToolButton::new(icons::SLIDERS, "Options")),
             ],
-        ) {
+            |_| {},
+        );
+        match clicked {
             Some(0) => {
                 self.message = None;
                 self.rescan(ui.ctx());
@@ -267,30 +275,28 @@ impl Tool for RegistryCleaner {
             Some(7) => self.show_options = !self.show_options,
             _ => {}
         }
-        if self.show_options {
-            self.options_panel(ui, ctx);
-        }
-        if let Some(t) = &self.task {
-            ui.horizontal(|ui| {
+        let status = match &self.task {
+            Some(t) if !t.status.is_empty() => t.status.clone(),
+            Some(_) => "Scanning…".into(),
+            None => format!(
+                "{} issues found, {} selected{}",
+                issues.len(),
+                chosen.len(),
+                if ctx.elevated {
+                    String::new()
+                } else {
+                    " · machine-wide entries need administrator rights to fix".into()
+                }
+            ),
+        };
+        frame::status(ui, &status, |ui| {
+            if busy {
                 ui.spinner();
-                ui.weak(&t.status);
-            });
-        }
-        show_message(ui, &self.message);
-
-        let status = format!(
-            "{} issues found, {} selected{}",
-            issues.len(),
-            chosen.len(),
-            if ctx.elevated {
-                String::new()
-            } else {
-                "; machine-wide entries need administrator rights to fix".into()
             }
-        );
-        egui::Panel::bottom("regclean-status")
-            .frame(egui::Frame::NONE)
-            .show(ui, |ui| status_bar(ui, &status, |_| {}));
+        });
+        if self.show_options {
+            frame::left(ui, 320.0, |ui| self.options_panel(ui, ctx));
+        }
 
         let mut kinds_changed = false;
         let mut groups: Vec<&str> = Vec::new();
@@ -300,7 +306,8 @@ impl Tool for RegistryCleaner {
             }
         }
         let mut active = self.opts.kinds();
-        egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
+        frame::central(ui, |ui| {
+            show_message(ui, &self.message);
             ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
             for group in groups {
                 ui.strong(group);

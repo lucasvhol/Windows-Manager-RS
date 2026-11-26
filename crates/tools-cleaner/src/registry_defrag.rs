@@ -22,12 +22,12 @@ use windows::Win32::System::Registry::{
 use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 use windows::core::{HSTRING, w};
 use wm_core::{
-    AppCtx, Category, Tool, egui,
+    AppCtx, Category, Layout, Tool, egui, icons,
     process::{hidden_command, run_checked},
     registry,
     safety::UndoAction,
     task::BackgroundTask,
-    ui::{Confirm, Message, show_message},
+    ui::{Confirm, Message, ToolButton, frame, show_message},
 };
 
 const TOOL: &str = "regdefrag";
@@ -520,35 +520,30 @@ impl Tool for RegistryDefrag {
         }
         let backups = *self.backups.get_or_insert_with(backups_size);
 
-        ui.weak("Rebuilds the registry files without the empty space left behind by deleted keys. Windows also tidies the registry by itself about once a week at startup, so the saving is often small.");
-        ui.add_space(4.0);
         let busy = self.job.is_some();
-        ui.horizontal(|ui| {
-            let can = ctx.elevated && !busy && !self.scheduled;
-            if ui
-                .add_enabled(can, egui::Button::new("Analyze"))
-                .on_disabled_hover_text(if ctx.elevated { "" } else { "Needs the app to run as administrator." })
-                .clicked()
-            {
+        let can = ctx.elevated && !busy && !self.scheduled;
+        let chosen = self.chosen().len();
+        let compact_label = format!("Compact ({chosen})");
+        let backups_label = format!("Delete backups ({})", mb(backups));
+        match frame::toolbar(
+            ui,
+            &[
+                Some(ToolButton::new(icons::MAGNIFYING_GLASS, "Analyze").enabled(can)),
+                Some(ToolButton::new(icons::STACK, &compact_label).enabled(can && chosen > 0)),
+                None,
+                Some(ToolButton::new(icons::TRASH, &backups_label).enabled(backups > 0 && !busy && !self.scheduled)),
+            ],
+            |_| {},
+        ) {
+            Some(0) => {
                 self.message = None;
                 self.job = Some(Job::Analyze(BackgroundTask::spawn(ui.ctx(), analyze)));
             }
-            let chosen = self.chosen().len();
-            if ui
-                .add_enabled(can && chosen > 0, egui::Button::new(format!("Compact and restart ({chosen})")))
-                .clicked()
-            {
-                self.confirm.ask(
-                    "Windows will restart 15 seconds after the registry copies are made. Save your work and close other programs first. Continue?",
-                    (),
-                );
-            }
-            if backups > 0
-                && ui
-                    .add_enabled(!busy && !self.scheduled, egui::Button::new(format!("Delete old backups ({})", mb(backups))))
-                    .on_hover_text("The original registry files kept from the last compaction.")
-                    .clicked()
-            {
+            Some(1) => self.confirm.ask(
+                "Windows will restart 15 seconds after the registry copies are made. Save your work and close other programs first. Continue?",
+                (),
+            ),
+            Some(3) => {
                 self.message = Some(
                     std::fs::remove_dir_all(work_root())
                         .map(|()| "Deleted the old registry backups.".into())
@@ -556,21 +551,33 @@ impl Tool for RegistryDefrag {
                 );
                 self.backups = None;
             }
-            match &self.job {
-                Some(Job::Analyze(t)) => {
-                    ui.spinner();
-                    ui.weak(t.status.as_str());
-                }
-                Some(Job::Compact(_)) => {
-                    ui.spinner();
-                    ui.weak("Saving compact copies…");
-                }
-                None => {}
+            _ => {}
+        }
+        let status = match &self.job {
+            Some(Job::Analyze(t)) => t.status.clone(),
+            Some(Job::Compact(_)) => "Saving compact copies…".into(),
+            None if !ctx.elevated => ctx.i18n.tr("shell-needs-admin"),
+            None => "Rebuilds the registry files without the gaps left by deleted keys".into(),
+        };
+        frame::status(ui, &status, |ui| {
+            if busy {
+                ui.spinner();
             }
+            ui.weak(format!("{} ", icons::INFO)).on_hover_text(
+                "Windows also tidies the registry by itself about once a week at startup, so the saving is often small.",
+            );
         });
-        show_message(ui, &self.message);
-        ui.add_space(6.0);
+        frame::central_fixed(ui, |ui| self.table(ui));
+    }
 
+    fn layout(&self) -> Layout {
+        Layout::Fill
+    }
+}
+
+impl RegistryDefrag {
+    fn table(&mut self, ui: &mut egui::Ui) {
+        show_message(ui, &self.message);
         if self.rows.is_empty() {
             return;
         }
