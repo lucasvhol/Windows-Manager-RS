@@ -25,8 +25,9 @@ pub fn rail_item(
     label: &str,
     selected: bool,
     content_fill: Color32,
+    height: f32,
 ) -> Response {
-    let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 54.0), Sense::click());
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), height), Sense::click());
     let p = ui.painter();
     let text_color = if selected {
         Color32::WHITE

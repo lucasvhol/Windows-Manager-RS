@@ -166,6 +166,11 @@ impl Shell {
             .show(root, |ui| {
                 ui.spacing_mut().item_spacing.y = 0.0;
                 ui.add_space(4.0);
+                // The categories share the height left above the Menu entry and the
+                // Windows version, like the original's rail.
+                let bottom = if self.elevated { 100.0 } else { 128.0 };
+                let count = rail_categories().count() as f32;
+                let row_h = ((ui.available_height() - bottom - 8.0) / count).clamp(44.0, 76.0);
                 for cat in rail_categories() {
                     let selected = self.category == cat && self.search.is_empty();
                     if widgets::rail_item(
@@ -175,6 +180,7 @@ impl Shell {
                         &self.i18n.tr(cat.i18n_key()),
                         selected,
                         content_fill,
+                        row_h,
                     )
                     .clicked()
                     {
