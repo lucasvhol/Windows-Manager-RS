@@ -12,7 +12,7 @@ use wm_core::{
     shell::shell_open,
     task::BackgroundTask,
     tweaks::{State, Tweak, parse},
-    ui::{Message, frame, request_open_tool, section_nav, show_message},
+    ui::{Message, frame, request_open_tool, show_message},
 };
 
 use crate::my_task::{self, Schedule};
@@ -147,7 +147,7 @@ const STEPS: [Step; 14] = [
     Step {
         title: "Before you start",
         page: Page::Start,
-        why: "The wizard opens each tool in turn and explains what to look for. Every step can be skipped, and you can jump between steps on the left.",
+        why: "The wizard opens each tool in turn and explains what to look for. Every step can be skipped, and Back returns to the one before.",
         tips: &[],
     },
     Step {
@@ -353,27 +353,6 @@ impl Wizard {
                     self.apply_all(ctx);
                 }
             }
-        }
-    }
-
-    fn nav(&mut self, ui: &mut egui::Ui) {
-        let numbers: Vec<String> = (1..=STEPS.len()).map(|n| n.to_string()).collect();
-        let items: Vec<(&str, &str)> = STEPS
-            .iter()
-            .zip(&self.progress)
-            .zip(&numbers)
-            .map(|((s, p), n)| {
-                let icon = match p {
-                    Progress::Done => icons::CHECK,
-                    Progress::Skipped => icons::MINUS,
-                    Progress::Opened => icons::ARROW_SQUARE_OUT,
-                    Progress::Todo => n.as_str(),
-                };
-                (icon, s.title)
-            })
-            .collect();
-        if section_nav(ui, &items, &mut self.step) {
-            self.message = None;
         }
     }
 
@@ -641,30 +620,80 @@ impl Tool for Wizard {
         }
         self.poll(ctx);
 
-        frame::left(ui, 200.0, |ui| self.nav(ui));
+        // The original's step band: "Step (n/N): name", with the step's icon.
+        let step_no = self.step;
+        let name = self.step_name(step_no, ctx);
+        let band = ui.visuals().faint_bg_color;
+        egui::Panel::top("wizard-step")
+            .resizable(false)
+            .frame(
+                egui::Frame::new()
+                    .fill(band)
+                    .inner_margin(egui::Margin::symmetric(16, 10)),
+            )
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new(format!("Step ({}/{}): {name}", step_no + 1, STEPS.len()))
+                            .size(18.0)
+                            .strong(),
+                    );
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.label(
+                            egui::RichText::new(icons::MAGIC_WAND)
+                                .size(26.0)
+                                .color(ui.visuals().selection.bg_fill),
+                        );
+                    });
+                });
+            });
 
-        // Back / Next / Skip pinned to the bottom, like the original's wizard.
+        // Create Task … Next > / Cancel / Skip along the bottom, like the original.
         let last = STEPS.len() - 1;
         let (mut back, mut next, mut skip) = (false, false, false);
-        let step_no = self.step;
-        frame::status(ui, &format!("Step {} of {}", step_no + 1, STEPS.len()), |ui| {
-            if step_no < last {
-                if step_no > 0 {
-                    skip = ui.button("Skip").clicked();
+        frame::footer(
+            ui,
+            |ui| {
+                if ui
+                    .button("Create Task")
+                    .on_hover_text("Schedule maintenance with My Task.")
+                    .clicked()
+                {
+                    request_open_tool(ui.ctx(), "mytask");
                 }
-                next = ui.button("Next ›").clicked();
-            }
-            back = ui.add_enabled(step_no > 0, egui::Button::new("‹ Back")).clicked();
-        });
+            },
+            |ui| {
+                if step_no < last {
+                    skip = ui.add_enabled(step_no > 0, egui::Button::new("Skip")).clicked();
+                }
+                if ui.button("Cancel").clicked() {
+                    ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+                if step_no < last {
+                    next = ui.button("Next >").clicked();
+                }
+                back = ui.add_enabled(step_no > 0, egui::Button::new("< Back")).clicked();
+            },
+        );
         if back {
             self.step -= 1;
             self.message = None;
         } else if next {
+            // Like the original, Next opens the step's tool (or Settings page) and moves on.
+            match STEPS[self.step].page {
+                Page::Tool(id) => request_open_tool(ui.ctx(), id),
+                Page::Settings(uri) => {
+                    self.message = shell_open(uri, "").err().map(|e| Err(format!("{e:#}")));
+                }
+                _ => {}
+            }
             if self.progress[self.step] != Progress::Skipped {
                 self.progress[self.step] = Progress::Done;
             }
             self.step += 1;
-            self.message = None;
+            if self.message.as_ref().is_none_or(|m| m.is_ok()) {
+                self.message = None;
+            }
         } else if skip {
             self.progress[self.step] = Progress::Skipped;
             self.step += 1;
@@ -679,35 +708,56 @@ impl Tool for Wizard {
 }
 
 impl Wizard {
+    /// The step's name in the band: the tool's own name for tool steps, as the original.
+    fn step_name(&self, step: usize, ctx: &AppCtx<'_>) -> String {
+        match STEPS[step].page {
+            Page::Tool(id) => ctx.i18n.tr(&format!("{id}-title")),
+            _ => STEPS[step].title.to_owned(),
+        }
+    }
+
     fn step_body(&mut self, ui: &mut egui::Ui, ctx: &mut AppCtx<'_>) {
         let step = &STEPS[self.step];
-        ui.heading(step.title);
-        ui.label(step.why);
-        for tip in step.tips {
-            ui.weak(format!("• {tip}"));
-        }
-        ui.add_space(6.0);
+        let icon = match step.page {
+            Page::Start => icons::INFO,
+            Page::Tool(_) => icons::ARROW_SQUARE_OUT,
+            Page::Settings(_) => icons::ARROWS_CLOCKWISE,
+            Page::Tweaks => icons::SLIDERS,
+            Page::Drives => icons::HARD_DRIVES,
+            Page::Finish => icons::CHECK,
+        };
+        ui.horizontal_top(|ui| {
+            ui.label(
+                egui::RichText::new(icon)
+                    .size(44.0)
+                    .color(ui.visuals().selection.bg_fill),
+            );
+            ui.add_space(10.0);
+            ui.vertical(|ui| {
+                ui.label(step.why);
+                for tip in step.tips {
+                    ui.weak(format!("• {tip}"));
+                }
+                match step.page {
+                    Page::Tool(_) => {
+                        ui.add_space(6.0);
+                        ui.weak(format!(
+                            "Clicking Next opens {} in its own window; come back here when you are done. Skip moves on without opening it.",
+                            self.step_name(self.step, ctx)
+                        ));
+                    }
+                    Page::Settings(_) => {
+                        ui.add_space(6.0);
+                        ui.weak("Clicking Next opens this page of Windows Settings.");
+                    }
+                    _ => {}
+                }
+            });
+        });
+        ui.add_space(10.0);
         match step.page {
             Page::Start => self.start_page(ui, ctx),
-            Page::Tool(id) => {
-                if ui
-                    .button(format!("{} Open the tool", icons::ARROW_SQUARE_OUT))
-                    .clicked()
-                {
-                    self.progress[self.step] = Progress::Opened;
-                    request_open_tool(ui.ctx(), id);
-                }
-                ui.weak("It opens in its own window. Come back here when you are done.");
-            }
-            Page::Settings(uri) => {
-                if ui
-                    .button(format!("{} Open Settings", icons::ARROW_SQUARE_OUT))
-                    .clicked()
-                {
-                    self.progress[self.step] = Progress::Opened;
-                    self.message = shell_open(uri, "").err().map(|e| Err(format!("{e:#}")));
-                }
-            }
+            Page::Tool(_) | Page::Settings(_) => {}
             Page::Tweaks => self.tweaks_page(ui, ctx),
             Page::Drives => self.drives_page(ui),
             Page::Finish => self.finish_page(ui, ctx),
