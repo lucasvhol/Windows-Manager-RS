@@ -6,6 +6,25 @@ optimisation, cleaning, customisation, security and networking in one native exe
 
 It is a clean-room implementation. No code, data, or assets from any other product are used.
 
+## Install
+
+Download `WinManagerRS-<version>-setup.exe` from the Releases page and run it. It installs to
+Program Files, adds a Start menu entry and an uninstaller (Settings > Apps). The
+**Update** button in the app checks the same Releases page, verifies the download against
+`SHA256SUMS.txt` and installs the new version. Uninstalling removes what the app registered
+with Windows (rule monitor at sign-in, My Task schedules, Explorer right-click entries) and
+asks whether to keep your settings and Change Journal.
+
+## Release
+
+1. Bump `version` in the root `Cargo.toml` and commit.
+2. Tag and push: `git tag v0.2.0 && git push origin v0.2.0`.
+3. The Release workflow tests, builds, packages the installer with Inno Setup and
+   publishes it with its checksum.
+
+To build the installer locally: `cargo build --release -p win-manager`, then
+`ISCC.exe /DAppVersion=0.1.0 installerwin-manager-rs.iss` (output in `dist`).
+
 ## Build & run
 
 Requires the Rust toolchain (MSVC target) and the Visual Studio C++ Build Tools.

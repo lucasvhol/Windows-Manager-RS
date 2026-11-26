@@ -29,6 +29,7 @@ pub struct Shell {
     error: Option<String>,
     summary: Summary,
     about_open: bool,
+    updater: crate::updater::Updater,
     locked: bool,
     password_input: String,
     password_wrong: bool,
@@ -87,6 +88,7 @@ impl Shell {
             error,
             summary: Summary::collect(),
             about_open: false,
+            updater: Default::default(),
             locked: config_locked,
             password_input: String::new(),
             password_wrong: false,
@@ -157,6 +159,7 @@ impl Shell {
                         {
                             self.about_open = true;
                         }
+                        self.updater.button(ui);
                         if ui
                             .button(format!("{} {}", icons::GEAR, self.title_of("settings")))
                             .clicked()
@@ -564,6 +567,10 @@ impl eframe::App for Shell {
         self.central(ui);
         self.tool_windows(&ctx);
         self.about(&ctx);
+        if self.updater.show(&ctx) {
+            self.save_config();
+            ctx.send_viewport_cmd_to(ViewportId::ROOT, egui::ViewportCommand::Close);
+        }
         self.sync_config(&ctx);
         self.hide_to_tray(_frame);
     }

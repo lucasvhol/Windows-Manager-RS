@@ -28,6 +28,7 @@ pub mod tool;
 pub mod tool_settings;
 pub mod tweaks;
 pub mod ui;
+pub mod update;
 pub mod user_assist;
 
 pub use eframe::egui;

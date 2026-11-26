@@ -14,7 +14,7 @@ This file tracks parity between **Win Manager RS** and the features of a commerc
 
 | Feature | Status | Wave |
 |---|---|---|
-| Header band with app name, version, Update and About | ✅ (Update button arrives with the update checker, E) | B |
+| Header band with app name, version, Update and About | ✅ | B |
 | Left category column with large icons; selected item highlighted with a notch | ✅ | B |
 | Two-column grid of tool tiles (icon, title, one-line description); split tiles with a dropdown | ✅ | B |
 | Each tool opens in its own window; several can be open at once | ✅ | B |
@@ -25,7 +25,7 @@ This file tracks parity between **Win Manager RS** and the features of a commerc
 | Settings: save all applied tweaks to a file and restore them later (e.g. after a reinstall) | ✅ | B |
 | Settings: reset a tool's saved settings; back up and restore program settings | ✅ (back up / restore; list of tools with remembered options, each with Reset) | B→D |
 | Frequently used tools list | ✅ | B |
-| Update check (own releases) | ❌ | E |
+| Update check (own releases) | ✅ (Update button: latest GitHub release, checksum-verified installer download; repository set at build time by the release workflow) | E |
 | Licensing, registration, trial countdown | ⛔ the original's business model, not a feature | — |
 
 ## Automation
@@ -110,7 +110,7 @@ This file tracks parity between **Win Manager RS** and the features of a commerc
 | System Network | ✅ | Remote Desktop (allow, firewall, port, NLA, idle and disconnected limits), Remote Assistance, network discovery and file sharing, admin shares, anonymous enumeration, LLMNR, time server, interval and sync, Winsock / TCP/IP / network reset, Shared Folders console; list of shared folders (with paths, hidden admin shares on request; open; share a folder read-only or read-write and stop sharing, both needing admin and undoable). The browse list (Computer Browser) no longer exists on Windows 10/11 | C→D |
 | URL Manager | ✅ | Hosts editor; favorites checker (Edge, Chrome, Brave bookmarks in every profile and the Favorites folder; works, moved, broken, unreachable; problems-only view; CSV report; broken .url favorites to the Recycle Bin); browser lists for Edge, Chrome and Brave (blocked sites, sites that may not keep cookies, sites whose cookies are always allowed) through their machine policies (administrator), journaled. Enforcement inside the browsers was not watched live (headless Edge gives no output in an elevated session); the format is the browsers' documented one | D |
 | IP Switcher | ✅ | Adapter picker and status panel (connected and link speed, MAC, DHCP or manual, IPv4, gateway, DNS); profiles with New, Edit, Save, Delete and Apply (applying needs admin; undo restores the previous configuration); DNS presets (automatic, Cloudflare, Google, Quad9); fill from current; open at sign-in (per-user Run entry, undoable) | D |
-| Wi-Fi Manager | 🟡 | Priority up and down; connect; details; block or allow lists; backup and restore; last-connected column | D |
+| Wi-Fi Manager | 🟡 (deferred to a later release: no Wi-Fi adapter to test on) | Priority up and down; connect; details; block or allow lists; backup and restore; last-connected column | later |
 | Network Tools | ✅ | Ping; trace route with three round trips, host names and optional hop locations; DNS lookup; port check with common-port preset; IP scanner (ping + ARP, MAC and host name; local subnet by default); geolocation (ipinfo.io, on request only; private addresses never sent); whois; router page (default gateway); Windows Wi-Fi report (creating it needs admin, an existing one opens without) | D |
 | Network Monitor | ✅ | 60-second chart of received and sent (one sample a second); adapter combo (all adapters or one); link speed and current use; table of current, maximum, average and total since opening or reset; Reset; Resource Monitor link; live connections with process, filter and Connected / Listening / All views | D |
 

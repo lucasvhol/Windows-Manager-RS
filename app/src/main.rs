@@ -4,6 +4,7 @@
 mod hub;
 mod shell;
 mod tools;
+mod updater;
 
 use wm_core::{APP_NAME, egui, paths};
 
@@ -70,6 +71,14 @@ fn main() -> eframe::Result {
         drop(_guard);
         std::process::exit(code);
     }
+    // Called by the uninstaller: remove what this app registered with Windows.
+    if args.iter().any(|a| a == "--uninstall-cleanup") {
+        for line in wm_tools_oneclick::monitor::uninstall_cleanup() {
+            tracing::info!("uninstall cleanup: {line}");
+        }
+        drop(_guard);
+        std::process::exit(0);
+    }
     // Desktop shortcuts made by Registry Tools: open Registry Editor at a key and exit.
     if let Some(i) = args.iter().position(|a| a == "--regjump") {
         let key = args.get(i + 1).map(String::as_str).unwrap_or_default();
@@ -95,7 +104,10 @@ fn main() -> eframe::Result {
         viewport: egui::ViewportBuilder::default()
             .with_title(APP_NAME)
             .with_inner_size([1100.0, 720.0])
-            .with_min_inner_size([760.0, 480.0]),
+            .with_min_inner_size([760.0, 480.0])
+            .with_icon(
+                eframe::icon_data::from_png_bytes(include_bytes!("../assets/app.png")).unwrap_or_default(),
+            ),
         ..Default::default()
     };
     eframe::run_native(

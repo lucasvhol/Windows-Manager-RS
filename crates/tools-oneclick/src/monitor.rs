@@ -745,6 +745,71 @@ pub fn trigger_kind(t: &Trigger) -> usize {
     }
 }
 
+/// Used by the uninstaller (`--uninstall-cleanup`): stops the rule monitor and removes
+/// everything this app registered with Windows for the current account (sign-in entry,
+/// scheduled tasks, Explorer right-click entries). Settings and the Change Journal stay.
+/// Returns a line per step.
+pub fn uninstall_cleanup() -> Vec<String> {
+    use wm_core::process::{hidden_command, run_checked};
+    let mut log = Vec::new();
+    if is_running() {
+        log.push(format!(
+            "stop the rule monitor: {}",
+            stop().map_or_else(|e| format!("{e:#}"), |()| "ok".into())
+        ));
+    }
+    if starts_at_sign_in() {
+        let r = wm_core::registry::delete_value(RUN_KEY, RUN_VALUE);
+        log.push(format!(
+            "remove the sign-in entry: {}",
+            r.map_or_else(|e| format!("{e:#}"), |()| "ok".into())
+        ));
+    }
+    // Scheduled tasks live in their own folder; delete each, then the folder.
+    let folder = wm_core::scheduler::FOLDER;
+    if let Ok(out) = hidden_command("schtasks")
+        .args(["/query", "/fo", "csv", "/nh"])
+        .output()
+    {
+        let text = String::from_utf8_lossy(&out.stdout);
+        let prefix = format!(r"{folder}\");
+        let tasks: Vec<String> = text
+            .lines()
+            .filter_map(|l| l.split(',').next())
+            .map(|n| n.trim_matches('"').to_owned())
+            .filter(|n| n.starts_with(&prefix))
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        for t in tasks {
+            let r = run_checked(hidden_command("schtasks").args(["/delete", "/tn", &t, "/f"]));
+            log.push(format!(
+                "delete task {t}: {}",
+                r.map_or_else(|e| format!("{e:#}"), |_| "ok".into())
+            ));
+        }
+    }
+    for class in ["Directory", "Drive", r"Directory\Background", "*"] {
+        for id in [
+            "WinManager.DiskAnalyzer",
+            "WinManager.FileSplitter",
+            "WinManager.FilesAndFolders",
+        ] {
+            let key = format!(r"HKCU\Software\Classes\{class}\shell\{id}");
+            if wm_core::registry::open_read(&key).is_ok()
+                && let Ok((root, sub)) = wm_core::registry::split_path(&key)
+            {
+                let r = root.delete_subkey_all(sub);
+                log.push(format!(
+                    "remove {key}: {}",
+                    r.map_or_else(|e| e.to_string(), |()| "ok".into())
+                ));
+            }
+        }
+    }
+    log
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
