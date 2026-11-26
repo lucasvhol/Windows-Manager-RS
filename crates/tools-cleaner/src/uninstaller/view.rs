@@ -1,5 +1,6 @@
-//! Smart Uninstaller window: sections for programs, updates, Windows apps and
-//! leftover Program Files folders.
+//! Smart Uninstaller window, laid out like the original: the installed programs as
+//! a grouped icon grid (or a list), with Hotfix, Windows Apps and "Find unavailable
+//! program folders" opening their own pages from the toolbar.
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -16,7 +17,7 @@ use wm_core::{
     safety::UndoAction,
     shell::reveal_in_explorer,
     task::BackgroundTask,
-    ui::{Confirm, Message, ToolButton, empty_state, format_bytes, frame, section_nav, show_message},
+    ui::{Confirm, Message, ToolButton, empty_state, format_bytes, frame, show_message},
 };
 
 use super::orphans::{self, Orphan, References};
@@ -26,12 +27,17 @@ use super::{
     run_command, uninstall_command, uninstall_onedrive,
 };
 
-const SECTIONS: [(&str, &str); 4] = [
-    (icons::APP_WINDOW, "Programs"),
-    (icons::DOWNLOAD, "Updates"),
-    (icons::GRID_FOUR, "Windows apps"),
-    (icons::FOLDERS, "Leftover folders"),
-];
+/// Pages other than the program list, with their title in the back strip.
+const PAGES: [&str; 4] = ["", "Hotfix", "Windows Apps", "Unavailable program folders"];
+
+/// Programs installed this many days ago or less are in the "Recently Installed" group.
+const RECENT_DAYS: i64 = 30;
+
+/// True when an install date ("YYYY-MM-DD") is within [`RECENT_DAYS`] of `today`.
+fn is_recent(installed: &str, today: chrono::NaiveDate) -> bool {
+    chrono::NaiveDate::parse_from_str(installed, "%Y-%m-%d")
+        .is_ok_and(|d| (today - d).num_days() <= RECENT_DAYS && d <= today)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SortKey {
@@ -69,6 +75,8 @@ pub struct SmartUninstaller {
     filter: String,
     sort: (SortKey, bool),
     mode: ViewMode,
+    /// Batch Uninstall is on: programs get tick boxes and Uninstall takes the ticked ones.
+    batch_mode: bool,
     quiet: bool,
     selected: Option<String>,
     checked: HashSet<String>,
@@ -99,7 +107,8 @@ impl Default for SmartUninstaller {
             programs: None,
             filter: String::new(),
             sort: (SortKey::Name, true),
-            mode: ViewMode::List,
+            mode: ViewMode::Icons,
+            batch_mode: false,
             quiet: false,
             selected: None,
             checked: HashSet::new(),
@@ -157,6 +166,31 @@ fn sorted<'a>(programs: &'a [Program], filter: &str, sort: (SortKey, bool)) -> V
     v
 }
 
+const SORT_KEYS: [SortKey; 6] = [
+    SortKey::Name,
+    SortKey::Publisher,
+    SortKey::Version,
+    SortKey::Size,
+    SortKey::Installed,
+    SortKey::Scope,
+];
+
+fn sort_label(key: SortKey) -> &'static str {
+    match key {
+        SortKey::Name => "Name",
+        SortKey::Publisher => "Publisher",
+        SortKey::Version => "Version",
+        SortKey::Size => "Size",
+        SortKey::Installed => "Install date",
+        SortKey::Scope => "Installed for",
+    }
+}
+
+/// Sizes and dates read best largest / newest first.
+fn default_ascending(key: SortKey) -> bool {
+    !matches!(key, SortKey::Size | SortKey::Installed)
+}
+
 /// A clickable column title; clicking again reverses the order.
 fn sort_header(ui: &mut egui::Ui, label: &str, key: SortKey, sort: &mut (SortKey, bool)) {
     let arrow = match *sort {
@@ -174,13 +208,17 @@ fn sort_header(ui: &mut egui::Ui, label: &str, key: SortKey, sort: &mut (SortKey
         *sort = if sort.0 == key {
             (key, !sort.1)
         } else {
-            // Sizes and dates read best largest / newest first.
-            (key, !matches!(key, SortKey::Size | SortKey::Installed))
+            (key, default_ascending(key))
         };
     }
 }
 
 impl SmartUninstaller {
+    fn open_page(&mut self, page: usize) {
+        self.section = page;
+        self.message = None;
+    }
+
     fn reload(&mut self) {
         self.programs = None;
         self.details = None;
@@ -479,39 +517,61 @@ impl SmartUninstaller {
         let busy = self.batch.is_some() || self.onedrive.is_some();
         let writable = |p: &Program| ctx.elevated || !registry::needs_admin(&p.key);
         let sel_writable = selected.as_ref().is_some_and(writable);
-        let uninstall_label = if marked.len() > 1 {
+        let uninstall_label = if self.batch_mode && marked.len() > 1 {
             format!("Uninstall {}", marked.len())
         } else {
             "Uninstall".to_owned()
         };
+        let batch_label = if self.batch_mode {
+            "Batch Uninstall ✓"
+        } else {
+            "Batch Uninstall"
+        };
 
+        // The original's toolbar. Its View, Sort and Options drop-downs are in the strip
+        // below, next to the original's second row (unavailable folders, Features,
+        // Uninstall OneDrive, Export and the search box).
         let clicked_tool = frame::toolbar(
             ui,
             &[
+                Some(ToolButton::new(icons::ARROWS_CLOCKWISE, "Refresh").enabled(!busy)),
+                Some(ToolButton::new(icons::LIST_CHECKS, batch_label).enabled(!busy)),
+                None,
                 Some(ToolButton::new(icons::TRASH, &uninstall_label).enabled(!busy && !targets.is_empty())),
-                Some(ToolButton::new(icons::BROOM, "Leftovers").enabled(!busy && selected.is_some())),
-                None,
-                Some(ToolButton::new(icons::FILE_X, "Remove entry").enabled(!busy && sel_writable)),
+                Some(ToolButton::new(icons::FILE_X, "Remove Entry").enabled(!busy && sel_writable)),
                 Some(ToolButton::new(icons::PENCIL_SIMPLE, "Rename").enabled(!busy && sel_writable)),
-                Some(ToolButton::new(icons::INFO, "Details").enabled(selected.is_some())),
+                Some(ToolButton::new(icons::CLIPBOARD_TEXT, "Details").enabled(selected.is_some())),
                 None,
-                Some(ToolButton::new(icons::GLOBE, "Look up").enabled(selected.is_some())),
+                Some(ToolButton::new(icons::GLOBE, "Query").enabled(selected.is_some())),
                 Some(
-                    ToolButton::new(icons::FOLDER_OPEN, "Open folder").enabled(
+                    ToolButton::new(icons::FOLDER_OPEN, "Open Folder").enabled(
                         selected
                             .as_ref()
                             .is_some_and(|p| p.install_location.as_ref().is_some_and(|l| l.exists())),
                     ),
                 ),
+                Some(ToolButton::new(icons::BROOM, "Leftovers").enabled(!busy && selected.is_some())),
                 None,
-                Some(ToolButton::new(icons::UPLOAD, "Export")),
-                Some(ToolButton::new(icons::CLOUD_SLASH, "OneDrive").enabled(!busy)),
-                Some(ToolButton::new(icons::ARROWS_CLOCKWISE, "Refresh").enabled(!busy)),
+                Some(ToolButton::new(icons::WRENCH, "Hotfix")),
+                Some(ToolButton::new(icons::GRID_FOUR, "Windows Apps")),
+                None,
+                Some(ToolButton::new(icons::SIGN_OUT, "Exit")),
             ],
             |_| {},
         );
         match clicked_tool {
             Some(0) => {
+                self.reload();
+                self.icons.clear();
+                self.icon_tried.clear();
+            }
+            Some(1) => {
+                self.batch_mode = !self.batch_mode;
+                if !self.batch_mode {
+                    self.checked.clear();
+                }
+            }
+            Some(3) => {
                 let missing: Vec<&str> = targets
                     .iter()
                     .filter(|p| p.uninstall.is_none())
@@ -519,7 +579,7 @@ impl SmartUninstaller {
                     .collect();
                 if !missing.is_empty() {
                     self.message = Some(Err(format!(
-                        "No uninstaller registered for: {}. Use Remove entry if the program is already gone.",
+                        "No uninstaller registered for: {}. Use Remove Entry if the program is already gone.",
                         missing.join(", ")
                     )));
                 } else {
@@ -538,7 +598,44 @@ impl SmartUninstaller {
                     );
                 }
             }
-            Some(1) => {
+            Some(4) => {
+                if let Some(p) = &selected {
+                    self.confirm.ask(
+                        format!(
+                            "Remove {} from the list without uninstalling it? Use this only when the program is \
+                             already gone. The entry is backed up first.",
+                            p.name
+                        ),
+                        Ask::RemoveEntry(Box::new(p.clone())),
+                    );
+                }
+            }
+            Some(5) => {
+                if let Some(p) = &selected {
+                    self.renaming = Some((p.clone(), p.name.clone()));
+                }
+            }
+            Some(6) => {
+                if let Some(p) = &selected {
+                    self.details = Some((p.key.clone(), details(&p.key)));
+                }
+            }
+            Some(8) => {
+                if let Some(p) = &selected {
+                    let url = p
+                        .help_link
+                        .clone()
+                        .filter(|u| u.starts_with("http"))
+                        .unwrap_or_else(|| lookup_url(p));
+                    let _ = wm_core::shell::shell_open(&url, "");
+                }
+            }
+            Some(9) => {
+                if let Some(l) = selected.as_ref().and_then(|p| p.install_location.clone()) {
+                    let _ = std::process::Command::new("explorer").arg(l).spawn();
+                }
+            }
+            Some(10) => {
                 if let Some(p) = &selected {
                     let found: Vec<(String, Leftover, bool)> = find_leftovers(p)
                         .into_iter()
@@ -553,44 +650,93 @@ impl SmartUninstaller {
                     self.leftovers = Some(found);
                 }
             }
+            Some(12) => self.open_page(1),
+            Some(13) => self.open_page(2),
+            Some(15) => ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close),
+            _ => {}
+        }
+
+        let filter_hint = "Search";
+        let mut second = None;
+        frame::options(ui, |ui| {
+            if ui
+                .button(format!(
+                    "{}  Find unavailable program folders",
+                    icons::MAGNIFYING_GLASS
+                ))
+                .clicked()
+            {
+                second = Some(0);
+            }
+            if ui
+                .button(format!("{}  Features", icons::SLIDERS))
+                .on_hover_text("Turn Windows features on or off")
+                .clicked()
+            {
+                second = Some(1);
+            }
+            if ui
+                .add_enabled(
+                    !busy,
+                    egui::Button::new(format!("{}  Uninstall OneDrive", icons::CLOUD_SLASH)),
+                )
+                .clicked()
+            {
+                second = Some(2);
+            }
+            if ui.button(format!("{}  Export", icons::UPLOAD)).clicked() {
+                second = Some(3);
+            }
+            ui.separator();
+            ui.label("View:");
+            egui::ComboBox::from_id_salt("uninst-view")
+                .selected_text(match self.mode {
+                    ViewMode::Icons => "Large Icons",
+                    ViewMode::List => "Details",
+                })
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut self.mode, ViewMode::Icons, "Large Icons");
+                    ui.selectable_value(&mut self.mode, ViewMode::List, "Details");
+                });
+            ui.label("Sort:");
+            egui::ComboBox::from_id_salt("uninst-sort")
+                .selected_text(sort_label(self.sort.0))
+                .show_ui(ui, |ui| {
+                    for key in SORT_KEYS {
+                        if ui.selectable_label(self.sort.0 == key, sort_label(key)).clicked() {
+                            self.sort = (key, default_ascending(key));
+                        }
+                    }
+                });
+            if ui
+                .small_button(if self.sort.1 { "▲" } else { "▼" })
+                .on_hover_text("Reverse the order")
+                .clicked()
+            {
+                self.sort.1 = !self.sort.1;
+            }
+            ui.separator();
+            ui.checkbox(&mut self.quiet, "Quiet uninstall when possible")
+                .on_hover_text("Uses the program's silent mode or MSI's /qn. Programs without one still show their uninstaller.");
+            ui.separator();
+            ui.add(
+                egui::TextEdit::singleline(&mut self.filter)
+                    .hint_text(format!("{}  {filter_hint}", icons::MAGNIFYING_GLASS))
+                    .desired_width(200.0),
+            );
+        });
+        match second {
+            Some(0) => self.open_page(3),
+            Some(1) => wm_core::ui::request_open_tool(ui.ctx(), "winfeatures"),
+            Some(2) => match onedrive_uninstall_command(&programs) {
+                Some(cmd) => self.confirm.ask(
+                    "Uninstall OneDrive? Files already synced to this PC stay in your OneDrive folder; \
+                     they stop syncing. You can reinstall OneDrive from Microsoft later.",
+                    Ask::OneDrive(cmd),
+                ),
+                None => self.message = Some(Ok("OneDrive is not installed.".into())),
+            },
             Some(3) => {
-                if let Some(p) = &selected {
-                    self.confirm.ask(
-                        format!(
-                            "Remove {} from the list without uninstalling it? Use this only when the program is \
-                             already gone. The entry is backed up first.",
-                            p.name
-                        ),
-                        Ask::RemoveEntry(Box::new(p.clone())),
-                    );
-                }
-            }
-            Some(4) => {
-                if let Some(p) = &selected {
-                    self.renaming = Some((p.clone(), p.name.clone()));
-                }
-            }
-            Some(5) => {
-                if let Some(p) = &selected {
-                    self.details = Some((p.key.clone(), details(&p.key)));
-                }
-            }
-            Some(7) => {
-                if let Some(p) = &selected {
-                    let url = p
-                        .help_link
-                        .clone()
-                        .filter(|u| u.starts_with("http"))
-                        .unwrap_or_else(|| lookup_url(p));
-                    let _ = wm_core::shell::shell_open(&url, "");
-                }
-            }
-            Some(8) => {
-                if let Some(l) = selected.as_ref().and_then(|p| p.install_location.clone()) {
-                    let _ = std::process::Command::new("explorer").arg(l).spawn();
-                }
-            }
-            Some(10) => {
                 let visible = sorted(&programs, &self.filter, self.sort);
                 if let Some(file) = rfd::FileDialog::new()
                     .set_file_name("Installed programs.html")
@@ -611,59 +757,20 @@ impl SmartUninstaller {
                     );
                 }
             }
-            Some(11) => match onedrive_uninstall_command(&programs) {
-                Some(cmd) => self.confirm.ask(
-                    "Uninstall OneDrive? Files already synced to this PC stay in your OneDrive folder; \
-                     they stop syncing. You can reinstall OneDrive from Microsoft later.",
-                    Ask::OneDrive(cmd),
-                ),
-                None => self.message = Some(Ok("OneDrive is not installed.".into())),
-            },
-            Some(12) => {
-                self.reload();
-                self.icons.clear();
-                self.icon_tried.clear();
-            }
             _ => {}
         }
-
-        let filter_hint = ctx.i18n.tr("common-filter");
-        frame::options(ui, |ui| {
-            ui.add(
-                egui::TextEdit::singleline(&mut self.filter)
-                    .hint_text(format!("{}  {filter_hint}", icons::MAGNIFYING_GLASS))
-                    .desired_width(220.0),
-            );
-            ui.separator();
-            ui.selectable_value(&mut self.mode, ViewMode::List, format!("{} List", icons::LIST));
-            ui.selectable_value(
-                &mut self.mode,
-                ViewMode::Icons,
-                format!("{} Icons", icons::GRID_FOUR),
-            );
-            ui.separator();
-            ui.checkbox(&mut self.quiet, "Quiet uninstall when possible")
-                .on_hover_text("Uses the program's silent mode or MSI's /qn. Programs without one still show their uninstaller.");
-            if !self.checked.is_empty()
-                && ui
-                    .small_button(format!("Clear {} ticks", self.checked.len()))
-                    .clicked()
-            {
-                self.checked.clear();
-            }
-        });
         self.rename_dialog(ui, ctx);
 
         let visible = sorted(&programs, &self.filter, self.sort);
         let total: u64 = visible.iter().filter_map(|p| p.size).sum();
         let status = format!(
-            "{} programs, {} estimated{}",
+            "Total installed programs: {}; Total size: {}{}",
             visible.len(),
             format_bytes(total),
             if self.checked.is_empty() {
                 String::new()
             } else {
-                format!(" · {} ticked", self.checked.len())
+                format!("; {} ticked", self.checked.len())
             }
         );
         frame::status(ui, &status, |ui| {
@@ -734,11 +841,14 @@ impl SmartUninstaller {
             ("For", SortKey::Scope),
         ];
         let mut sort = self.sort;
+        let batch = self.batch_mode;
         ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
+        let today = chrono::Local::now().date_naive();
+        let recent_color = ui.visuals().error_fg_color;
         TableBuilder::new(ui)
             .striped(true)
             .sense(egui::Sense::click())
-            .column(Column::exact(22.0))
+            .column(Column::exact(if batch { 22.0 } else { 0.0 }))
             .column(Column::exact(20.0))
             .column(Column::initial(240.0).clip(true))
             .column(Column::initial(160.0).clip(true))
@@ -759,7 +869,7 @@ impl SmartUninstaller {
                     row.set_selected(self.selected.as_deref() == Some(p.key.as_str()));
                     row.col(|ui| {
                         let mut on = self.checked.contains(&p.key);
-                        if ui.checkbox(&mut on, "").changed() {
+                        if batch && ui.checkbox(&mut on, "").changed() {
                             toggles.push(p.key.clone());
                         }
                     });
@@ -769,7 +879,12 @@ impl SmartUninstaller {
                         }
                     });
                     row.col(|ui| {
-                        ui.label(&p.name);
+                        if is_recent(&p.installed, today) {
+                            ui.colored_label(recent_color, &p.name)
+                                .on_hover_text("Recently installed");
+                        } else {
+                            ui.label(&p.name);
+                        }
                     });
                     row.col(|ui| {
                         ui.weak(&p.publisher);
@@ -799,93 +914,151 @@ impl SmartUninstaller {
         }
     }
 
+    /// The original's large-icon view: "Recently Installed" first (names on red, as
+    /// there), then the other programs. In batch mode a click ticks a program.
     fn icon_view(&mut self, ui: &mut egui::Ui, visible: &[&Program], clicked: &mut Option<String>) {
-        ui.horizontal(|ui| {
-            ui.weak("Sort by:");
-            for (label, key) in [
-                ("Name", SortKey::Name),
-                ("Publisher", SortKey::Publisher),
-                ("Size", SortKey::Size),
-                ("Installed", SortKey::Installed),
+        let today = chrono::Local::now().date_naive();
+        let (recent, rest): (Vec<&Program>, Vec<&Program>) = visible
+            .iter()
+            .copied()
+            .partition(|p| is_recent(&p.installed, today));
+        egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
+            for (title, group, is_new) in [
+                ("Recently Installed", &recent, true),
+                ("Installed Programs", &rest, false),
             ] {
-                sort_header(ui, label, key, &mut self.sort);
-            }
-            ui.separator();
-            ui.weak("Ctrl+click ticks programs for a batch uninstall.");
-        });
-        let tile = Vec2::new(116.0, 92.0);
-        let accent = wm_core::ui::ACCENT;
-        egui::ScrollArea::vertical().show(ui, |ui| {
-            ui.horizontal_wrapped(|ui| {
-                ui.spacing_mut().item_spacing = Vec2::splat(6.0);
-                for p in visible {
-                    let (rect, resp) = ui.allocate_exact_size(tile, egui::Sense::click());
-                    let sel = self.selected.as_deref() == Some(p.key.as_str());
-                    let ticked = self.checked.contains(&p.key);
-                    let painter = ui.painter_at(rect);
-                    if sel {
-                        painter.rect_filled(rect, 4.0, accent.gamma_multiply(0.25));
-                    } else if resp.hovered() {
-                        painter.rect_filled(rect, 4.0, ui.visuals().widgets.hovered.weak_bg_fill);
-                    }
-                    if ticked {
-                        painter.rect_stroke(
-                            rect.shrink(1.0),
-                            4.0,
-                            egui::Stroke::new(2.0, accent),
-                            egui::StrokeKind::Inside,
-                        );
-                    }
-                    let icon_rect = egui::Rect::from_center_size(
-                        rect.center_top() + Vec2::new(0.0, 24.0),
-                        Vec2::splat(32.0),
-                    );
-                    match self.icons.get(&p.key) {
-                        Some(t) => {
-                            egui::Image::new(t).paint_at(ui, icon_rect);
-                        }
-                        None => {
-                            painter.text(
-                                icon_rect.center(),
-                                egui::Align2::CENTER_CENTER,
-                                icons::APP_WINDOW,
-                                egui::FontId::proportional(28.0),
-                                ui.visuals().weak_text_color(),
-                            );
-                        }
-                    }
-                    let galley = ui.painter().layout(
-                        p.name.clone(),
-                        egui::FontId::proportional(11.5),
-                        ui.visuals().text_color(),
-                        tile.x - 8.0,
-                    );
-                    let text_pos = egui::pos2(rect.center().x - galley.size().x / 2.0, rect.top() + 46.0);
-                    painter.with_clip_rect(rect.shrink(2.0)).galley(
-                        text_pos,
-                        galley,
-                        ui.visuals().text_color(),
-                    );
-                    let resp = resp.on_hover_text(format!(
-                        "{}\n{}{}",
-                        p.name,
-                        p.publisher,
-                        p.size
-                            .map(|s| format!("\n{}", format_bytes(s)))
-                            .unwrap_or_default()
-                    ));
-                    if resp.clicked() {
-                        if ui.input(|i| i.modifiers.ctrl) {
-                            if !self.checked.remove(&p.key) {
-                                self.checked.insert(p.key.clone());
-                            }
-                        } else {
-                            *clicked = Some(p.key.clone());
-                        }
-                    }
+                if group.is_empty() {
+                    continue;
                 }
-            });
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new(title).color(wm_core::ui::ACCENT));
+                    let y = ui.min_rect().center().y;
+                    let x = ui.cursor().left() + 6.0;
+                    ui.painter().hline(
+                        x..=ui.max_rect().right(),
+                        y,
+                        egui::Stroke::new(1.0, ui.visuals().widgets.noninteractive.bg_stroke.color),
+                    );
+                });
+                ui.add_space(2.0);
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing = Vec2::new(4.0, 6.0);
+                    for p in group.iter() {
+                        self.icon_tile(ui, p, is_new, clicked);
+                    }
+                });
+                ui.add_space(6.0);
+            }
         });
+    }
+
+    fn icon_tile(&mut self, ui: &mut egui::Ui, p: &Program, is_new: bool, clicked: &mut Option<String>) {
+        let tile = Vec2::new(84.0, 76.0);
+        let accent = wm_core::ui::ACCENT;
+        let (rect, resp) = ui.allocate_exact_size(tile, egui::Sense::click());
+        let sel = self.selected.as_deref() == Some(p.key.as_str());
+        let ticked = self.checked.contains(&p.key);
+        let painter = ui.painter_at(rect);
+        if sel {
+            painter.rect_filled(rect, 3.0, accent.gamma_multiply(0.25));
+        } else if resp.hovered() {
+            painter.rect_filled(rect, 3.0, ui.visuals().widgets.hovered.weak_bg_fill);
+        }
+        if ticked {
+            painter.rect_stroke(
+                rect.shrink(1.0),
+                3.0,
+                egui::Stroke::new(2.0, accent),
+                egui::StrokeKind::Inside,
+            );
+        }
+        let icon_rect =
+            egui::Rect::from_center_size(rect.center_top() + Vec2::new(0.0, 20.0), Vec2::splat(32.0));
+        match self.icons.get(&p.key) {
+            Some(t) => {
+                egui::Image::new(t).paint_at(ui, icon_rect);
+            }
+            None => {
+                painter.text(
+                    icon_rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    icons::APP_WINDOW,
+                    egui::FontId::proportional(28.0),
+                    ui.visuals().weak_text_color(),
+                );
+            }
+        }
+        if self.batch_mode {
+            let box_rect = egui::Rect::from_min_size(rect.min + Vec2::splat(3.0), Vec2::splat(13.0));
+            painter.rect_stroke(
+                box_rect,
+                2.0,
+                egui::Stroke::new(1.0, ui.visuals().text_color()),
+                egui::StrokeKind::Inside,
+            );
+            if ticked {
+                painter.text(
+                    box_rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    icons::CHECK,
+                    egui::FontId::proportional(11.0),
+                    accent,
+                );
+            }
+        }
+        // The name: two lines at most, on red for recent installs like the original.
+        let text_color = if is_new {
+            egui::Color32::WHITE
+        } else {
+            ui.visuals().text_color()
+        };
+        let mut job = egui::text::LayoutJob::simple(
+            p.name.clone(),
+            egui::FontId::proportional(11.5),
+            text_color,
+            tile.x - 4.0,
+        );
+        job.wrap.max_rows = 2;
+        job.halign = egui::Align::Center;
+        let galley = ui.painter().layout_job(job);
+        let text_rect = egui::Rect::from_center_size(
+            egui::pos2(rect.center().x, rect.top() + 40.0 + galley.size().y / 2.0),
+            galley.size(),
+        );
+        if is_new {
+            painter.rect_filled(
+                egui::Rect::from_center_size(
+                    text_rect.center(),
+                    Vec2::new(tile.x - 2.0, galley.size().y + 2.0),
+                ),
+                0.0,
+                egui::Color32::from_rgb(200, 40, 40),
+            );
+        }
+        painter.galley(egui::pos2(rect.center().x, text_rect.top()), galley, text_color);
+        let resp = resp.on_hover_text(format!(
+            "{}\n{}{}{}",
+            p.name,
+            p.publisher,
+            p.size
+                .map(|s| format!("\n{}", format_bytes(s)))
+                .unwrap_or_default(),
+            if p.installed.is_empty() {
+                String::new()
+            } else {
+                format!("\nInstalled {}", p.installed)
+            }
+        ));
+        if resp.clicked() {
+            if self.batch_mode || ui.input(|i| i.modifiers.ctrl) {
+                if !self.checked.remove(&p.key) {
+                    self.checked.insert(p.key.clone());
+                }
+                self.batch_mode = true;
+            }
+            *clicked = Some(p.key.clone());
+        }
     }
 
     fn updates_section(&mut self, ui: &mut egui::Ui, ctx: &mut AppCtx<'_>) {
@@ -1166,8 +1339,25 @@ impl Tool for SmartUninstaller {
 
     fn ui(&mut self, ui: &mut egui::Ui, ctx: &mut AppCtx<'_>) {
         self.handle_confirm(ui, ctx);
-        if frame::left(ui, 180.0, |ui| section_nav(ui, &SECTIONS, &mut self.section)) {
-            self.message = None;
+        if self.section != 0 {
+            // The other pages open from the program list's toolbar; this strip goes back.
+            let mut back = false;
+            egui::Panel::top("uninst-back")
+                .resizable(false)
+                .frame(egui::Frame::new().inner_margin(egui::Margin::symmetric(10, 4)))
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        back = ui
+                            .button(format!("{}  Installed programs", icons::ARROW_UP))
+                            .clicked();
+                        ui.label("›");
+                        ui.strong(PAGES[self.section.min(PAGES.len() - 1)]);
+                    });
+                });
+            if back {
+                self.open_page(0);
+                return;
+            }
         }
         match self.section {
             0 => self.programs_section(ui, ctx),
@@ -1175,5 +1365,20 @@ impl Tool for SmartUninstaller {
             2 => self.apps.ui(ui, ctx),
             _ => self.orphans_section(ui, ctx),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn recent_installs() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 11, 26).unwrap();
+        assert!(is_recent("2026-11-26", today));
+        assert!(is_recent("2026-10-27", today));
+        assert!(!is_recent("2026-10-26", today));
+        assert!(!is_recent("2027-01-01", today), "future dates are not recent");
+        assert!(!is_recent("", today));
     }
 }
