@@ -238,15 +238,9 @@ pub fn set_folder_icon(ctx: &AppCtx<'_>, dir: &Path, icon: Option<&str>) -> Resu
     let before = read_ini(&ini);
     let undo = match &before {
         Some(_) => {
-            let backup = paths::backups_dir()?.join(format!(
-                "desktop-ini-{}.ini",
-                chrono::Local::now().format("%Y%m%d-%H%M%S%.3f")
-            ));
-            std::fs::copy(&ini, &backup).with_context(|| format!("saving {}", ini.display()))?;
-            UndoAction::RestoreFile {
-                original: ini.clone(),
-                backup,
-            }
+            // Kept with the journal's own backups (a test's journal keeps them in its
+            // temporary folder, not in the user's data).
+            ctx.journal.backup_file(&ini)?
         }
         None if icon.is_none() => return Ok(()),
         None => UndoAction::DeleteCreatedFiles {
