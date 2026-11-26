@@ -112,6 +112,10 @@ impl Settings {
                 }
                 ui.end_row();
 
+                ui.label("At startup");
+                ui.checkbox(&mut ctx.config.run_as_admin, "Run as administrator")
+                    .on_hover_text("Asks Windows (UAC) for administrator rights each time Win Manager opens, like the original Windows Manager. Scheduled tasks and the notification-area monitor are not affected.");
+                ui.end_row();
                 ui.label("When minimised");
                 ui.checkbox(&mut ctx.config.minimize_to_tray, "Hide in the notification area")
                     .on_hover_text("Click the Win Manager icon to bring the window back. The icon belongs to My Task's rule monitor, which starts if needed.");

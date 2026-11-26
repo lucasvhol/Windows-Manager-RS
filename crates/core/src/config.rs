@@ -34,6 +34,8 @@ pub struct Config {
     pub password_hash: Option<String>,
     /// Hide the main window in the notification area (the rule monitor's icon) when minimised.
     pub minimize_to_tray: bool,
+    /// Start elevated (UAC prompt at launch), like the original Windows Manager.
+    pub run_as_admin: bool,
 }
 
 impl Config {
@@ -57,6 +59,7 @@ impl Default for Config {
             ui_scale: 1.0,
             password_hash: None,
             minimize_to_tray: false,
+            run_as_admin: true,
         }
     }
 }

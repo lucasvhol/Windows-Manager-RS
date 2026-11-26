@@ -4,7 +4,7 @@
 use std::path::PathBuf;
 
 use wm_core::{
-    egui, icons,
+    egui,
     task::BackgroundTask,
     update::{self, Release},
 };
@@ -19,16 +19,14 @@ pub struct Updater {
 }
 
 impl Updater {
-    pub fn button(&mut self, ui: &mut egui::Ui) {
-        if crate::hub::widgets::header_button(ui, icons::ARROWS_CLOCKWISE, "Update")
-            .on_hover_text("Check for a newer version")
-            .clicked()
+    /// Opens the Updates window and starts a check.
+    pub fn check(&mut self, ctx: &egui::Context) {
         {
             self.open = true;
             self.found = None;
             self.error = None;
             if update::repo().is_some() && self.check.is_none() {
-                self.check = Some(BackgroundTask::spawn(ui.ctx(), |_| update::latest()));
+                self.check = Some(BackgroundTask::spawn(ctx, |_| update::latest()));
             }
         }
     }

@@ -72,6 +72,39 @@ pub fn rail_item(
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
+/// A small entry in the rail's bottom menu (Settings, Change Journal, Update, About).
+pub fn rail_link(ui: &mut Ui, icon: &str, label: &str, color: Color32) -> Response {
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 28.0), Sense::click());
+    let p = ui.painter();
+    if resp.hovered() {
+        p.rect_filled(
+            rect,
+            CornerRadius::ZERO,
+            ui.visuals().widgets.hovered.weak_bg_fill,
+        );
+    }
+    let text_color = if resp.hovered() {
+        ui.visuals().strong_text_color()
+    } else {
+        ui.visuals().text_color()
+    };
+    p.text(
+        Pos2::new(rect.left() + 22.0, rect.center().y),
+        Align2::LEFT_CENTER,
+        icon,
+        FontId::proportional(17.0),
+        color,
+    );
+    p.text(
+        Pos2::new(rect.left() + 56.0, rect.center().y),
+        Align2::LEFT_CENTER,
+        label,
+        FontId::proportional(13.5),
+        text_color,
+    );
+    resp.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
 /// Height of a tile row.
 pub const TILE_HEIGHT: f32 = 96.0;
 
@@ -136,17 +169,4 @@ pub fn tool_header(ui: &mut Ui, icon: &str, color: Color32, title: &str, descrip
                 });
             });
         });
-}
-
-/// A flat icon + label button for the hub header (the original's Update and About).
-pub fn header_button(ui: &mut Ui, icon: &str, label: &str) -> Response {
-    let text = egui::RichText::new(format!("{icon}  {label}"))
-        .size(14.5)
-        .strong();
-    ui.add(
-        egui::Button::new(text)
-            .frame(false)
-            .min_size(Vec2::new(0.0, 32.0)),
-    )
-    .on_hover_cursor(egui::CursorIcon::PointingHand)
 }

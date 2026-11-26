@@ -122,7 +122,6 @@ impl Shell {
     }
 
     fn header(&mut self, root: &mut egui::Ui) {
-        let ctx = root.ctx().clone();
         let fill = widgets::band_fill(root);
         egui::Panel::top("hub_header")
             .exact_size(70.0)
@@ -153,53 +152,6 @@ impl Shell {
                             .desired_width(220.0)
                             .margin(egui::Margin::symmetric(8, 5)),
                     );
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        // Like the original: Update, and About with a small menu beside it.
-                        let mut open = None;
-                        ui.menu_button(icons::CARET_DOWN, |ui| {
-                            for id in ["journal", "settings"] {
-                                if ui
-                                    .button(format!("{}  {}", catalog::tool_icon(id), self.title_of(id)))
-                                    .clicked()
-                                {
-                                    open = Some(id);
-                                    ui.close();
-                                }
-                            }
-                            ui.separator();
-                            if ui
-                                .button(format!("{}  {}", icons::INFO, self.i18n.tr("hub-about")))
-                                .clicked()
-                            {
-                                self.about_open = true;
-                                ui.close();
-                            }
-                        });
-                        if let Some(id) = open {
-                            self.open_tool(&ctx, id);
-                        }
-                        if widgets::header_button(ui, icons::INFO, &self.i18n.tr("hub-about")).clicked() {
-                            self.about_open = true;
-                        }
-                        self.updater.button(ui);
-                        ui.add_space(8.0);
-                        if self.elevated {
-                            ui.label(
-                                egui::RichText::new(icons::SHIELD_CHECK)
-                                    .size(20.0)
-                                    .color(widgets::ACCENT),
-                            )
-                            .on_hover_text(self.i18n.tr("shell-admin"));
-                        } else if ui
-                            .add(
-                                egui::Button::new(egui::RichText::new(icons::SHIELD).size(18.0)).frame(false),
-                            )
-                            .on_hover_text(self.i18n.tr("shell-restart-admin"))
-                            .clicked()
-                        {
-                            self.restart_as_admin(&ctx);
-                        }
-                    });
                 });
             });
     }
@@ -230,11 +182,77 @@ impl Shell {
                         self.search.clear();
                     }
                 }
+                // The menu that was in the header (Settings, Change Journal, Update,
+                // About and the administrator state), above this PC's Windows version.
+                let mut open = None;
+                let mut about = false;
+                let mut update = false;
+                let mut elevate = false;
                 ui.with_layout(egui::Layout::bottom_up(egui::Align::Center), |ui| {
-                    ui.add_space(10.0);
+                    ui.add_space(8.0);
                     ui.weak(&self.summary.build);
                     ui.weak(&self.summary.os);
+                    ui.add_space(6.0);
+                    ui.separator();
+                    ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+                        // Laid out top-down from here, so the list keeps its order.
+                        let h = 28.0 * 5.0 + 9.0;
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(ui.available_width(), h),
+                            egui::Layout::bottom_up(egui::Align::Min),
+                            |ui| {
+                                if self.elevated {
+                                    widgets::rail_link(
+                                        ui,
+                                        icons::SHIELD_CHECK,
+                                        &self.i18n.tr("shell-admin"),
+                                        widgets::ACCENT,
+                                    );
+                                } else {
+                                    elevate = widgets::rail_link(
+                                        ui,
+                                        icons::SHIELD,
+                                        &self.i18n.tr("shell-restart-admin"),
+                                        egui::Color32::from_rgb(230, 170, 60),
+                                    )
+                                    .clicked();
+                                }
+                                let weak = ui.visuals().weak_text_color();
+                                about = widgets::rail_link(ui, icons::INFO, &self.i18n.tr("hub-about"), weak)
+                                    .clicked();
+                                update = widgets::rail_link(ui, icons::ARROWS_CLOCKWISE, "Update", weak)
+                                    .on_hover_text("Check for a newer version")
+                                    .clicked();
+                                for id in ["journal", "settings"] {
+                                    if widgets::rail_link(
+                                        ui,
+                                        catalog::tool_icon(id),
+                                        &self.title_of(id),
+                                        weak,
+                                    )
+                                    .clicked()
+                                    {
+                                        open = Some(id);
+                                    }
+                                }
+                                ui.separator();
+                            },
+                        );
+                    });
                 });
+                let ctx = ui.ctx().clone();
+                if let Some(id) = open {
+                    self.open_tool(&ctx, id);
+                }
+                if about {
+                    self.about_open = true;
+                }
+                if update {
+                    self.updater.check(&ctx);
+                }
+                if elevate {
+                    self.restart_as_admin(&ctx);
+                }
             });
     }
 

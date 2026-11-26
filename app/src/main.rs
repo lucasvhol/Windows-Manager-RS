@@ -100,6 +100,24 @@ fn main() -> eframe::Result {
     }
     tracing::info!("starting {APP_NAME} {}", env!("CARGO_PKG_VERSION"));
 
+    // Like the original, the window runs as administrator: ask UAC once at launch.
+    // Cancelling the prompt keeps this unelevated instance (tools that need admin say
+    // so); the relaunched instance never asks again.
+    if !wm_core::elevation::is_elevated() && !args.iter().any(|a| a == wm_core::elevation::RELAUNCHED) {
+        let wants = wm_core::config::Config::default_path()
+            .map(|p| wm_core::config::Config::load_or_default(&p).run_as_admin)
+            .unwrap_or(true);
+        if wants {
+            match wm_core::elevation::relaunch_as_admin() {
+                Ok(()) => {
+                    drop(_guard);
+                    std::process::exit(0);
+                }
+                Err(e) => tracing::warn!("staying unelevated: {e:#}"),
+            }
+        }
+    }
+
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title(APP_NAME)
