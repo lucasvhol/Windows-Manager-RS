@@ -614,6 +614,10 @@ enum Ask {
 
 pub struct StartupManager {
     page: Page,
+    /// Selected node of the location tree (index into `NAV`).
+    node: usize,
+    adding: bool,
+    settings_open: bool,
     items: Option<Vec<StartupItem>>,
     advanced: Option<Vec<Advanced>>,
     info: HashMap<PathBuf, FileInfo>,
@@ -632,6 +636,9 @@ impl Default for StartupManager {
     fn default() -> Self {
         Self {
             page: Page::Items,
+            node: 0,
+            adding: false,
+            settings_open: false,
             items: None,
             advanced: None,
             info: HashMap::new(),
@@ -740,8 +747,133 @@ impl StartupManager {
         self.info_of(item)
             .is_some_and(|i| i.signature == Signature::Valid && i.signer.contains("Microsoft"))
     }
+}
 
-    fn items_page(&mut self, ui: &mut egui::Ui, ctx: &mut AppCtx<'_>, items: &[StartupItem]) {
+/// What a node of the location tree shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Target {
+    Sources(&'static [Source]),
+    Advanced,
+    Open(&'static str),
+}
+
+const ALL_SOURCES: &[Source] = &Source::ALL;
+
+/// The original's location tree: (depth, icon, label, target).
+const NAV: [(usize, &str, &str, Target); 17] = [
+    (0, icons::FOLDER_OPEN, "General", Target::Sources(ALL_SOURCES)),
+    (
+        1,
+        icons::FOLDER_OPEN,
+        "Startup Folder",
+        Target::Sources(&[Source::CommonFolder, Source::UserFolder]),
+    ),
+    (
+        2,
+        icons::USER,
+        "All Users",
+        Target::Sources(&[Source::CommonFolder]),
+    ),
+    (
+        2,
+        icons::USER,
+        "Current User",
+        Target::Sources(&[Source::UserFolder]),
+    ),
+    (
+        1,
+        icons::DATABASE,
+        "Registry",
+        Target::Sources(&[
+            Source::MachineRegistry,
+            Source::MachineRegistry32,
+            Source::MachineRunOnce,
+            Source::UserRegistry,
+            Source::UserRunOnce,
+        ]),
+    ),
+    (
+        2,
+        icons::USER,
+        "All Users",
+        Target::Sources(&[
+            Source::MachineRegistry,
+            Source::MachineRegistry32,
+            Source::MachineRunOnce,
+        ]),
+    ),
+    (
+        3,
+        icons::FOLDERS,
+        "Run",
+        Target::Sources(&[Source::MachineRegistry]),
+    ),
+    (
+        3,
+        icons::FOLDERS,
+        "Run Once",
+        Target::Sources(&[Source::MachineRunOnce]),
+    ),
+    (
+        3,
+        icons::FOLDERS,
+        "Run (Wow64)",
+        Target::Sources(&[Source::MachineRegistry32]),
+    ),
+    (
+        2,
+        icons::USER,
+        "Current User",
+        Target::Sources(&[Source::UserRegistry, Source::UserRunOnce]),
+    ),
+    (3, icons::FOLDERS, "Run", Target::Sources(&[Source::UserRegistry])),
+    (
+        3,
+        icons::FOLDERS,
+        "Run Once",
+        Target::Sources(&[Source::UserRunOnce]),
+    ),
+    (
+        1,
+        icons::GRID_FOUR,
+        "Windows Apps",
+        Target::Sources(&[Source::WindowsApp]),
+    ),
+    (0, icons::FOLDER_OPEN, "Other", Target::Advanced),
+    (1, icons::PLAY, "Advanced Startup", Target::Advanced),
+    (1, icons::PLAY, "Service Manager", Target::Open("services")),
+    (1, icons::PLAY, "Task Scheduler Manager", Target::Open("tasks")),
+];
+
+/// Runs a startup entry's command now, as Windows would at sign-in.
+fn start_now(item: &StartupItem) -> anyhow::Result<()> {
+    use std::os::windows::process::CommandExt;
+    if let Some(f) = &item.file {
+        wm_core::shell::shell_open(&f.display().to_string(), "")?;
+        return Ok(());
+    }
+    if item.source == Source::WindowsApp {
+        bail!("Windows apps start from the Start menu");
+    }
+    std::process::Command::new("cmd")
+        .arg("/c")
+        .raw_arg(format!("start \"\" {}", item.command))
+        .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
+        .spawn()?;
+    Ok(())
+}
+
+impl StartupManager {
+    fn items_page(&mut self, ui: &mut egui::Ui, ctx: &mut AppCtx<'_>, all: &[StartupItem]) {
+        let sources = match NAV[self.node].3 {
+            Target::Sources(s) => s,
+            _ => ALL_SOURCES,
+        };
+        let items: Vec<StartupItem> = all
+            .iter()
+            .filter(|i| sources.contains(&i.source))
+            .cloned()
+            .collect();
         let selected = self
             .selected
             .as_ref()
@@ -755,28 +887,50 @@ impl StartupManager {
             .as_ref()
             .and_then(|i| i.source.move_target())
             .is_some_and(|t| !t.needs_admin() || ctx.elevated);
+        let disabled = selected.as_ref().is_some_and(|i| !i.enabled);
+        let can_toggle = has && selected.as_ref().is_some_and(|i| i.source.can_toggle());
         let buttons = [
             Some(ToolButton::new(icons::ARROWS_CLOCKWISE, "Refresh")),
             None,
             Some(
-                ToolButton::new(icons::TRASH, "Remove")
+                ToolButton::new(icons::PLAY, "Start")
+                    .enabled(selected.as_ref().is_some_and(|i| i.source != Source::WindowsApp)),
+            ),
+            Some(
+                ToolButton::new(
+                    if disabled {
+                        icons::CHECK
+                    } else {
+                        icons::STOP_CIRCLE
+                    },
+                    if disabled { "Enable" } else { "Disable" },
+                )
+                .enabled(can_toggle),
+            ),
+            Some(ToolButton::new(icons::LIST_CHECKS, "Batch")),
+            None,
+            Some(ToolButton::new(icons::PLUS, "Add")),
+            Some(
+                ToolButton::new(icons::X, "Delete")
                     .enabled(has && selected.as_ref().is_some_and(|i| i.source != Source::WindowsApp)),
             ),
+            Some(ToolButton::new(icons::SWAP, "Move to").enabled(has && can_move)),
+            None,
             Some(
-                ToolButton::new(icons::PENCIL_SIMPLE, "Edit")
-                    .enabled(has && selected.as_ref().is_some_and(|i| i.source.run_key().is_some())),
-            ),
-            Some(ToolButton::new(icons::SWAP, "Move").enabled(has && can_move)),
-            Some(
-                ToolButton::new(icons::FOLDER_OPEN, "Open folder").enabled(
+                ToolButton::new(icons::FOLDER_OPEN, "Open File Location").enabled(
                     selected
                         .as_ref()
                         .is_some_and(|i| i.program().is_some() || i.file.is_some()),
                 ),
             ),
-            Some(ToolButton::new(icons::MAGNIFYING_GLASS, "Look up").enabled(selected.is_some())),
+            Some(
+                ToolButton::new(icons::PENCIL_SIMPLE, "Edit")
+                    .enabled(has && selected.as_ref().is_some_and(|i| i.source.run_key().is_some())),
+            ),
+            Some(ToolButton::new(icons::GLOBE, "Query").enabled(selected.is_some())),
             None,
-            Some(ToolButton::new(icons::STOP_CIRCLE, "Disable others")),
+            Some(ToolButton::new(icons::GEAR, "Settings")),
+            Some(ToolButton::new(icons::SIGN_OUT, "Exit")),
         ];
         match frame::toolbar(ui, &buttons, |_| {}) {
             Some(0) => {
@@ -785,17 +939,56 @@ impl StartupManager {
             }
             Some(2) => {
                 if let Some(item) = &selected {
+                    self.message = Some(
+                        start_now(item)
+                            .map(|()| format!("Started {}.", item.name))
+                            .map_err(|e| format!("{e:#}")),
+                    );
+                }
+            }
+            Some(3) => {
+                if let Some(item) = &selected {
+                    self.toggle(ctx, item, !item.enabled);
+                }
+            }
+            Some(4) => {
+                let targets: Vec<StartupItem> = all
+                    .iter()
+                    .filter(|i| {
+                        i.enabled && i.source.can_toggle() && (!i.source.needs_admin() || ctx.elevated)
+                    })
+                    .filter(|i| !self.is_microsoft(i))
+                    .cloned()
+                    .collect();
+                if targets.is_empty() {
+                    self.message = Some(Ok(
+                        "Nothing to disable: every enabled item is signed by Microsoft.".into(),
+                    ));
+                } else {
+                    let names: Vec<&str> = targets.iter().map(|t| t.name.as_str()).collect();
                     self.confirm.ask(
                         format!(
-                            "Remove \"{}\" from startup? Disabling it is usually enough. Removal can be undone from the Change Journal.",
+                            "Batch: disable these {} startup items that are not signed by Microsoft?\n\n{}",
+                            targets.len(),
+                            names.join("\n")
+                        ),
+                        Ask::DisableAll(targets),
+                    );
+                }
+            }
+            Some(6) => self.adding = true,
+            Some(7) => {
+                if let Some(item) = &selected {
+                    self.confirm.ask(
+                        format!(
+                            "Delete \"{}\" from startup? Disabling it is usually enough. Deleting can be undone from the Change Journal.",
                             item.name
                         ),
                         Ask::Remove(item.clone()),
                     );
                 }
             }
-            Some(3) => self.editing = selected.as_ref().map(|i| i.command.clone()),
-            Some(4) => {
+            Some(8) => {
                 if let Some(item) = &selected
                     && let Some(to) = item.source.move_target()
                 {
@@ -810,12 +1003,13 @@ impl StartupManager {
                     self.items = None;
                 }
             }
-            Some(5) => {
+            Some(10) => {
                 if let Some(item) = &selected {
                     open_location(item);
                 }
             }
-            Some(6) => {
+            Some(11) => self.editing = selected.as_ref().map(|i| i.command.clone()),
+            Some(12) => {
                 if let Some(item) = &selected {
                     let q: String = item
                         .name
@@ -827,40 +1021,136 @@ impl StartupManager {
                         .spawn();
                 }
             }
-            Some(8) => {
-                let targets: Vec<StartupItem> = items
-                    .iter()
-                    .filter(|i| {
-                        i.enabled && i.source.can_toggle() && (!i.source.needs_admin() || ctx.elevated)
-                    })
-                    .filter(|i| !self.is_microsoft(i))
-                    .cloned()
-                    .collect();
-                if targets.is_empty() {
-                    self.message = Some(Ok("Nothing to disable.".into()));
-                } else {
-                    let names: Vec<&str> = targets.iter().map(|t| t.name.as_str()).collect();
-                    self.confirm.ask(
-                        format!(
-                            "Disable these {} startup items that are not signed by Microsoft?\n\n{}",
-                            targets.len(),
-                            names.join("\n")
-                        ),
-                        Ask::DisableAll(targets),
-                    );
-                }
-            }
+            Some(14) => self.settings_open = true,
+            Some(15) => ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close),
             _ => {}
         }
+        self.dialogs(ui, ctx, selected.as_ref());
 
-        if let (Some(item), Some(cmd)) = (&selected, &mut self.editing) {
-            let mut save = false;
-            let mut cancel = false;
-            frame::options(ui, |ui| {
-                ui.label("Command:");
-                ui.add(egui::TextEdit::singleline(cmd).desired_width(480.0));
-                save = ui.button(format!("{}  Save", icons::FLOPPY_DISK)).clicked();
-                cancel = ui.button(ctx.i18n.tr("common-cancel")).clicked();
+        let checking = self.info_task.is_some();
+        frame::status(ui, &format!("Total: {}", items.len()), |ui| {
+            if checking {
+                ui.weak("checking signatures…");
+                ui.spinner();
+            }
+        });
+        // The original's details pane under the list.
+        if let Some(item) = &selected {
+            let info = self.info_of(item).cloned().unwrap_or_default();
+            egui::Panel::bottom("startup-details")
+                .resizable(true)
+                .default_size(120.0)
+                .frame(egui::Frame::new().inner_margin(egui::Margin::symmetric(12, 6)))
+                .show(ui, |ui| {
+                    egui::Grid::new("startup-detail-grid")
+                        .num_columns(2)
+                        .spacing([16.0, 3.0])
+                        .show(ui, |ui| {
+                            for (k, v) in [
+                                ("Name", item.name.clone()),
+                                ("Location", item.source.label().to_owned()),
+                                ("Command", item.command.clone()),
+                                ("Description", info.description.clone()),
+                                ("Company", info.company.clone()),
+                                ("Signed by", info.signer.clone()),
+                            ] {
+                                if !v.is_empty() {
+                                    ui.weak(k);
+                                    ui.add(egui::Label::new(v).selectable(true));
+                                    ui.end_row();
+                                }
+                            }
+                        });
+                });
+        }
+        frame::central_fixed(ui, |ui| self.items_table(ui, ctx, &items));
+    }
+
+    fn toggle(&mut self, ctx: &AppCtx<'_>, item: &StartupItem, enabled: bool) {
+        let verb = if enabled { "Enabled" } else { "Disabled" };
+        self.message = Some(if ctx.config.dry_run {
+            Ok(ctx.i18n.tr("common-dry-run-skip"))
+        } else {
+            set_enabled(item, enabled)
+                .and_then(|snap| {
+                    ctx.journal.record(
+                        "startup",
+                        format!("{verb} startup item {}", item.name),
+                        UndoAction::RestoreRegValues { values: vec![snap] },
+                    )
+                })
+                .map(|_| format!("{verb} {}.", item.name))
+                .map_err(|e| format!("{e:#}"))
+        });
+        self.items = None;
+    }
+
+    /// Add, Edit and Settings dialogs.
+    fn dialogs(&mut self, ui: &egui::Ui, ctx: &mut AppCtx<'_>, selected: Option<&StartupItem>) {
+        if self.adding {
+            let mut add = false;
+            let modal = egui::Modal::new(egui::Id::unique("startup-add")).show(ui.ctx(), |ui| {
+                ui.set_min_width(460.0);
+                ui.strong("Add a startup item for the current user");
+                ui.add_space(6.0);
+                egui::Grid::new("startup-add-grid")
+                    .num_columns(2)
+                    .spacing([10.0, 6.0])
+                    .show(ui, |ui| {
+                        ui.label("Name");
+                        ui.add(egui::TextEdit::singleline(&mut self.new_name).desired_width(320.0));
+                        ui.end_row();
+                        ui.label("Command");
+                        ui.horizontal(|ui| {
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.new_command)
+                                    .hint_text(r#""C:\Path\App.exe" --args"#)
+                                    .desired_width(240.0),
+                            );
+                            if ui.button("Browse…").clicked()
+                                && let Some(p) = rfd_pick_exe()
+                            {
+                                self.new_command = format!("\"{}\"", p.display());
+                                if self.new_name.is_empty() {
+                                    self.new_name = p
+                                        .file_stem()
+                                        .map(|s| s.to_string_lossy().into_owned())
+                                        .unwrap_or_default();
+                                }
+                            }
+                        });
+                        ui.end_row();
+                    });
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    add = ui.button("Add").clicked();
+                    if ui.button(ctx.i18n.tr("common-cancel")).clicked() {
+                        self.adding = false;
+                    }
+                });
+            });
+            if modal.should_close() {
+                self.adding = false;
+            }
+            if add {
+                self.add_entry(ctx);
+                if self.message.as_ref().is_some_and(|m| m.is_ok()) {
+                    self.adding = false;
+                }
+            }
+        }
+        if let (Some(item), Some(cmd)) = (selected, &mut self.editing) {
+            let (mut save, mut cancel) = (false, false);
+            let modal = egui::Modal::new(egui::Id::unique("startup-edit")).show(ui.ctx(), |ui| {
+                ui.set_min_width(520.0);
+                ui.strong(format!("Edit {}", item.name));
+                ui.add_space(6.0);
+                ui.add(egui::TextEdit::singleline(cmd).desired_width(500.0));
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    save = ui.button(format!("{}  Save", icons::FLOPPY_DISK)).clicked();
+                    cancel = ui.button(ctx.i18n.tr("common-cancel")).clicked();
+                });
             });
             if save {
                 let cmd = cmd.clone();
@@ -873,109 +1163,67 @@ impl StartupManager {
                 });
                 self.editing = None;
                 self.items = None;
-            } else if cancel {
+            } else if cancel || modal.should_close() {
                 self.editing = None;
             }
         }
-
-        let enabled = items.iter().filter(|i| i.enabled).count();
-        let checking = self.info_task.is_some();
-        frame::status(ui, &format!("{} items, {enabled} enabled", items.len()), |ui| {
-            if checking {
-                ui.weak("checking signatures…");
-                ui.spinner();
-            }
-        });
-        self.add_strip(ui, ctx);
-        frame::central_fixed(ui, |ui| self.items_table(ui, ctx, items));
-    }
-
-    /// The pinned strip above the status bar: add an entry, and the Run-key blocks.
-    fn add_strip(&mut self, ui: &mut egui::Ui, ctx: &mut AppCtx<'_>) {
-        let fill = ui.visuals().faint_bg_color;
-        egui::Panel::bottom("startup-add")
-            .resizable(false)
-            .frame(egui::Frame::new().fill(fill).inner_margin(egui::Margin::symmetric(12, 6)))
-            .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label("Add for current user:");
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.new_name)
-                            .hint_text("Name")
-                            .desired_width(140.0),
-                    );
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.new_command)
-                            .hint_text(r#""C:\Path\App.exe" --args"#)
-                            .desired_width(320.0),
-                    );
-                    if ui.button("Browse…").clicked()
-                        && let Some(p) = rfd_pick_exe()
-                    {
-                        self.new_command = format!("\"{}\"", p.display());
-                        if self.new_name.is_empty() {
-                            self.new_name = p
-                                .file_stem()
-                                .map(|s| s.to_string_lossy().into_owned())
-                                .unwrap_or_default();
+        if self.settings_open {
+            let modal = egui::Modal::new(egui::Id::unique("startup-settings")).show(ui.ctx(), |ui| {
+                ui.set_min_width(420.0);
+                ui.strong("Settings");
+                ui.add_space(6.0);
+                for machine in [false, true] {
+                    let mut blocked = auto_start_blocked(machine);
+                    let label = if machine {
+                        "Block the Run keys for all users"
+                    } else {
+                        "Block the Run keys for me"
+                    };
+                    let r = ui.add_enabled(!machine || ctx.elevated, egui::Checkbox::new(&mut blocked, label));
+                    if r.changed() {
+                        if blocked {
+                            self.confirm.ask(
+                                "Stop Windows starting every program in the Run and RunOnce keys at sign-in? \
+                                 Startup-folder shortcuts and services are not affected. Undo it here or in the Change Journal.",
+                                Ask::Block(machine),
+                            );
+                        } else {
+                            self.message = Some(
+                                set_auto_start_blocked(ctx, machine, false)
+                                    .map(|()| "Automatic startup is allowed again.".into())
+                                    .map_err(|e| format!("{e:#}")),
+                            );
                         }
                     }
-                    if ui.button("Add").clicked() {
-                        self.add_entry(ctx);
-                    }
-                });
-                ui.horizontal(|ui| {
-                    for machine in [false, true] {
-                        let mut blocked = auto_start_blocked(machine);
-                        let label = if machine { "Block the Run keys for all users" } else { "Block the Run keys for me" };
-                        let r = ui.add_enabled(!machine || ctx.elevated, egui::Checkbox::new(&mut blocked, label));
-                        if r.changed() {
-                            if blocked {
-                                self.confirm.ask(
-                                    "Stop Windows starting every program in the Run and RunOnce keys at sign-in? \
-                                     Startup-folder shortcuts and services are not affected. Undo it here or in the Change Journal.",
-                                    Ask::Block(machine),
-                                );
-                            } else {
-                                self.message = Some(
-                                    set_auto_start_blocked(ctx, machine, false)
-                                        .map(|()| "Automatic startup is allowed again.".into())
-                                        .map_err(|e| format!("{e:#}")),
-                                );
-                            }
-                        }
-                    }
-                });
+                }
+                ui.add_space(8.0);
+                if ui.button("OK").clicked() {
+                    self.settings_open = false;
+                }
             });
+            if modal.should_close() {
+                self.settings_open = false;
+            }
+        }
     }
 
     fn items_table(&mut self, ui: &mut egui::Ui, ctx: &mut AppCtx<'_>, items: &[StartupItem]) {
         show_message(ui, &self.message);
         let mut toggle: Option<(StartupItem, bool)> = None;
         let mut clicked = None;
-        let table_height = ui.available_height() - 30.0;
         let warn = ui.visuals().warn_fg_color;
+        let good = egui::Color32::from_rgb(90, 180, 110);
+        ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
         TableBuilder::new(ui)
             .striped(true)
             .sense(egui::Sense::click())
-            .max_scroll_height(table_height)
-            .column(Column::exact(60.0))
-            .column(Column::initial(170.0).clip(true))
-            .column(Column::initial(170.0).clip(true))
-            .column(Column::initial(140.0).clip(true))
+            .column(Column::initial(220.0).clip(true))
+            .column(Column::initial(260.0).clip(true))
             .column(Column::initial(75.0))
-            .column(Column::initial(60.0))
+            .column(Column::initial(70.0))
             .column(Column::remainder().clip(true))
             .header(22.0, |mut h| {
-                for t in [
-                    "Enabled",
-                    "Name",
-                    "Location",
-                    "Company",
-                    "Signature",
-                    "Running",
-                    "Command",
-                ] {
+                for t in ["Name", "Path", "Available", "Running", "Digital Signature"] {
                     h.col(|ui| {
                         ui.strong(t);
                     });
@@ -992,43 +1240,54 @@ impl StartupManager {
                     row.set_selected(is_sel);
                     let locked = item.source.needs_admin() && !ctx.elevated;
                     row.col(|ui| {
-                        let mut on = item.enabled;
-                        let r = ui.add_enabled(
-                            !locked && item.source.can_toggle(),
-                            egui::Checkbox::without_text(&mut on),
-                        );
-                        if r.changed() {
-                            toggle = Some((item.clone(), on));
-                        }
-                        if locked {
-                            r.on_disabled_hover_text(ctx.i18n.tr("shell-needs-admin"));
-                        }
+                        ui.horizontal(|ui| {
+                            let mut on = item.enabled;
+                            let r = ui.add_enabled(
+                                !locked && item.source.can_toggle(),
+                                egui::Checkbox::without_text(&mut on),
+                            );
+                            if r.changed() {
+                                toggle = Some((item.clone(), on));
+                            }
+                            if locked {
+                                r.on_disabled_hover_text(ctx.i18n.tr("shell-needs-admin"));
+                            }
+                            ui.label(&item.name);
+                        });
                     });
                     row.col(|ui| {
-                        ui.label(&item.name);
+                        ui.label(&item.command).on_hover_text(&item.command);
                     });
                     row.col(|ui| {
-                        ui.weak(item.source.label());
-                    });
-                    row.col(|ui| {
-                        ui.label(info.map(|i| i.company.as_str()).unwrap_or(""));
-                    });
-                    row.col(|ui| {
-                        let s = info.map(|i| i.signature).unwrap_or_default();
-                        if matches!(s, Signature::Unsigned | Signature::Untrusted) {
-                            ui.colored_label(warn, s.label());
+                        if item.is_invalid() {
+                            ui.colored_label(warn, "No");
                         } else {
-                            ui.weak(s.label());
+                            ui.label("Yes");
                         }
                     });
                     row.col(|ui| {
                         let running = item.program().is_some_and(|p| {
                             self.running.contains(&p.to_string_lossy().to_ascii_lowercase())
                         });
-                        ui.weak(if running { "Yes" } else { "" });
+                        if running {
+                            ui.colored_label(good, "Yes");
+                        } else {
+                            ui.weak("No");
+                        }
                     });
                     row.col(|ui| {
-                        ui.label(&item.command).on_hover_text(&item.command);
+                        let s = info.map(|i| i.signature).unwrap_or_default();
+                        let text = match (s, info) {
+                            (Signature::Valid, Some(i)) if !i.signer.is_empty() => {
+                                format!("{} (Trusted)", i.signer)
+                            }
+                            _ => s.label().to_owned(),
+                        };
+                        if matches!(s, Signature::Unsigned | Signature::Untrusted) {
+                            ui.colored_label(warn, text);
+                        } else {
+                            ui.label(text);
+                        }
                     });
                     if row.response().clicked() {
                         clicked = Some((item.source, item.name.clone()));
@@ -1039,24 +1298,8 @@ impl StartupManager {
             self.selected = clicked;
             self.editing = None;
         }
-
         if let Some((item, enabled)) = toggle {
-            let verb = if enabled { "Enabled" } else { "Disabled" };
-            self.message = Some(if ctx.config.dry_run {
-                Ok(ctx.i18n.tr("common-dry-run-skip"))
-            } else {
-                set_enabled(&item, enabled)
-                    .and_then(|snap| {
-                        ctx.journal.record(
-                            "startup",
-                            format!("{verb} startup item {}", item.name),
-                            UndoAction::RestoreRegValues { values: vec![snap] },
-                        )
-                    })
-                    .map(|_| format!("{verb} {}.", item.name))
-                    .map_err(|e| format!("{e:#}"))
-            });
-            self.items = None;
+            self.toggle(ctx, &item, enabled);
         }
     }
 
@@ -1186,18 +1429,34 @@ impl Tool for StartupManager {
             None => {}
         }
 
-        let mut sel = usize::from(self.page == Page::Advanced);
-        frame::left(ui, 190.0, |ui| {
-            wm_core::ui::section_nav(
-                ui,
-                &[
-                    (icons::ROCKET, "Startup items"),
-                    (icons::TREE_STRUCTURE, "Advanced locations"),
-                ],
-                &mut sel,
-            )
+        // The original's location tree.
+        let mut picked = None;
+        frame::left(ui, 210.0, |ui| {
+            ui.spacing_mut().item_spacing.y = 2.0;
+            for (i, (depth, icon, label, _)) in NAV.iter().enumerate() {
+                ui.horizontal(|ui| {
+                    ui.add_space(*depth as f32 * 14.0);
+                    let text = egui::RichText::new(format!("{icon}  {label}"));
+                    let text = if *depth == 0 { text.strong() } else { text };
+                    if ui.selectable_label(self.node == i, text).clicked() {
+                        picked = Some(i);
+                    }
+                });
+            }
         });
-        self.page = if sel == 1 { Page::Advanced } else { Page::Items };
+        if let Some(i) = picked {
+            match NAV[i].3 {
+                Target::Open(tool) => wm_core::ui::request_open_tool(ui.ctx(), tool),
+                Target::Advanced => {
+                    self.node = i;
+                    self.page = Page::Advanced;
+                }
+                Target::Sources(_) => {
+                    self.node = i;
+                    self.page = Page::Items;
+                }
+            }
+        }
         match self.page {
             Page::Items => self.items_page(ui, ctx, &items),
             Page::Advanced => self.advanced_page(ui),
