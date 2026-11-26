@@ -8,12 +8,12 @@ use std::path::PathBuf;
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use wm_core::{
-    AppCtx, Category, Layout, Tool, egui, icons, paths,
+    AppCtx, Category, Layout, Tool, egui, paths,
     process::{hidden_command, run_checked},
     registry,
     safety::UndoAction,
     task::BackgroundTask,
-    ui::{Message, ToolButton, empty_state, frame, section, section_nav, show_message},
+    ui::{Message, frame, show_message},
 };
 
 use crate::adapters::{self, Adapter, parse_mask, prefix_to_mask};
@@ -378,7 +378,10 @@ impl Tool for IpSwitcher {
         let adapters = match &self.adapters {
             Some(Ok(a)) => a.clone(),
             Some(Err(e)) => {
-                ui.colored_label(ui.visuals().error_fg_color, e);
+                let e = e.clone();
+                frame::central(ui, |ui| {
+                    ui.colored_label(ui.visuals().error_fg_color, e);
+                });
                 return;
             }
             None => return,
@@ -389,89 +392,87 @@ impl Tool for IpSwitcher {
                 .find(|a| a.up && !a.ipv4.is_empty())
                 .map(|a| a.guid.clone());
         }
-
-        let labels: Vec<String> = adapters
-            .iter()
-            .map(|a| format!("{}{}", a.name, if a.up { "" } else { " (off)" }))
-            .collect();
-        let nav: Vec<(&str, &str)> = adapters
-            .iter()
-            .zip(&labels)
-            .map(|(a, l)| (if a.up { icons::PLUGS } else { icons::CLOUD_SLASH }, l.as_str()))
-            .collect();
-        let mut sel = self
+        let adapter = self
             .selected
             .as_ref()
-            .and_then(|g| adapters.iter().position(|a| &a.guid == g))
-            .unwrap_or(0);
-        frame::left(ui, 200.0, |ui| {
-            ui.weak("Adapters");
-            ui.add_space(4.0);
-            section_nav(ui, &nav, &mut sel)
-        });
-        self.selected = adapters.get(sel).map(|a| a.guid.clone());
-        let Some(adapter) = adapters.get(sel).cloned() else {
-            frame::central(ui, |ui| {
-                empty_state(ui, icons::PLUGS, "No network adapters", "");
-            });
-            return;
-        };
+            .and_then(|g| adapters.iter().find(|a| &a.guid == g))
+            .or(adapters.first())
+            .cloned();
         let busy = self.task.is_some();
         let can = ctx.elevated && !busy;
+        let profiles = self.profiles.clone().unwrap_or_default();
 
-        let mut buttons = vec![
-            Some(ToolButton::new(icons::ARROWS_CLOCKWISE, "Refresh")),
-            None,
-            Some(ToolButton::new(icons::GLOBE, "Automatic DNS").enabled(can)),
-        ];
-        buttons.extend(
-            DNS_PRESETS
-                .iter()
-                .map(|(name, _)| Some(ToolButton::new(icons::GLOBE, name).enabled(can))),
-        );
-        let mut autostart = None;
-        let clicked = frame::toolbar(ui, &buttons, |ui| {
-            let mut on = starts_with_windows();
-            if ui
-                .checkbox(&mut on, "Open IP Switcher when I sign in")
-                .on_hover_text("Handy on a laptop that moves between networks.")
-                .changed()
-            {
-                autostart = Some(on);
+        // The original's heading band.
+        egui::Panel::top("ip-band")
+            .resizable(false)
+            .frame(egui::Frame::new().inner_margin(egui::Margin::symmetric(12, 8)))
+            .show(ui, |ui| {
+                ui.vertical_centered(|ui| {
+                    ui.label(
+                        egui::RichText::new("Switches between different network settings quickly")
+                            .strong()
+                            .size(15.0),
+                    );
+                });
+            });
+        let status = match &adapter {
+            Some(a) if a.up => format!("{}: connected at {}", a.name, speed_text(a.speed_bps)),
+            Some(a) => format!("{}: disconnected", a.name),
+            None => "No network adapters".to_owned(),
+        };
+        frame::status(ui, &status, |ui| {
+            if busy {
+                ui.spinner();
+            } else if !ctx.elevated {
+                ui.weak("Applying a profile or DNS needs the app to run as administrator.");
             }
         });
-        match clicked {
-            Some(0) => self.adapters = None,
-            Some(2) => {
-                let cfg = IpConfig {
-                    dns: Vec::new(),
-                    ..IpConfig::of(&adapter)
-                };
-                self.apply(
-                    ui,
-                    ctx,
-                    &adapter,
-                    cfg,
-                    false,
-                    format!("Set DNS of {} to automatic", adapter.name),
-                );
-            }
-            Some(i) if i >= 3 => {
-                let (name, servers) = DNS_PRESETS[i - 3];
-                let cfg = IpConfig {
-                    dns: servers.to_vec(),
-                    ..IpConfig::of(&adapter)
-                };
-                self.apply(
-                    ui,
-                    ctx,
-                    &adapter,
-                    cfg,
-                    false,
-                    format!("Set DNS of {} to {name}", adapter.name),
-                );
-            }
-            _ => {}
+
+        // Bottom bar: Options (DNS presets, sign-in start, refresh) and Exit.
+        let mut dns = None;
+        let mut autostart = None;
+        let mut refresh = false;
+        let mut exit = false;
+        frame::footer(
+            ui,
+            |_| {},
+            |ui| {
+                exit = ui.button("Exit").clicked();
+                ui.menu_button("Options", |ui| {
+                    ui.add_enabled_ui(can && adapter.is_some(), |ui| {
+                        ui.label("Set DNS of this adapter to");
+                        if ui.button("Automatic").clicked() {
+                            dns = Some(None);
+                            ui.close();
+                        }
+                        for (i, (name, _)) in DNS_PRESETS.iter().enumerate() {
+                            if ui.button(*name).clicked() {
+                                dns = Some(Some(i));
+                                ui.close();
+                            }
+                        }
+                    });
+                    ui.separator();
+                    let mut on = starts_with_windows();
+                    if ui
+                        .checkbox(&mut on, "Open IP Switcher when I sign in")
+                        .on_hover_text("Handy on a laptop that moves between networks.")
+                        .changed()
+                    {
+                        autostart = Some(on);
+                    }
+                    if ui.button("Refresh adapters").clicked() {
+                        refresh = true;
+                        ui.close();
+                    }
+                });
+            },
+        );
+        if exit {
+            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+        }
+        if refresh {
+            self.adapters = None;
         }
         if let Some(on) = autostart {
             self.message = Some(if ctx.config.dry_run {
@@ -482,218 +483,230 @@ impl Tool for IpSwitcher {
                     .map_err(|e| format!("{e:#}"))
             });
         }
-        let status = if adapter.up {
-            format!("{}: connected at {}", adapter.name, speed_text(adapter.speed_bps))
-        } else {
-            format!("{}: disconnected", adapter.name)
-        };
-        frame::status(ui, &status, |ui| {
-            if busy {
-                ui.spinner();
-            } else if !ctx.elevated {
-                ui.weak("Applying a profile or DNS needs the app to run as administrator.");
-            }
-        });
+        if let (Some(choice), Some(a)) = (dns, &adapter) {
+            let (servers, what) = match choice {
+                None => (Vec::new(), format!("Set DNS of {} to automatic", a.name)),
+                Some(i) => (
+                    DNS_PRESETS[i].1.to_vec(),
+                    format!("Set DNS of {} to {}", a.name, DNS_PRESETS[i].0),
+                ),
+            };
+            let cfg = IpConfig {
+                dns: servers,
+                ..IpConfig::of(a)
+            };
+            self.apply(ui, ctx, a, cfg, false, what);
+        }
 
         frame::central(ui, |ui| {
             show_message(ui, &self.message);
-            section(
-                ui,
-                &adapter.name,
-                |_| {},
-                |ui| {
-                    egui::Grid::new("adapter_info")
-                        .num_columns(2)
-                        .spacing([16.0, 4.0])
-                        .show(ui, |ui| {
-                            let rows = [
-                                ("Description", adapter.description.clone()),
-                                ("MAC address", adapter.mac.clone()),
-                                (
-                                    "Address",
-                                    if adapter.dhcp {
-                                        "Automatic (DHCP)".to_owned()
-                                    } else {
-                                        "Manual".to_owned()
-                                    },
-                                ),
-                                (
-                                    "IPv4",
-                                    adapter
-                                        .ipv4
-                                        .iter()
-                                        .map(|(ip, p)| format!("{ip}/{p}"))
-                                        .collect::<Vec<_>>()
-                                        .join(", "),
-                                ),
-                                (
-                                    "Gateway",
-                                    adapter
-                                        .gateways
-                                        .iter()
-                                        .map(ToString::to_string)
-                                        .collect::<Vec<_>>()
-                                        .join(", "),
-                                ),
-                                (
-                                    "DNS",
-                                    format!(
-                                        "{}{}",
-                                        adapter
-                                            .dns
-                                            .iter()
-                                            .map(ToString::to_string)
-                                            .collect::<Vec<_>>()
-                                            .join(", "),
-                                        if adapter.static_dns.is_empty() {
-                                            " (automatic)"
-                                        } else {
-                                            " (manual)"
-                                        }
-                                    ),
-                                ),
-                            ];
-                            for (k, v) in rows {
-                                ui.weak(k);
-                                ui.label(v);
-                                ui.end_row();
+            // Profile picker and its buttons.
+            let mut act = None;
+            ui.horizontal(|ui| {
+                let current = profiles.iter().position(|p| p.name == self.form.name.trim());
+                egui::ComboBox::from_id_salt("ip-profile")
+                    .selected_text(current.map(|i| profiles[i].name.clone()).unwrap_or_default())
+                    .width(240.0)
+                    .show_ui(ui, |ui| {
+                        for p in &profiles {
+                            if ui
+                                .selectable_label(
+                                    Some(&p.name) == current.map(|i| &profiles[i].name),
+                                    &p.name,
+                                )
+                                .clicked()
+                            {
+                                self.form = Form::from_config(&p.name, &p.config);
+                            }
+                        }
+                    });
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.form.name)
+                        .hint_text("Profile name")
+                        .desired_width(150.0),
+                );
+                if ui.button("New").clicked() {
+                    act = Some("new");
+                }
+                if ui
+                    .add_enabled(!self.form.name.trim().is_empty(), egui::Button::new("Save"))
+                    .clicked()
+                {
+                    act = Some("save");
+                }
+                if ui
+                    .add_enabled(current.is_some(), egui::Button::new("Delete"))
+                    .clicked()
+                {
+                    act = Some("delete");
+                }
+                if ui
+                    .add_enabled(
+                        can && adapter.is_some() && current.is_some(),
+                        egui::Button::new("Apply"),
+                    )
+                    .clicked()
+                {
+                    act = Some("apply");
+                }
+            });
+            ui.add_space(6.0);
+            // The address group.
+            egui::Frame::group(ui.style()).show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.checkbox(&mut self.form.dhcp, "Obtain IP automatically");
+                let manual = !self.form.dhcp;
+                let label = |ui: &mut egui::Ui, t: &str| {
+                    ui.add_sized([86.0, 20.0], egui::Label::new(t));
+                };
+                let field = |ui: &mut egui::Ui, v: &mut String, enabled: bool| {
+                    ui.add_enabled(enabled, egui::TextEdit::singleline(v).desired_width(170.0));
+                };
+                ui.horizontal(|ui| {
+                    label(ui, "IP");
+                    field(ui, &mut self.form.ip, manual);
+                    if ui
+                        .add_enabled(adapter.is_some(), egui::Button::new("Import Current IP"))
+                        .clicked()
+                        && let Some(a) = &adapter
+                    {
+                        self.form = Form::from_config(&self.form.name, &IpConfig::of(a));
+                    }
+                });
+                ui.horizontal(|ui| {
+                    label(ui, "Gateway");
+                    field(ui, &mut self.form.gateway, manual);
+                    label(ui, "Subnet mask");
+                    field(ui, &mut self.form.mask, manual);
+                });
+                ui.horizontal(|ui| {
+                    label(ui, "DNS2");
+                    field(ui, &mut self.form.dns2, true);
+                    label(ui, "DNS1");
+                    field(ui, &mut self.form.dns1, true);
+                });
+                ui.weak("Leave DNS1 empty to get DNS automatically.");
+            });
+            ui.add_space(6.0);
+            // The current configuration of the chosen adapter.
+            egui::Frame::group(ui.style()).show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.weak("Profile Configuration");
+                ui.horizontal(|ui| {
+                    ui.label("Network Adapter");
+                    let text = adapter
+                        .as_ref()
+                        .map(|a| format!("{} ({})", a.name, a.description))
+                        .unwrap_or_default();
+                    egui::ComboBox::from_id_salt("ip-adapter")
+                        .selected_text(text)
+                        .width(380.0)
+                        .show_ui(ui, |ui| {
+                            for a in &adapters {
+                                let label = format!(
+                                    "{} ({}){}",
+                                    a.name,
+                                    a.description,
+                                    if a.up { "" } else { " — off" }
+                                );
+                                if ui
+                                    .selectable_label(self.selected.as_ref() == Some(&a.guid), label)
+                                    .clicked()
+                                {
+                                    self.selected = Some(a.guid.clone());
+                                }
                             }
                         });
-                },
-            );
-            ui.add_space(8.0);
+                });
+                let Some(a) = &adapter else { return };
+                ui.vertical_centered(|ui| {
+                    ui.weak(format!(
+                        "{} ({})",
+                        a.name,
+                        if a.up { "Connected" } else { "Disconnected" }
+                    ));
+                });
+                let join = |v: Vec<String>| v.join(", ");
+                egui::Grid::new("ip-current")
+                    .num_columns(4)
+                    .spacing([16.0, 6.0])
+                    .show(ui, |ui| {
+                        ui.weak("IP:");
+                        ui.label(join(a.ipv4.iter().map(|(ip, _)| ip.to_string()).collect()));
+                        ui.weak("Subnet mask:");
+                        ui.label(join(
+                            a.ipv4
+                                .iter()
+                                .map(|(_, p)| {
+                                    let p = u32::from(*p).min(32);
+                                    Ipv4Addr::from(if p == 0 { 0 } else { u32::MAX << (32 - p) }).to_string()
+                                })
+                                .collect(),
+                        ));
+                        ui.end_row();
+                        ui.weak("Gateway:");
+                        ui.label(join(a.gateways.iter().map(ToString::to_string).collect()));
+                        ui.weak("DNS1:");
+                        ui.label(a.dns.first().map(ToString::to_string).unwrap_or_default());
+                        ui.end_row();
+                        ui.weak("DNS2:");
+                        ui.label(a.dns.get(1).map(ToString::to_string).unwrap_or_default());
+                        ui.weak("Obtain IP automatically:");
+                        ui.label(if a.dhcp { "Yes" } else { "No" });
+                        ui.end_row();
+                    });
+            });
 
-            let profiles = self.profiles.clone().unwrap_or_default();
-            let mut delete = None;
-            section(
-                ui,
-                "Profiles",
-                |_| {},
-                |ui| {
-                    if profiles.is_empty() {
-                        ui.weak("No profiles yet. Fill in the form below and save one.");
+            match act {
+                Some("new") => {
+                    self.form = Form {
+                        dhcp: true,
+                        ..Default::default()
+                    };
+                }
+                Some("save") => {
+                    self.message = Some(
+                        self.form
+                            .to_config()
+                            .and_then(|config| {
+                                let name = self.form.name.trim().to_owned();
+                                let mut list = self.profiles.clone().unwrap_or_default();
+                                list.retain(|p| p.name != name);
+                                list.push(Profile {
+                                    name: name.clone(),
+                                    config,
+                                });
+                                save_profiles(&store()?, &list)?;
+                                self.profiles = Some(list);
+                                Ok(format!("Saved profile \"{name}\"."))
+                            })
+                            .map_err(|e| format!("{e:#}")),
+                    );
+                }
+                Some("delete") => {
+                    let name = self.form.name.trim().to_owned();
+                    let mut list = profiles.clone();
+                    list.retain(|p| p.name != name);
+                    let _ = store().and_then(|p| save_profiles(&p, &list));
+                    self.profiles = Some(list);
+                    self.message = Some(Ok(format!("Deleted profile \"{name}\".")));
+                }
+                Some("apply") => {
+                    if let (Some(a), Some(p)) = (
+                        &adapter,
+                        profiles.iter().find(|p| p.name == self.form.name.trim()),
+                    ) {
+                        self.apply(
+                            ui,
+                            ctx,
+                            a,
+                            p.config.clone(),
+                            true,
+                            format!("Applied IP profile \"{}\" to {}", p.name, a.name),
+                        );
                     }
-                    for (i, p) in profiles.iter().enumerate() {
-                        ui.horizontal(|ui| {
-                            ui.strong(&p.name);
-                            let summary = if p.config.dhcp {
-                                "automatic address".to_owned()
-                            } else {
-                                format!(
-                                    "{} / {}",
-                                    p.config.ip.map(|x| x.to_string()).unwrap_or_default(),
-                                    p.config.mask.map(|x| x.to_string()).unwrap_or_default()
-                                )
-                            };
-                            ui.weak(summary);
-                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                if ui.small_button("Delete").clicked() {
-                                    delete = Some(i);
-                                }
-                                if ui.small_button("Edit").clicked() {
-                                    self.form = Form::from_config(&p.name, &p.config);
-                                }
-                                if ui.add_enabled(can, egui::Button::new("Apply").small()).clicked() {
-                                    self.apply(
-                                        ui,
-                                        ctx,
-                                        &adapter,
-                                        p.config.clone(),
-                                        true,
-                                        format!("Applied IP profile \"{}\" to {}", p.name, adapter.name),
-                                    );
-                                }
-                            });
-                        });
-                    }
-                    ui.separator();
-                    ui.horizontal(|ui| {
-                        ui.add(
-                            egui::TextEdit::singleline(&mut self.form.name)
-                                .hint_text("Profile name")
-                                .desired_width(160.0),
-                        );
-                        ui.checkbox(&mut self.form.dhcp, "Obtain address automatically");
-                        if ui.small_button("Fill from current").clicked() {
-                            self.form = Form::from_config(&self.form.name, &IpConfig::of(&adapter));
-                        }
-                        if ui
-                            .small_button("New")
-                            .on_hover_text("Clear the form for a new profile")
-                            .clicked()
-                        {
-                            self.form = Form {
-                                dhcp: true,
-                                ..Default::default()
-                            };
-                        }
-                        if profiles.iter().any(|p| p.name == self.form.name.trim()) {
-                            ui.weak("Saving replaces this profile.");
-                        }
-                    });
-                    ui.add_enabled_ui(!self.form.dhcp, |ui| {
-                        ui.horizontal(|ui| {
-                            ui.add(
-                                egui::TextEdit::singleline(&mut self.form.ip)
-                                    .hint_text("IP address")
-                                    .desired_width(120.0),
-                            );
-                            ui.add(
-                                egui::TextEdit::singleline(&mut self.form.mask)
-                                    .hint_text("Mask or /24")
-                                    .desired_width(120.0),
-                            );
-                            ui.add(
-                                egui::TextEdit::singleline(&mut self.form.gateway)
-                                    .hint_text("Gateway")
-                                    .desired_width(120.0),
-                            );
-                        });
-                    });
-                    ui.horizontal(|ui| {
-                        ui.add(
-                            egui::TextEdit::singleline(&mut self.form.dns1)
-                                .hint_text("DNS 1 (empty = auto)")
-                                .desired_width(140.0),
-                        );
-                        ui.add(
-                            egui::TextEdit::singleline(&mut self.form.dns2)
-                                .hint_text("DNS 2")
-                                .desired_width(140.0),
-                        );
-                        if ui
-                            .button(format!("{}  Save profile", icons::FLOPPY_DISK))
-                            .clicked()
-                        {
-                            self.message = Some(
-                                self.form
-                                    .to_config()
-                                    .and_then(|config| {
-                                        let name = self.form.name.trim().to_owned();
-                                        if name.is_empty() {
-                                            bail!("Enter a profile name.");
-                                        }
-                                        let mut list = self.profiles.clone().unwrap_or_default();
-                                        list.retain(|p| p.name != name);
-                                        list.push(Profile {
-                                            name: name.clone(),
-                                            config,
-                                        });
-                                        save_profiles(&store()?, &list)?;
-                                        self.profiles = Some(list);
-                                        Ok(format!("Saved profile \"{name}\"."))
-                                    })
-                                    .map_err(|e| format!("{e:#}")),
-                            );
-                        }
-                    });
-                },
-            );
-            if let Some(i) = delete {
-                let mut list = profiles.clone();
-                list.remove(i);
-                let _ = store().and_then(|p| save_profiles(&p, &list));
-                self.profiles = Some(list);
+                }
+                _ => {}
             }
         });
     }

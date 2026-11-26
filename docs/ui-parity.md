@@ -84,7 +84,7 @@ Tools reachable only from a dropdown: Windows Features (System Protection), App 
 | FileUndelete.exe | undelete | Drive, scan type (Deleted Scan / Deep Scan) and file type pickers; toolbar Scan, Select All, Recover, Exit; one result list; status "Selected: n/N items" with the search box | Columns File Name, Path, Size, Last Modified (plus Condition) | Pickers sit in a strip under the toolbar instead of on the same row; no Expand All or Creation Date column | Kept: Only files in good condition, Recover with folders | ✅ |
 | (hub) System Network | systemnetwork | | | | | ❌ |
 | URLManager.exe | hosts | Heading band "Manage URLs, Hosts and website access", section list Favorites Checker, Host Editor, URL Blocker | Section names and order as the original | Each section keeps our own layout (Host Editor is an editable list with Save; URL Blocker is our browser policy lists); Favorites Checker is not the first page shown | | 🟡 |
-| IPSwitcher.exe | ipswitcher | | | | | ❌ |
+| IPSwitcher.exe | ipswitcher | Heading band "Switches between different network settings quickly", profile picker + New / Save / Delete / Apply, address group (Obtain IP automatically, IP + Import Current IP, Gateway, Subnet mask, DNS2, DNS1), Profile Configuration group (Network Adapter and its current settings), Options / Exit | Labels as the original | Profiles are named in a field next to the picker; Options holds our DNS presets, the sign-in start and Refresh | | ✅ |
 | WiFiManager.exe | wifi | | | | | ❌ |
 | NetworkTools.exe | nettools | | | | | ❌ |
 | NetworkMonitor.exe | netmonitor | | | | | ❌ |
