@@ -304,7 +304,7 @@ pub struct NetworkTools {
 impl Default for NetworkTools {
     fn default() -> Self {
         Self {
-            mode: Mode::Ping,
+            mode: Mode::Trace,
             host: "example.com".into(),
             dns_type: 0,
             ports: "22, 80, 443, 3389".into(),
@@ -345,8 +345,14 @@ impl Tool for NetworkTools {
             }
         }
         let mut sel = MODES.iter().position(|(m, _, _)| *m == self.mode).unwrap_or(0);
-        let nav: Vec<(&str, &str)> = MODES.iter().map(|(_, icon, label)| (*icon, *label)).collect();
+        let mut nav: Vec<(&str, &str)> = MODES.iter().map(|(_, icon, label)| (*icon, *label)).collect();
+        // The original's last entry opens Windows Utilities.
+        nav.push((icons::GRID_FOUR, "Windows Utilities"));
         frame::left(ui, 180.0, |ui| section_nav(ui, &nav, &mut sel));
+        if sel == MODES.len() {
+            wm_core::ui::request_open_tool(ui.ctx(), "utilities");
+            sel = MODES.iter().position(|(m, _, _)| *m == self.mode).unwrap_or(0);
+        }
         self.mode = MODES[sel].0;
 
         let busy = self.task.is_some();
@@ -362,7 +368,7 @@ impl Tool for NetworkTools {
         match frame::toolbar(
             ui,
             &[
-                Some(ToolButton::new(icons::PLAY, "Run").enabled(!busy && ready)),
+                Some(ToolButton::new(icons::PLAY, "Start").enabled(!busy && ready)),
                 Some(ToolButton::new(icons::STOP, "Stop").enabled(busy)),
                 Some(ToolButton::new(icons::COPY, "Copy").enabled(!self.output.is_empty())),
                 Some(ToolButton::new(icons::TRASH, "Clear").enabled(!busy && !self.output.is_empty())),
@@ -462,7 +468,7 @@ impl Tool for NetworkTools {
             Mode::Dns => "Asks your DNS server for the chosen record type.",
             Mode::Ports => "Tries a TCP connection to each port.",
             Mode::Scan => "Finds the devices that answer on your local network.",
-            Mode::Geo => "Sends the address to ipinfo.io when you press Run.",
+            Mode::Geo => "Sends the address to ipinfo.io when you press Start.",
             Mode::Whois => "Asks IANA, then the registry that holds the name or address.",
         };
         let progress = self
@@ -485,7 +491,7 @@ impl Tool for NetworkTools {
                     ui,
                     icon,
                     MODES[sel].2,
-                    "Enter a host above, then press Run (or Enter).",
+                    "Enter a host above, then press Start (or Enter).",
                 );
                 return;
             }
@@ -506,13 +512,14 @@ impl Tool for NetworkTools {
 }
 
 const MODES: [(Mode, &str, &str); 7] = [
+    // The original's tools first, in its order, then ours.
+    (Mode::Trace, icons::TREE_STRUCTURE, "Trace Route"),
+    (Mode::Whois, icons::USER, "Whois"),
+    (Mode::Dns, icons::MAGNIFYING_GLASS, "DNS Lookup"),
+    (Mode::Scan, icons::NETWORK, "IP Scanner"),
+    (Mode::Ports, icons::SIGN_OUT, "Port Scan"),
     (Mode::Ping, icons::PLUGS, "Ping"),
-    (Mode::Trace, icons::TREE_STRUCTURE, "Traceroute"),
-    (Mode::Dns, icons::GLOBE, "DNS lookup"),
-    (Mode::Ports, icons::LINK, "Port check"),
-    (Mode::Scan, icons::NETWORK, "IP scanner"),
     (Mode::Geo, icons::COMPASS, "Geolocation"),
-    (Mode::Whois, icons::MAGNIFYING_GLASS, "Whois"),
 ];
 
 impl NetworkTools {
