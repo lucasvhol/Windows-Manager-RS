@@ -357,7 +357,15 @@ impl Tool for EventViewer {
         Category::Information
     }
 
+    fn layout(&self) -> wm_core::Layout {
+        wm_core::Layout::Fill
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, ctx: &mut AppCtx<'_>) {
+        use wm_core::{
+            icons,
+            ui::{ToolButton, frame},
+        };
         if !self.loaded_once {
             self.loaded_once = true;
             self.reload(ui.ctx());
@@ -369,9 +377,57 @@ impl Tool for EventViewer {
                 self.task = None;
             }
         }
+        // Taken out for this frame (so the regions below can borrow `self`), put back at the end.
+        let rows_result = std::mem::replace(&mut self.rows, Ok(Vec::new()));
+        let empty = Vec::new();
+        let rows: &Vec<EventRow> = rows_result.as_ref().unwrap_or(&empty);
+        let f = self.filter.to_lowercase();
+        let visible: Vec<&EventRow> = rows
+            .iter()
+            .filter(|r| {
+                f.is_empty()
+                    || r.provider.to_lowercase().contains(&f)
+                    || r.message.to_lowercase().contains(&f)
+                    || r.event_id.to_string() == f
+            })
+            .collect();
 
         let mut reload = false;
-        ui.horizontal_wrapped(|ui| {
+        let refresh = ctx.i18n.tr("common-refresh");
+        let group_label = if self.grouped {
+            "List events"
+        } else {
+            "Group by event"
+        };
+        match frame::toolbar(
+            ui,
+            &[
+                Some(ToolButton::new(icons::ARROWS_CLOCKWISE, &refresh).enabled(self.task.is_none())),
+                None,
+                Some(ToolButton::new(icons::LIST_BULLETS, group_label)),
+                Some(ToolButton::new(icons::UPLOAD, "Export CSV").enabled(!visible.is_empty())),
+            ],
+            |_| {},
+        ) {
+            Some(0) => reload = true,
+            Some(2) => self.grouped = !self.grouped,
+            Some(3) => {
+                if let Some(path) = rfd::FileDialog::new()
+                    .add_filter("CSV", &["csv"])
+                    .set_file_name(format!("{}-events.csv", LOGS[self.log]))
+                    .save_file()
+                {
+                    self.message = Some(
+                        std::fs::write(&path, to_csv(&visible))
+                            .map(|()| format!("Saved {} events to {}.", visible.len(), path.display()))
+                            .map_err(|e| e.to_string()),
+                    );
+                }
+            }
+            _ => {}
+        }
+        let filter_hint = ctx.i18n.tr("common-filter");
+        frame::options(ui, |ui| {
             egui::ComboBox::from_id_salt("event_log")
                 .selected_text(LOGS[self.log])
                 .show_ui(ui, |ui| {
@@ -399,124 +455,141 @@ impl Tool for EventViewer {
             reload |= ui
                 .add(egui::DragValue::new(&mut self.max).range(50..=10_000).speed(10))
                 .drag_stopped();
-            reload |= ui
-                .add_enabled(
-                    self.task.is_none(),
-                    egui::Button::new(ctx.i18n.tr("common-refresh")),
-                )
-                .clicked();
-            if self.task.is_some() {
+            ui.separator();
+            ui.add(
+                egui::TextEdit::singleline(&mut self.filter)
+                    .hint_text(format!("{}  {filter_hint}", icons::MAGNIFYING_GLASS))
+                    .desired_width(200.0),
+            );
+        });
+        let loading = self.task.is_some();
+        frame::status(ui, &format!("{} events", visible.len()), |ui| {
+            if loading {
                 ui.spinner();
             }
         });
-        if reload && self.task.is_none() {
-            self.reload(ui.ctx());
-        }
-        ui.add(egui::TextEdit::singleline(&mut self.filter).hint_text(ctx.i18n.tr("common-filter")));
 
-        let rows = match &self.rows {
-            Ok(rows) => rows,
-            Err(e) => {
+        // The selected event's details, in a resizable panel at the bottom.
+        if !self.grouped
+            && let Some(r) = self
+                .selected
+                .and_then(|id| rows.iter().find(|r| r.record_id == id))
+        {
+            egui::Panel::bottom("event_detail")
+                .resizable(true)
+                .default_size(200.0)
+                .frame(egui::Frame::new().inner_margin(egui::Margin::symmetric(12, 8)))
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.strong(format!("{} — Event {} — {}", r.provider, r.event_id, r.time));
+                        if ui.small_button("Copy XML").clicked() {
+                            ui.ctx().copy_text(r.xml.clone());
+                        }
+                    });
+                    egui::ScrollArea::vertical()
+                        .id_salt("event_detail")
+                        .show(ui, |ui| {
+                            if r.message.is_empty() {
+                                ui.weak("No message text is available for this event; see the XML below.");
+                            } else {
+                                ui.add(egui::Label::new(&r.message).selectable(true));
+                            }
+                            egui::CollapsingHeader::new("XML").show(ui, |ui| {
+                                ui.add(
+                                    egui::Label::new(egui::RichText::new(&r.xml).monospace().small())
+                                        .selectable(true),
+                                );
+                            });
+                        });
+                });
+        }
+
+        let needs_admin = LOGS[self.log] == "Security" && !ctx.elevated;
+        let admin_hint = ctx.i18n.tr("shell-needs-admin");
+        frame::central_fixed(ui, |ui| {
+            wm_core::ui::show_message(ui, &self.message);
+            if let Err(e) = &rows_result {
                 ui.colored_label(ui.visuals().error_fg_color, e);
-                if LOGS[self.log] == "Security" && !ctx.elevated {
-                    ui.weak(ctx.i18n.tr("shell-needs-admin"));
+                if needs_admin {
+                    ui.weak(admin_hint);
                 }
                 return;
             }
-        };
-        let f = self.filter.to_lowercase();
-        let visible: Vec<&EventRow> = rows
-            .iter()
-            .filter(|r| {
-                f.is_empty()
-                    || r.provider.to_lowercase().contains(&f)
-                    || r.message.to_lowercase().contains(&f)
-                    || r.event_id.to_string() == f
-            })
-            .collect();
-        ui.horizontal(|ui| {
-            ui.weak(format!("{} events", visible.len()));
-            ui.checkbox(&mut self.grouped, "Group by event");
-            if ui
-                .add_enabled(!visible.is_empty(), egui::Button::new("Export CSV…"))
-                .clicked()
-                && let Some(path) = rfd::FileDialog::new()
-                    .add_filter("CSV", &["csv"])
-                    .set_file_name(format!("{}-events.csv", LOGS[self.log]))
-                    .save_file()
-            {
-                self.message = Some(
-                    std::fs::write(&path, to_csv(&visible))
-                        .map(|()| format!("Saved {} events to {}.", visible.len(), path.display()))
-                        .map_err(|e| e.to_string()),
-                );
+            if self.grouped {
+                self.groups_view(ui, &visible);
+            } else {
+                self.table(ui, &visible);
             }
         });
-        wm_core::ui::show_message(ui, &self.message);
-        if self.grouped {
-            // (source, id) -> (level, count, latest time, first message line)
-            let mut groups: Vec<(GroupKey, GroupStats)> = Vec::new();
-            for r in &visible {
-                let key = (r.provider.clone(), r.event_id);
-                match groups.iter_mut().find(|(k, _)| *k == key) {
-                    Some((_, g)) => g.1 += 1,
-                    None => groups.push((
-                        key,
-                        (
-                            r.level,
-                            1,
-                            r.time.clone(),
-                            r.message.lines().next().unwrap_or_default().to_owned(),
-                        ),
-                    )),
-                }
-            }
-            groups.sort_by_key(|g| std::cmp::Reverse(g.1.1));
-            let (error, warn) = (ui.visuals().error_fg_color, ui.visuals().warn_fg_color);
-            egui::ScrollArea::vertical().id_salt("groups").show(ui, |ui| {
-                egui::Grid::new("event_groups")
-                    .striped(true)
-                    .spacing([14.0, 4.0])
-                    .show(ui, |ui| {
-                        for h in ["Count", "Level", "Source", "Event ID", "Latest", "Message"] {
-                            ui.strong(h);
-                        }
-                        ui.end_row();
-                        for ((source, id), (level, count, latest, msg)) in &groups {
-                            ui.label(count.to_string());
-                            let color = match level {
-                                1 | 2 => error,
-                                3 => warn,
-                                _ => ui.visuals().text_color(),
-                            };
-                            ui.colored_label(color, level_name(*level));
-                            ui.label(source);
-                            if ui
-                                .link(id.to_string())
-                                .on_hover_text("Show these events")
-                                .clicked()
-                            {
-                                self.filter = id.to_string();
-                                self.grouped = false;
-                            }
-                            ui.label(latest);
-                            ui.label(msg);
-                            ui.end_row();
-                        }
-                    });
-            });
-            return;
+        self.rows = rows_result;
+        if reload && self.task.is_none() {
+            self.reload(ui.ctx());
         }
+    }
+}
 
-        let detail_height = if self.selected.is_some() { 220.0 } else { 0.0 };
-        let table_height = (ui.available_height() - detail_height).max(150.0);
+impl EventViewer {
+    fn groups_view(&mut self, ui: &mut egui::Ui, visible: &[&EventRow]) {
+        // (source, id) -> (level, count, latest time, first message line)
+        let mut groups: Vec<(GroupKey, GroupStats)> = Vec::new();
+        for r in visible {
+            let key = (r.provider.clone(), r.event_id);
+            match groups.iter_mut().find(|(k, _)| *k == key) {
+                Some((_, g)) => g.1 += 1,
+                None => groups.push((
+                    key,
+                    (
+                        r.level,
+                        1,
+                        r.time.clone(),
+                        r.message.lines().next().unwrap_or_default().to_owned(),
+                    ),
+                )),
+            }
+        }
+        groups.sort_by_key(|g| std::cmp::Reverse(g.1.1));
+        let (error, warn) = (ui.visuals().error_fg_color, ui.visuals().warn_fg_color);
+        egui::ScrollArea::vertical().id_salt("groups").show(ui, |ui| {
+            egui::Grid::new("event_groups")
+                .striped(true)
+                .spacing([14.0, 4.0])
+                .show(ui, |ui| {
+                    for h in ["Count", "Level", "Source", "Event ID", "Latest", "Message"] {
+                        ui.strong(h);
+                    }
+                    ui.end_row();
+                    for ((source, id), (level, count, latest, msg)) in &groups {
+                        ui.label(count.to_string());
+                        let color = match level {
+                            1 | 2 => error,
+                            3 => warn,
+                            _ => ui.visuals().text_color(),
+                        };
+                        ui.colored_label(color, level_name(*level));
+                        ui.label(source);
+                        if ui
+                            .link(id.to_string())
+                            .on_hover_text("Show these events")
+                            .clicked()
+                        {
+                            self.filter = id.to_string();
+                            self.grouped = false;
+                        }
+                        ui.label(latest);
+                        ui.label(msg);
+                        ui.end_row();
+                    }
+                });
+        });
+    }
+
+    fn table(&mut self, ui: &mut egui::Ui, visible: &[&EventRow]) {
         let mut clicked = None;
         let error = ui.visuals().error_fg_color;
         let warn = ui.visuals().warn_fg_color;
         TableBuilder::new(ui)
             .striped(true)
             .sense(egui::Sense::click())
-            .max_scroll_height(table_height)
             .column(Column::initial(90.0))
             .column(Column::initial(140.0))
             .column(Column::initial(200.0).clip(true))
@@ -560,35 +633,6 @@ impl Tool for EventViewer {
             });
         if clicked.is_some() {
             self.selected = clicked;
-        }
-
-        if let Some(r) = self
-            .selected
-            .and_then(|id| rows.iter().find(|r| r.record_id == id))
-        {
-            ui.separator();
-            ui.horizontal(|ui| {
-                ui.strong(format!("{} — Event {} — {}", r.provider, r.event_id, r.time));
-                if ui.small_button("Copy XML").clicked() {
-                    ui.ctx().copy_text(r.xml.clone());
-                }
-            });
-            egui::ScrollArea::vertical()
-                .id_salt("event_detail")
-                .max_height(180.0)
-                .show(ui, |ui| {
-                    if r.message.is_empty() {
-                        ui.weak("No message text is available for this event; see the XML below.");
-                    } else {
-                        ui.add(egui::Label::new(&r.message).selectable(true));
-                    }
-                    egui::CollapsingHeader::new("XML").show(ui, |ui| {
-                        ui.add(
-                            egui::Label::new(egui::RichText::new(&r.xml).monospace().small())
-                                .selectable(true),
-                        );
-                    });
-                });
         }
     }
 }

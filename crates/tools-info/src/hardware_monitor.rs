@@ -10,10 +10,10 @@ use std::time::{Duration, Instant};
 use crate::gpu_counters;
 use sysinfo::{Components, Disks, Networks, System};
 use wm_core::{
-    AppCtx, Category, Tool,
+    AppCtx, Category, Layout, Tool,
     egui::{self, Color32, Vec2},
     task::Sampler,
-    ui::{format_bytes, sparkline},
+    ui::{format_bytes, frame, sparkline},
 };
 
 const HISTORY: usize = 120;
@@ -518,11 +518,72 @@ impl Tool for HardwareMonitor {
             self.history.push_back(s);
         }
         let Some(now) = self.history.back().cloned() else {
-            ui.spinner();
-            ui.label(ctx.i18n.tr("common-loading"));
+            let loading = ctx.i18n.tr("common-loading");
+            frame::central(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.weak(loading);
+                });
+            });
             return;
         };
+        if self.alarm_c == 0.0 {
+            self.alarm_c = 85.0;
+        }
+        frame::options(ui, |ui| {
+            ui.checkbox(&mut self.alarm_on, "Warn me when a temperature reaches");
+            ui.add(
+                egui::DragValue::new(&mut self.alarm_c)
+                    .range(40.0..=120.0)
+                    .suffix(" °C"),
+            );
+            if ui.button("Reset statistics").clicked() {
+                self.sensors.clear();
+            }
+            ui.separator();
+            self.sensor_log_controls(ui);
+        });
+        let mut status = Vec::new();
+        if now.swap_total > 0 {
+            status.push(format!(
+                "Page file: {} / {}",
+                format_bytes(now.swap_used),
+                format_bytes(now.swap_total)
+            ));
+        }
+        if let Some(b) = now.battery {
+            status.push(format!(
+                "Battery: {}%{}",
+                b.percent,
+                if b.charging {
+                    ", charging"
+                } else if b.on_ac {
+                    ", plugged in"
+                } else {
+                    ", on battery"
+                }
+            ));
+        }
+        let alarm = self.alarm_text.clone();
+        frame::status(ui, &status.join(" · "), |ui| {
+            if let Some(text) = alarm {
+                ui.colored_label(
+                    ui.visuals().error_fg_color,
+                    format!("{}  {text}", wm_core::icons::WARNING),
+                );
+            }
+        });
+        frame::central(ui, |ui| self.body(ui, ctx, &now));
+    }
 
+    fn layout(&self) -> Layout {
+        Layout::Fill
+    }
+}
+
+impl HardwareMonitor {
+    fn body(&mut self, ui: &mut egui::Ui, ctx: &AppCtx<'_>, now: &Sample) {
+        let now = now.clone();
         let accent = ui.visuals().selection.bg_fill;
         let warm = Color32::from_rgb(230, 140, 60);
         egui::Grid::new("hwmon_cards")
@@ -598,14 +659,6 @@ impl Tool for HardwareMonitor {
             });
 
         ui.add_space(12.0);
-        if now.swap_total > 0 {
-            ui.label(format!(
-                "Page file: {} / {}",
-                format_bytes(now.swap_used),
-                format_bytes(now.swap_total)
-            ));
-        }
-
         egui::CollapsingHeader::new(format!("CPU cores ({})", now.per_core.len()))
             .default_open(true)
             .show(ui, |ui| {
@@ -620,9 +673,6 @@ impl Tool for HardwareMonitor {
                 });
             });
 
-        if self.alarm_c == 0.0 {
-            self.alarm_c = 85.0;
-        }
         // SMART disk temperatures, once a minute (administrator only).
         if ctx.elevated
             && self.disk_task.is_none()
@@ -643,19 +693,6 @@ impl Tool for HardwareMonitor {
             }
         }
 
-        if let Some(b) = now.battery {
-            ui.label(format!(
-                "Battery: {}%{}",
-                b.percent,
-                if b.charging {
-                    ", charging"
-                } else if b.on_ac {
-                    ", plugged in"
-                } else {
-                    ", on battery"
-                }
-            ));
-        }
         for g in &now.gpus {
             egui::CollapsingHeader::new(&g.name)
                 .default_open(true)
@@ -699,17 +736,6 @@ impl Tool for HardwareMonitor {
         }
 
         egui::CollapsingHeader::new("Sensors").default_open(true).show(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.checkbox(&mut self.alarm_on, "Warn me when a temperature reaches");
-                ui.add(egui::DragValue::new(&mut self.alarm_c).range(40.0..=120.0).suffix(" °C"));
-                if ui.small_button("Reset statistics").clicked() {
-                    self.sensors.clear();
-                }
-            });
-            if let Some(text) = &self.alarm_text {
-                ui.colored_label(ui.visuals().error_fg_color, format!("{}  {text}", wm_core::icons::WARNING));
-            }
-            self.sensor_log_controls(ui);
             if let Some(name) = self.selected.clone() {
                 match self.sensors.get(&name) {
                     Some(s) => {

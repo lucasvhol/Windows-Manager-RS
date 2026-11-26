@@ -5,10 +5,10 @@ use sysinfo::{Disks, Motherboard, Networks, Product, System};
 use winreg::RegKey;
 use winreg::enums::HKEY_LOCAL_MACHINE;
 use wm_core::{
-    AppCtx, Category, Tool, egui, icons,
+    AppCtx, Category, Layout, Tool, egui, icons,
     safety::UndoAction,
     task::BackgroundTask,
-    ui::{Confirm, section_nav},
+    ui::{Confirm, frame, section_nav},
     ui::{Message, format_bytes, format_duration, show_message},
 };
 
@@ -635,6 +635,10 @@ fn dirs_documents() -> std::path::PathBuf {
 }
 
 impl Tool for SystemInfo {
+    fn layout(&self) -> Layout {
+        Layout::Fill
+    }
+
     fn id(&self) -> &'static str {
         "sysinfo"
     }
@@ -673,16 +677,12 @@ impl Tool for SystemInfo {
                 self.tables.remove(&self.page);
             }
         }
-        ui.horizontal_top(|ui| {
-            ui.vertical(|ui| {
-                ui.set_width(200.0);
-                if section_nav(ui, &PAGES, &mut self.page) {
-                    self.selected_row = None;
-                    self.message = None;
-                }
-            });
-            ui.add_space(14.0);
-            ui.vertical(|ui| {
+        if frame::left(ui, 200.0, |ui| section_nav(ui, &PAGES, &mut self.page)) {
+            self.selected_row = None;
+            self.message = None;
+        }
+        {
+            frame::central(ui, |ui| {
                 ui.heading(PAGES[self.page].1);
                 ui.add_space(4.0);
                 if self.page != 0 {
@@ -734,7 +734,7 @@ impl Tool for SystemInfo {
                     _ => self.reports(ui, ctx),
                 }
             });
-        });
+        }
     }
 }
 

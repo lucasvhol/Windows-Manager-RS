@@ -13,11 +13,11 @@ use windows::Win32::Devices::DeviceAndDriverInstallation::{
 };
 use windows::core::PCWSTR;
 use wm_core::{
-    AppCtx, Category, Tool, egui,
+    AppCtx, Category, Layout, Tool, egui,
     process::hidden_command,
     safety::UndoAction,
     task::BackgroundTask,
-    ui::{Confirm, Message, show_message},
+    ui::{Confirm, Message, frame, show_message},
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -264,6 +264,10 @@ impl DeviceManager {
 }
 
 impl Tool for DeviceManager {
+    fn layout(&self) -> Layout {
+        Layout::Fill
+    }
+
     fn id(&self) -> &'static str {
         "devices"
     }
@@ -346,7 +350,7 @@ impl Tool for DeviceManager {
                     .enabled(ctx.elevated && !busy),
             ),
         ];
-        match wm_core::ui::toolbar(ui, &tools) {
+        match wm_core::ui::frame::toolbar(ui, &tools, |_| {}) {
             Some(0) => {
                 self.side_task = Some(BackgroundTask::spawn(ui.ctx(), |_| {
                     wm_core::process::run_checked(hidden_command("pnputil").arg("/scan-devices"))?;
@@ -414,15 +418,15 @@ impl Tool for DeviceManager {
             }
             _ => {}
         }
-        if busy {
-            ui.horizontal(|ui| {
-                ui.spinner();
-                ui.weak("Working…");
-            });
-        }
-
-        ui.horizontal(|ui| {
-            ui.add(egui::TextEdit::singleline(&mut self.filter).hint_text(ctx.i18n.tr("common-filter")));
+        let filter_hint = ctx.i18n.tr("common-filter");
+        let refresh = ctx.i18n.tr("common-refresh");
+        let loading = self.task.is_some();
+        frame::options(ui, |ui| {
+            ui.add(
+                egui::TextEdit::singleline(&mut self.filter)
+                    .hint_text(format!("{}  {filter_hint}", wm_core::icons::MAGNIFYING_GLASS))
+                    .desired_width(200.0),
+            );
             ui.checkbox(&mut self.problems_only, "Only devices with problems");
             if ui
                 .checkbox(&mut self.show_disconnected, "Show disconnected devices")
@@ -430,28 +434,27 @@ impl Tool for DeviceManager {
             {
                 self.devices = None;
             }
-            if ui
-                .add_enabled(
-                    self.task.is_none(),
-                    egui::Button::new(ctx.i18n.tr("common-refresh")),
-                )
-                .clicked()
-            {
+            if ui.add_enabled(!loading, egui::Button::new(&refresh)).clicked() {
                 self.devices = None;
             }
-            if self.task.is_some() {
-                ui.spinner();
-            }
         });
-        show_message(ui, &self.message);
 
         let devices = match &self.devices {
             Some(Ok(d)) => d.clone(),
             Some(Err(e)) => {
-                ui.colored_label(ui.visuals().error_fg_color, e);
+                let e = e.clone();
+                frame::central(ui, |ui| {
+                    show_message(ui, &self.message);
+                    ui.colored_label(ui.visuals().error_fg_color, e);
+                });
                 return;
             }
-            None => return,
+            None => {
+                frame::central(ui, |ui| {
+                    ui.spinner();
+                });
+                return;
+            }
         };
         let f = self.filter.to_lowercase();
         let visible: Vec<Device> = devices
@@ -469,7 +472,15 @@ impl Tool for DeviceManager {
             .iter()
             .filter(|d| d.problem.is_some() && !d.is_disabled())
             .count();
-        ui.weak(format!("{} devices, {} with problems", devices.len(), problems));
+        frame::status(
+            ui,
+            &format!("{} devices, {} with problems", devices.len(), problems),
+            |ui| {
+                if busy || loading {
+                    ui.spinner();
+                }
+            },
+        );
 
         let warn = ui.visuals().warn_fg_color;
         let selected = self
@@ -536,7 +547,8 @@ impl Tool for DeviceManager {
                 });
             });
 
-        egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
+        frame::central(ui, |ui| {
+            show_message(ui, &self.message);
             for (class, list) in group_by_class(&visible) {
                 let has_problem = list.iter().any(|d| d.problem.is_some());
                 let title = format!("{class} ({})", list.len());

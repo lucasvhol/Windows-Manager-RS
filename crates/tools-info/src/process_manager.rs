@@ -23,12 +23,12 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows::core::BOOL;
 use wm_core::{
-    AppCtx, Category, Tool, egui,
+    AppCtx, Category, Layout, Tool, egui,
     fileinfo::{self, FileInfo, Signature},
     icons, registry,
     safety::UndoAction,
     task::{BackgroundTask, Sampler},
-    ui::{Confirm, Message, ToolButton, format_bytes, show_message, toolbar},
+    ui::{Confirm, Message, ToolButton, format_bytes, frame, show_message},
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -553,7 +553,7 @@ impl ProcessManager {
             Some(ToolButton::new(icons::FOLDER_OPEN, "Open folder").enabled(has)),
             Some(ToolButton::new(icons::MAGNIFYING_GLASS, "Look up").enabled(has)),
         ];
-        let clicked = toolbar(ui, &buttons);
+        let clicked = frame::toolbar(ui, &buttons, |_| {});
         if let Some(r) = &selected_row {
             match clicked {
                 Some(0) => self.confirm.ask(
@@ -614,11 +614,12 @@ impl ProcessManager {
             }
         }
 
-        ui.horizontal(|ui| {
+        let filter_hint = ctx.i18n.tr("common-filter");
+        frame::options(ui, |ui| {
             ui.add(
                 egui::TextEdit::singleline(&mut self.filter)
-                    .hint_text(ctx.i18n.tr("common-filter"))
-                    .desired_width(180.0),
+                    .hint_text(format!("{}  {filter_hint}", icons::MAGNIFYING_GLASS))
+                    .desired_width(200.0),
             );
             egui::ComboBox::from_id_salt("view")
                 .selected_text(match self.view {
@@ -703,24 +704,39 @@ impl ProcessManager {
                 });
                 ui.weak("Windows' own critical processes are never included.");
             });
-            if self.info_task.is_some() {
-                ui.spinner();
-                ui.weak("checking signatures…");
-            }
         });
-        show_message(ui, &self.message);
 
         let mut rows: Vec<ProcRow> = self.rows.iter().filter(|r| self.visible(r)).cloned().collect();
         sort_rows(&mut rows, self.sort, self.ascending);
-        ui.weak(format!("{} processes", rows.len()));
+        let checking = self.info_task.is_some();
+        frame::status(ui, &format!("{} processes", rows.len()), |ui| {
+            if checking {
+                ui.weak("checking signatures…");
+                ui.spinner();
+            }
+        });
+        if let Some(r) = &selected_row {
+            egui::Panel::bottom("proc_details")
+                .resizable(true)
+                .default_size(180.0)
+                .frame(egui::Frame::new().inner_margin(egui::Margin::symmetric(12, 8)))
+                .show(ui, |ui| self.details(ui, r));
+        }
+        let clicked_row = frame::central_fixed(ui, |ui| {
+            show_message(ui, &self.message);
+            self.proc_table(ui, &rows)
+        });
+        if clicked_row.is_some() && clicked_row != self.selected {
+            self.selected = clicked_row;
+            self.modules = None;
+        }
+    }
 
-        let details_h = if selected_row.is_some() { 170.0 } else { 0.0 };
+    fn proc_table(&mut self, ui: &mut egui::Ui, rows: &[ProcRow]) -> Option<u32> {
         let mut clicked_row = None;
-        let table_h = (ui.available_height() - details_h).max(160.0);
         TableBuilder::new(ui)
             .striped(true)
             .sense(egui::Sense::click())
-            .max_scroll_height(table_h)
             .column(Column::initial(180.0).at_least(110.0).clip(true))
             .column(Column::initial(60.0))
             .column(Column::initial(60.0))
@@ -792,13 +808,7 @@ impl ProcessManager {
                     }
                 });
             });
-        if clicked_row.is_some() && clicked_row != self.selected {
-            self.selected = clicked_row;
-            self.modules = None;
-        }
-        if let Some(r) = selected_row {
-            self.details(ui, &r);
-        }
+        clicked_row
     }
 
     fn ask_rule(&mut self, rule: usize, label: &str) {
@@ -815,11 +825,11 @@ impl ProcessManager {
     }
 
     fn details(&mut self, ui: &mut egui::Ui, r: &ProcRow) {
-        ui.separator();
         let info = self.info_of(r).cloned().unwrap_or_default();
+        ui.strong(format!("{} (PID {})", r.name, r.pid));
         egui::ScrollArea::vertical()
             .id_salt("details")
-            .max_height(160.0)
+            .auto_shrink(false)
             .show(ui, |ui| {
                 egui::Grid::new("proc_details")
                     .num_columns(2)
@@ -1006,29 +1016,39 @@ impl Tool for ProcessManager {
             None => {}
         }
 
-        ui.horizontal(|ui| {
-            ui.selectable_value(
-                &mut self.page,
-                Page::Processes,
-                format!("{}  Processes", icons::LIST_CHECKS),
-            );
-            ui.selectable_value(
-                &mut self.page,
-                Page::Windows,
-                format!("{}  Windows", icons::APP_WINDOW),
-            );
-            ui.selectable_value(
-                &mut self.page,
-                Page::Blocked,
-                format!("{}  Blocked programs", icons::STOP_CIRCLE),
-            );
+        let pages = [Page::Processes, Page::Windows, Page::Blocked];
+        let mut sel = pages.iter().position(|p| *p == self.page).unwrap_or(0);
+        frame::left(ui, 190.0, |ui| {
+            wm_core::ui::section_nav(
+                ui,
+                &[
+                    (icons::LIST_CHECKS, "Processes"),
+                    (icons::APP_WINDOW, "Windows"),
+                    (icons::STOP_CIRCLE, "Blocked programs"),
+                ],
+                &mut sel,
+            )
         });
-        ui.add_space(4.0);
+        self.page = pages[sel];
         match self.page {
             Page::Processes => self.processes_page(ui, ctx),
-            Page::Windows => self.windows_page(ui),
-            Page::Blocked => self.blocked_page(ui, ctx),
+            Page::Windows => {
+                frame::status(ui, "Every visible window and the process that owns it", |_| {});
+                frame::central(ui, |ui| self.windows_page(ui));
+            }
+            Page::Blocked => {
+                frame::status(
+                    ui,
+                    "Programs blocked from starting with this tool; Windows starts a harmless placeholder instead",
+                    |_| {},
+                );
+                frame::central(ui, |ui| self.blocked_page(ui, ctx));
+            }
         }
+    }
+
+    fn layout(&self) -> Layout {
+        Layout::Fill
     }
 }
 
