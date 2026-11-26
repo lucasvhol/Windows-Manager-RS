@@ -6,6 +6,7 @@
 //! Pinning to the taskbar or Start cannot be done for another program on current
 //! Windows, so "Pin any" creates an All apps entry that can be pinned from Start.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
@@ -21,7 +22,7 @@ use wm_core::{
         ShortcutSpec, create_shortcut, is_broken_shortcut, read_shortcut, reveal_in_explorer, shell_open,
     },
     tweaks::TweakPanel,
-    ui::{Confirm, Message, ToolButton, frame, section_nav, show_message},
+    ui::{Confirm, Message, frame, show_message},
 };
 
 const TOOL: &str = "startmenu";
@@ -327,6 +328,8 @@ pub struct StartMenuManager {
     selected: Option<PathBuf>,
     filter: String,
     broken_only: bool,
+    /// Ticked shortcuts (Remove takes these; unavailable ones start ticked).
+    checked: HashSet<PathBuf>,
     pin_any: Option<(String, String)>,
     renaming: Option<(StartItem, String)>,
     restore_dir: Option<PathBuf>,
@@ -345,6 +348,7 @@ impl Default for StartMenuManager {
             selected: None,
             filter: String::new(),
             broken_only: false,
+            checked: HashSet::new(),
             pin_any: None,
             renaming: None,
             restore_dir: None,
@@ -460,41 +464,100 @@ impl StartMenuManager {
     }
 
     fn shortcuts_tab(&mut self, ui: &mut egui::Ui, ctx: &mut AppCtx<'_>) {
+        let fresh = self.items.is_none();
         let items = self.items.get_or_insert_with(enumerate).clone();
         let usable = |i: &StartItem| !i.all_users || ctx.elevated;
+        if fresh {
+            // Like the original: shortcuts whose program is gone come ticked.
+            self.checked = items
+                .iter()
+                .filter(|i| i.broken && usable(i))
+                .map(|i| i.path.clone())
+                .collect();
+        }
         let selected = self
             .selected
             .as_ref()
             .and_then(|p| items.iter().find(|i| &i.path == p))
             .cloned();
-        let broken: Vec<PathBuf> = items
+        let ticked: Vec<PathBuf> = items
             .iter()
-            .filter(|i| i.broken && usable(i))
+            .filter(|i| self.checked.contains(&i.path) && usable(i))
             .map(|i| i.path.clone())
             .collect();
+        let targets: Vec<PathBuf> = if ticked.is_empty() {
+            selected
+                .iter()
+                .filter(|i| usable(i))
+                .map(|i| i.path.clone())
+                .collect()
+        } else {
+            ticked
+        };
         let can_edit = selected.as_ref().is_some_and(usable);
-        let broken_label = format!("Remove broken ({})", broken.len());
+        let broken_n = items.iter().filter(|i| i.broken && usable(i)).count();
 
-        match frame::toolbar(
-            ui,
-            &[
-                Some(ToolButton::new(icons::PLUS, "Add program")),
-                Some(ToolButton::new(icons::PUSH_PIN, "Pin any")),
-                None,
-                Some(
-                    ToolButton::new(icons::PLAY, "Launch")
-                        .enabled(selected.as_ref().is_some_and(|s| !s.broken)),
-                ),
-                Some(ToolButton::new(icons::PENCIL_SIMPLE, "Rename").enabled(can_edit)),
-                Some(ToolButton::new(icons::FOLDER_OPEN, "Show").enabled(selected.is_some())),
-                Some(ToolButton::new(icons::TRASH, "Remove").enabled(can_edit)),
-                None,
-                Some(ToolButton::new(icons::BROOM, &broken_label).enabled(!broken.is_empty())),
-                Some(ToolButton::new(icons::ARROWS_CLOCKWISE, "Refresh")),
-            ],
-            |_| {},
-        ) {
-            Some(0) => {
+        // The original's action column (Pin to Taskbar is left out: Windows only lets
+        // people pin from Start itself).
+        let mut act = None;
+        frame::right(ui, 210.0, |ui| {
+            if frame::action(ui, icons::PENCIL_SIMPLE, "Rename", can_edit) {
+                act = Some("rename");
+            }
+            let remove = if targets.len() > 1 {
+                format!("Remove ({})", targets.len())
+            } else {
+                "Remove".to_owned()
+            };
+            if frame::action(ui, icons::X, &remove, !targets.is_empty()) {
+                act = Some("remove");
+            }
+            if frame::action(ui, icons::FOLDER_OPEN, "Open Folder", selected.is_some()) {
+                act = Some("folder");
+            }
+            if frame::action(
+                ui,
+                icons::PLAY,
+                "Launch",
+                selected.as_ref().is_some_and(|s| !s.broken),
+            ) {
+                act = Some("launch");
+            }
+            ui.separator();
+            ui.add(
+                egui::TextEdit::singleline(&mut self.filter)
+                    .hint_text(format!("{}  Search", icons::MAGNIFYING_GLASS))
+                    .desired_width(ui.available_width()),
+            );
+            ui.checkbox(&mut self.broken_only, "Only unavailable");
+            ui.separator();
+            if frame::action(ui, icons::PLUS, "Add Program", true) {
+                act = Some("add");
+            }
+            if frame::action(ui, icons::PUSH_PIN, "Add to All apps…", true) {
+                act = Some("pinany");
+            }
+            if frame::action(
+                ui,
+                icons::BROOM,
+                &format!("Tick unavailable ({broken_n})"),
+                broken_n > 0,
+            ) {
+                act = Some("tickbroken");
+            }
+            if frame::action(ui, icons::ARROWS_CLOCKWISE, "Refresh", true) {
+                act = Some("refresh");
+            }
+            ui.separator();
+            if frame::action(ui, icons::FLOPPY_DISK, "Taskbar and Start Backup", true) {
+                act = Some("backup");
+            }
+            if frame::action(ui, icons::SLIDERS, "Start Options", true) {
+                act = Some("options");
+            }
+        });
+        match act {
+            Some("add") => {
                 if let Some(t) = rfd::FileDialog::new()
                     .add_filter("Programs", &["exe", "bat", "cmd", "msc"])
                     .pick_file()
@@ -509,56 +572,44 @@ impl StartMenuManager {
                     self.done(r);
                 }
             }
-            Some(1) => self.pin_any = Some((String::new(), String::new())),
-            Some(3) => {
+            Some("pinany") => self.pin_any = Some((String::new(), String::new())),
+            Some("launch") => {
                 if let Some(s) = &selected {
                     let _ = shell_open(&s.path.display().to_string(), "");
                 }
             }
-            Some(4) => {
+            Some("rename") => {
                 if let Some(s) = &selected {
                     self.renaming = Some((s.clone(), s.name.clone()));
                 }
             }
-            Some(5) => {
+            Some("folder") => {
                 if let Some(s) = &selected {
                     reveal_in_explorer(&s.path);
                 }
             }
-            Some(6) => {
-                if let Some(s) = &selected {
-                    self.confirm.ask(
-                        format!("Move \"{}\" to the Recycle Bin?", s.name),
-                        Ask::Remove(vec![s.path.clone()]),
-                    );
-                }
-            }
-            Some(8) => self.confirm.ask(
-                format!(
-                    "Move {} Start menu shortcuts whose programs no longer exist to the Recycle Bin?",
-                    broken.len()
-                ),
-                Ask::Remove(broken.clone()),
+            Some("remove") => self.confirm.ask(
+                format!("Move {} Start menu shortcuts to the Recycle Bin?", targets.len()),
+                Ask::Remove(targets.clone()),
             ),
-            Some(9) => self.items = None,
+            Some("tickbroken") => {
+                self.checked = items
+                    .iter()
+                    .filter(|i| i.broken && usable(i))
+                    .map(|i| i.path.clone())
+                    .collect();
+            }
+            Some("refresh") => self.items = None,
+            Some("backup") => self.tab = Tab::Layout,
+            Some("options") => self.tab = Tab::Options,
             _ => {}
         }
-        let filter_hint = ctx.i18n.tr("common-filter");
-        frame::options(ui, |ui| {
-            ui.add(
-                egui::TextEdit::singleline(&mut self.filter)
-                    .hint_text(format!("{}  {filter_hint}", icons::MAGNIFYING_GLASS))
-                    .desired_width(200.0),
-            );
-            ui.checkbox(&mut self.broken_only, "Only broken");
-        });
-        let status = format!(
-            "{} shortcuts, {} broken",
-            items.len(),
-            items.iter().filter(|i| i.broken).count()
-        );
+        let status = format!("Total {}", items.len());
+        let ticked_n = self.checked.len();
         frame::status(ui, &status, |ui| {
-            ui.weak("Pin items from Start itself; Windows doesn't let other programs pin.");
+            if ticked_n > 0 {
+                ui.weak(format!("{ticked_n} ticked"));
+            }
         });
 
         let f = self.filter.to_lowercase();
@@ -572,48 +623,73 @@ impl StartMenuManager {
         let mut folders: Vec<&str> = visible.iter().map(|i| i.folder.as_str()).collect();
         folders.dedup();
         let mut clicked = None;
+        let mut toggles = Vec::new();
+        let elevated = ctx.elevated;
         frame::central(ui, |ui| {
             show_message(ui, &self.message);
             ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
+            let red = ui.visuals().error_fg_color;
+            // Column titles, lined up with the tables below (24 + 300 + 90 px).
+            let (head, _) =
+                ui.allocate_exact_size(egui::vec2(ui.available_width(), 20.0), egui::Sense::hover());
+            let strong = ui.visuals().strong_text_color();
+            for (x, t) in [(40.0, "Name"), (344.0, "User"), (434.0, "Available")] {
+                ui.painter().text(
+                    head.left_center() + egui::vec2(x, 0.0),
+                    egui::Align2::LEFT_CENTER,
+                    t,
+                    egui::FontId::proportional(13.5),
+                    strong,
+                );
+            }
+            ui.separator();
+            // Shortcuts at the top level first, then one foldable entry per folder.
             for folder in folders {
                 let rows: Vec<&&StartItem> = visible.iter().filter(|i| i.folder == folder).collect();
-                egui::CollapsingHeader::new(format!(
-                    "{} {} ({})",
-                    icons::FOLDERS,
-                    if folder.is_empty() { "(top level)" } else { folder },
-                    rows.len()
-                ))
-                .id_salt(folder)
-                .default_open(true)
-                .show(ui, |ui| {
+                let table = |ui: &mut egui::Ui| {
                     TableBuilder::new(ui)
                         .id_salt(folder)
                         .striped(true)
                         .sense(egui::Sense::click())
                         .vscroll(false)
-                        .column(Column::initial(240.0).clip(true))
-                        .column(Column::initial(70.0))
-                        .column(Column::initial(80.0))
-                        .column(Column::remainder().clip(true))
+                        .column(Column::exact(24.0))
+                        .column(Column::initial(300.0).clip(true))
+                        .column(Column::initial(90.0))
+                        .column(Column::remainder())
                         .body(|mut body| {
                             for it in rows {
                                 body.row(21.0, |mut row| {
                                     row.set_selected(self.selected.as_ref() == Some(&it.path));
                                     row.col(|ui| {
-                                        ui.label(&it.name);
-                                    });
-                                    row.col(|ui| {
-                                        ui.weak(if it.all_users { "All users" } else { "You" });
-                                    });
-                                    row.col(|ui| {
-                                        if it.broken {
-                                            ui.colored_label(ui.visuals().warn_fg_color, "Missing");
-                                        } else {
-                                            ui.weak("Available");
+                                        let mut on = self.checked.contains(&it.path);
+                                        if ui
+                                            .add_enabled(
+                                                !it.all_users || elevated,
+                                                egui::Checkbox::without_text(&mut on),
+                                            )
+                                            .on_disabled_hover_text("Needs administrator rights")
+                                            .changed()
+                                        {
+                                            toggles.push(it.path.clone());
                                         }
                                     });
                                     row.col(|ui| {
-                                        ui.weak(&it.target);
+                                        let text = format!("{}  {}", icons::APP_WINDOW, it.name);
+                                        let r = if it.broken {
+                                            ui.colored_label(red, text)
+                                        } else {
+                                            ui.label(text)
+                                        };
+                                        r.on_hover_text(&it.target);
+                                    });
+                                    row.col(|ui| {
+                                        ui.label(if it.all_users { "All Users" } else { "Current User" });
+                                    });
+                                    row.col(|ui| {
+                                        if it.broken {
+                                            ui.colored_label(red, "No")
+                                                .on_hover_text("The program it opens no longer exists");
+                                        }
                                     });
                                     if row.response().clicked() {
                                         clicked = Some(it.path.clone());
@@ -624,9 +700,22 @@ impl StartMenuManager {
                                 });
                             }
                         });
-                });
+                };
+                if folder.is_empty() {
+                    table(ui);
+                } else {
+                    egui::CollapsingHeader::new(format!("{}  {folder}", icons::FOLDER_OPEN))
+                        .id_salt(folder)
+                        .default_open(false)
+                        .show(ui, table);
+                }
             }
         });
+        for p in toggles {
+            if !self.checked.remove(&p) {
+                self.checked.insert(p);
+            }
+        }
         if clicked.is_some() {
             self.selected = clicked;
         }
@@ -713,20 +802,29 @@ impl Tool for StartMenuManager {
             self.done(r);
         }
         self.dialogs(ui, ctx);
-        let tabs = [Tab::Shortcuts, Tab::Layout, Tab::Options];
-        let mut sel = tabs.iter().position(|t| *t == self.tab).unwrap_or(0);
-        frame::left(ui, 200.0, |ui| {
-            section_nav(
-                ui,
-                &[
-                    (icons::LIST, "All apps"),
-                    (icons::FLOPPY_DISK, "Taskbar and Start backup"),
-                    (icons::SLIDERS, "Start options"),
-                ],
-                &mut sel,
-            )
-        });
-        self.tab = tabs[sel];
+        if self.tab != Tab::Shortcuts {
+            // Backup and Start options open from the action column; this strip goes back.
+            let mut back = false;
+            egui::Panel::top("startmenu-back")
+                .resizable(false)
+                .frame(egui::Frame::new().inner_margin(egui::Margin::symmetric(10, 4)))
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        back = ui.button(format!("{}  Start menu", icons::ARROW_UP)).clicked();
+                        ui.label("›");
+                        ui.strong(if self.tab == Tab::Layout {
+                            "Taskbar and Start backup"
+                        } else {
+                            "Start options"
+                        });
+                    });
+                });
+            if back {
+                self.tab = Tab::Shortcuts;
+                self.message = None;
+                return;
+            }
+        }
         match self.tab {
             Tab::Shortcuts => self.shortcuts_tab(ui, ctx),
             Tab::Layout => frame::central(ui, |ui| {
@@ -736,7 +834,6 @@ impl Tool for StartMenuManager {
             Tab::Options => frame::nested(ui, |ui| self.panel.ui_framed(ui, ctx)),
         }
     }
-
     fn layout(&self) -> Layout {
         Layout::Fill
     }

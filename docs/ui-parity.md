@@ -73,7 +73,7 @@ Tools reachable only from a dropdown: Windows Features (System Protection), App 
 | HotkeyManager.exe | hotkeys | | | | | ❌ |
 | RunShortcutCreator.exe | runshortcuts | Heading band "Edits shortcuts that executed on the Run dialog box", ticked list, bottom bar Select All + Search, Refresh, Backup ▾, Add, Delete, Execute, Exit | Columns Name, Path, Type (System / User), Available (Yes / Deletable in red; broken names start ticked) | Names with no path show "No path" and are not ticked (the original calls them Deletable); no program icons in the Name column; Add opens our New Run name dialog | Kept: status line with counts | ✅ |
 | ContextMenuManager.exe | contextmenu | | | | | ❌ |
-| StartMenuManager.exe | startmenu | | | | | ❌ |
+| StartMenuManager.exe | startmenu | Ticked list of Start menu shortcuts (folders fold open), action column on the right with the search box, status "Total n" | Columns Name, User (All Users / Current User), Available ("No" in red; those start ticked); actions Rename, Remove, Open Folder, Launch | Pin to Taskbar is left out (Windows only allows pinning from Start itself); top-level shortcuts come before folders | Kept: Add Program, Add to All apps, Tick unavailable, Refresh; Taskbar and Start Backup and Start Options open as pages | ✅ |
 | (hub) System Security | systemsecurity | | | | | ❌ |
 | (hub) Other Security | othersecurity | | | | | ❌ |
 | SettingsSecurity.exe | lockdown | | | | | ❌ |
