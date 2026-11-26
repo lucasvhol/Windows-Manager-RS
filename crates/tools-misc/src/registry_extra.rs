@@ -339,33 +339,10 @@ pub fn rights_text(rights: &str) -> String {
     }
 }
 
-/// Adds an explicit "full control, this key and subkeys" entry for `sid`, after any
-/// explicit deny entries so the list stays in Windows' canonical order.
-pub fn with_full_control(sddl: &str, sid: &str) -> String {
-    let ace = format!("(A;CI;KA;;;{sid})");
-    let dacl_end = sddl.find("S:").unwrap_or(sddl.len());
-    let (dacl, tail) = sddl.split_at(dacl_end);
-    let first = dacl.find('(').unwrap_or(dacl.len());
-    // Position after the last explicit deny ACE (they come first in canonical order).
-    let mut insert = first;
-    let mut pos = first;
-    while let Some(off) = dacl[pos..].find('(') {
-        let start = pos + off;
-        let Some(len) = dacl[start..].find(')') else { break };
-        let body = &dacl[start + 1..start + len];
-        let explicit_deny = body.starts_with("D;") && !body.split(';').nth(1).unwrap_or("").contains("ID");
-        if explicit_deny {
-            insert = start + len + 1;
-        }
-        pos = start + len + 1;
-    }
-    format!("{}{ace}{}{tail}", &dacl[..insert], &dacl[insert..])
-}
-
 pub fn grant_me_full_control(ctx: &AppCtx<'_>, key: &str) -> Result<()> {
     let before = acl::reg_dacl_sddl(key)?;
     let me = acl::current_user_sid()?;
-    acl::set_reg_dacl_sddl(key, &with_full_control(&before, &me))?;
+    acl::set_reg_dacl_sddl(key, &acl::with_full_control(&before, &me))?;
     ctx.journal.record(
         TOOL,
         format!("Granted myself full control of {key}"),
@@ -541,10 +518,10 @@ mod tests {
         assert_eq!(rights_text("KA"), "Full control");
         assert_eq!(rights_text("0x20019"), "Read");
         assert_eq!(
-            with_full_control(sddl, "S-1-5-21-7"),
+            acl::with_full_control(sddl, "S-1-5-21-7"),
             "D:PAI(D;;KW;;;S-1-5-21-9)(A;CI;KA;;;S-1-5-21-7)(A;CIID;KA;;;SY)(A;CI;KR;;;BU)"
         );
-        assert_eq!(with_full_control("D:AI", "S-1"), "D:AI(A;CI;KA;;;S-1)");
+        assert_eq!(acl::with_full_control("D:AI", "S-1"), "D:AI(A;CI;KA;;;S-1)");
     }
 
     #[test]

@@ -220,6 +220,29 @@ pub fn account_name(sid: &str) -> String {
     }
 }
 
+/// Adds an explicit "full control, this key and subkeys" entry for `sid`, after any
+/// explicit deny entries so the list stays in Windows' canonical order.
+pub fn with_full_control(sddl: &str, sid: &str) -> String {
+    let ace = format!("(A;CI;KA;;;{sid})");
+    let dacl_end = sddl.find("S:").unwrap_or(sddl.len());
+    let (dacl, tail) = sddl.split_at(dacl_end);
+    let first = dacl.find('(').unwrap_or(dacl.len());
+    // Position after the last explicit deny ACE (they come first in canonical order).
+    let mut insert = first;
+    let mut pos = first;
+    while let Some(off) = dacl[pos..].find('(') {
+        let start = pos + off;
+        let Some(len) = dacl[start..].find(')') else { break };
+        let body = &dacl[start + 1..start + len];
+        let explicit_deny = body.starts_with("D;") && !body.split(';').nth(1).unwrap_or("").contains("ID");
+        if explicit_deny {
+            insert = start + len + 1;
+        }
+        pos = start + len + 1;
+    }
+    format!("{}{ace}{}{tail}", &dacl[..insert], &dacl[insert..])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

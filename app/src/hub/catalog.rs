@@ -61,6 +61,7 @@ pub const TILES: &[(Category, &[&str])] = &[
             "unlocker",
             "imagehijack",
             "winfeatures",
+            "applocker",
         ],
     ),
     (
@@ -146,6 +147,7 @@ pub fn tool_icon(id: &str) -> &'static str {
         "unlocker" => i::LOCK,
         "imagehijack" => i::SHIELD,
         "winfeatures" => i::GRID_FOUR,
+        "applocker" => i::SHIELD_CHECK,
         "explorertweaks" => i::FOLDER_OPEN,
         "navpane" => i::TREE_VIEW,
         "thispc" => i::MONITOR,

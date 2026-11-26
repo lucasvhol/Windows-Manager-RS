@@ -399,6 +399,12 @@ impl DeviceSecurity {
         ui.weak(
             "Windows matches the file name only, and programs started by other programs are not blocked.",
         );
+        ui.horizontal(|ui| {
+            ui.weak("To block for every account, by content (hash) or by publisher (signature), use");
+            if ui.link("App Locker").clicked() {
+                wm_core::ui::request_open_tool(ui.ctx(), "applocker");
+            }
+        });
         ui.add_space(6.0);
         let list = self.blocked.get_or_insert_with(read_blocked);
         let mut remove = None;

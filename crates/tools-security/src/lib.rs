@@ -1,6 +1,7 @@
 //! Security tools (Phase 5): privacy, settings restrictions, file permissions,
 //! password encryption and read-only NTFS undelete.
 
+mod app_locker;
 pub mod autologon;
 mod carve;
 pub mod crypto;
@@ -35,6 +36,7 @@ pub fn tools() -> Vec<Box<dyn Tool>> {
         Box::new(file_security::Unlocker::default()),
         Box::new(image_hijack::ImageHijack::default()),
         Box::new(windows_features::WindowsFeatures::default()),
+        Box::new(app_locker::AppLocker::default()),
         Box::new(security_lock::SecurityLock::default()),
         Box::new(undelete::FileUndelete::default()),
         Box::new(device_security::DeviceSecurity::default()),
