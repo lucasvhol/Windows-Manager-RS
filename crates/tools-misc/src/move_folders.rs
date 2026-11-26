@@ -186,6 +186,40 @@ pub fn relocate(ctx: &AppCtx<'_>, name: &str, id: &GUID, target: &Path, with_fil
 }
 
 // ---------------------------------------------------------------------------------
+// Prevent changes (policy)
+
+const POLICY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer";
+const LOCK_VALUE: &str = "DisablePersonalDirChange";
+
+/// Whether the "prohibit redirecting profile folders" policy is on for this account.
+pub fn changes_locked() -> bool {
+    registry::read_raw(POLICY, LOCK_VALUE)
+        .as_ref()
+        .and_then(registry::decode_dword)
+        .is_some_and(|v| v != 0)
+}
+
+/// Turns the policy on or off (hides the folders' Location tab in Explorer); journaled.
+pub fn set_changes_locked(ctx: &AppCtx<'_>, on: bool) -> Result<()> {
+    let snap = registry::snapshot(POLICY, LOCK_VALUE);
+    if on {
+        registry::write_raw(POLICY, LOCK_VALUE, &registry::dword(1))?;
+    } else {
+        registry::delete_value(POLICY, LOCK_VALUE)?;
+    }
+    ctx.journal.record(
+        "movefolders",
+        if on {
+            "Stopped people moving the personal folders"
+        } else {
+            "Allowed people to move the personal folders again"
+        },
+        UndoAction::RestoreRegValues { values: vec![snap] },
+    )?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------------
 // UI
 
 struct Row {
@@ -238,6 +272,34 @@ impl MoveFolders {
                 .map(|p| p.as_deref().map_or(0, folder_size))
                 .collect())
         }));
+    }
+}
+
+impl MoveFolders {
+    fn lock_ui(&mut self, ui: &mut egui::Ui, ctx: &AppCtx<'_>) {
+        let mut on = changes_locked();
+        let can = registry::writable(POLICY);
+        let resp = ui
+            .add_enabled(
+                can,
+                egui::Checkbox::new(
+                    &mut on,
+                    "Stop people from moving these folders (hides the Location tab in their Properties)",
+                ),
+            )
+            .on_disabled_hover_text("Needs administrator rights: restart the app as administrator.");
+        if resp.changed() {
+            self.message = Some(if ctx.config.dry_run {
+                Ok(ctx.i18n.tr("common-dry-run-skip"))
+            } else {
+                set_changes_locked(ctx, on)
+                    .map(|()| "Saved. Explorer windows opened from now on follow it.".to_owned())
+                    .map_err(|e| format!("{e:#}"))
+            });
+        }
+        if !can {
+            ui.weak("Changing this needs administrator rights (restart the app as administrator).");
+        }
     }
 }
 
@@ -301,6 +363,8 @@ impl Tool for MoveFolders {
         if let Some(i) = pick {
             self.selected = Some(i);
         }
+        ui.add_space(4.0);
+        self.lock_ui(ui, ctx);
         ui.add_space(6.0);
         let Some(i) = self.selected else {
             ui.weak("Pick a folder to move.");
@@ -347,7 +411,6 @@ impl Tool for MoveFolders {
                 );
             }
         });
-        ui.weak("Stopping people from moving these folders needs a policy that only administrators can set.");
     }
 }
 
@@ -398,6 +461,35 @@ mod tests {
             .unwrap();
         journal.undo(e.id).unwrap();
         assert_eq!(std::fs::read(from.join("sub").join("b.txt")).unwrap(), b"b");
+    }
+
+    #[test]
+    fn prevent_changes_policy_and_undo() {
+        if !registry::writable(POLICY) {
+            return; // per-user policy keys are read-only for standard accounts here
+        }
+        let before = registry::snapshot(POLICY, LOCK_VALUE);
+        let dir = tempfile::tempdir().unwrap();
+        let journal =
+            wm_core::safety::ChangeJournal::open(&dir.path().join("j.json"), &dir.path().join("b")).unwrap();
+        let mut config = wm_core::config::Config::default();
+        let i18n = wm_core::i18n::I18n::new("en-US");
+        let ctx = AppCtx {
+            config: &mut config,
+            journal: &journal,
+            i18n: &i18n,
+            elevated: true,
+        };
+        let target = !changes_locked();
+        let r = set_changes_locked(&ctx, target);
+        let after = changes_locked();
+        let undo = journal.entries().first().map(|e| journal.undo(e.id));
+        let undone = registry::snapshot(POLICY, LOCK_VALUE);
+        let _ = registry::restore(&before);
+        r.unwrap();
+        assert_eq!(after, target);
+        undo.unwrap().unwrap();
+        assert_eq!(undone, before, "undo restores the policy value exactly");
     }
 
     #[test]
