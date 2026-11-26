@@ -10,19 +10,16 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use egui_extras::{Column, TableBuilder};
 use windows::Win32::UI::Shell::{SHCNE_ASSOCCHANGED, SHCNF_IDLIST, SHChangeNotify, SHLoadIndirectString};
 use windows::core::{GUID, HSTRING};
 use wm_core::{
-    AppCtx, Category, Layout, Tool,
-    egui::{self, Vec2},
-    icons, paths,
+    AppCtx, Category, Layout, Tool, egui, icons, paths,
     process::restart_explorer,
     registry::{self, RawValue},
     safety::UndoAction,
     shell::{reveal_in_explorer, shell_open},
     tweaks::TweakPanel,
-    ui::{Confirm, Message, ToolButton, frame, section_nav, show_message},
+    ui::{Confirm, Message, frame, show_message},
 };
 
 const TOOL: &str = "navpane";
@@ -415,15 +412,9 @@ pub fn remove_folder(ctx: &AppCtx<'_>, item: &NavItem) -> Result<()> {
     Ok(())
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Tab {
-    Items,
-    Options,
-}
-
+/// The Edit group's fields, loaded from the selected folder.
 struct Editor {
-    /// The folder being edited, or None for a new one.
-    clsid: Option<String>,
+    clsid: String,
     name: String,
     target: String,
     icon: String,
@@ -435,10 +426,13 @@ enum Ask {
 }
 
 pub struct NavPaneManager {
-    tab: Tab,
+    /// The tweak options page is shown instead of the item list.
+    options: bool,
     items: Option<Vec<NavItem>>,
     selected: Option<String>,
     editor: Option<Editor>,
+    /// New folders go to the top of the pane (the original's "Place on Top").
+    place_on_top: bool,
     panel: TweakPanel,
     confirm: Confirm<Ask>,
     message: Message,
@@ -447,15 +441,23 @@ pub struct NavPaneManager {
 impl Default for NavPaneManager {
     fn default() -> Self {
         Self {
-            tab: Tab::Items,
+            options: false,
             items: None,
             selected: None,
             editor: None,
+            place_on_top: true,
             panel: TweakPanel::new(TOOL, crate::NAVPANE_TWEAKS),
             confirm: Confirm::default(),
             message: None,
         }
     }
+}
+
+/// Items in the order the pane shows them (shown items by order, then hidden ones).
+fn pane_order(items: &[NavItem]) -> Vec<&NavItem> {
+    let mut v: Vec<&NavItem> = items.iter().collect();
+    v.sort_by_key(|i| (!i.shown, i.order.unwrap_or(u32::MAX)));
+    v
 }
 
 impl NavPaneManager {
@@ -472,207 +474,223 @@ impl NavPaneManager {
                 .map_err(|e| format!("{e:#}")),
         );
         self.items = None;
+        self.editor = None;
     }
 
-    fn editor_window(&mut self, ui: &egui::Ui, ctx: &mut AppCtx<'_>) {
-        let Some(ed) = &mut self.editor else { return };
-        let mut result = None;
-        let title = if ed.clsid.is_some() {
-            "Edit folder"
-        } else {
-            "Add folder"
+    /// Adds a folder picked in a dialog, named after it, and selects it.
+    fn add_folder_dialog(&mut self, ctx: &AppCtx<'_>) {
+        let Some(dir) = rfd::FileDialog::new().pick_folder() else {
+            return;
         };
-        egui::Window::new(title)
-            .collapsible(false)
-            .resizable(false)
-            .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
-            .show(ui.ctx(), |ui| {
-                egui::Grid::new("navpane-edit").num_columns(2).show(ui, |ui| {
-                    ui.label("Folder");
-                    ui.horizontal(|ui| {
-                        ui.add(egui::TextEdit::singleline(&mut ed.target).desired_width(260.0));
-                        if ui.button("Browse…").clicked()
-                            && let Some(p) = rfd::FileDialog::new().pick_folder()
-                        {
-                            ed.target = p.display().to_string();
-                            if ed.name.is_empty() {
-                                ed.name = p
-                                    .file_name()
-                                    .map(|s| s.to_string_lossy().into_owned())
-                                    .unwrap_or_else(|| ed.target.clone());
-                            }
-                        }
-                    });
-                    ui.end_row();
-                    ui.label("Name");
-                    ui.text_edit_singleline(&mut ed.name);
-                    ui.end_row();
-                    ui.label("Icon");
-                    ui.horizontal(|ui| {
-                        ui.add(
-                            egui::TextEdit::singleline(&mut ed.icon)
-                                .hint_text("Default folder icon")
-                                .desired_width(220.0),
-                        );
-                        if ui.button("Browse…").clicked()
-                            && let Some(p) = rfd::FileDialog::new()
-                                .add_filter("Icons", &["ico", "dll", "exe"])
-                                .pick_file()
-                        {
-                            let is_ico = p.extension().is_some_and(|x| x.eq_ignore_ascii_case("ico"));
-                            ed.icon = if is_ico {
-                                p.display().to_string()
-                            } else {
-                                format!("{},0", p.display())
-                            };
-                        }
-                    });
-                    ui.end_row();
-                });
-                ui.weak("Icons from a DLL or EXE take an index after a comma, e.g. imageres.dll,-3.");
-                ui.horizontal(|ui| {
-                    let ok = !ed.name.trim().is_empty() && !ed.target.trim().is_empty();
-                    if ui.add_enabled(ok, egui::Button::new("Save")).clicked() {
-                        result = Some(true);
-                    }
-                    if ui.button(ctx.i18n.tr("common-cancel")).clicked() {
-                        result = Some(false);
-                    }
-                });
-            });
-        match result {
-            Some(true) => {
-                let ed = self.editor.take().expect("open");
-                if self.dry(ctx) {
-                    return;
+        if self.dry(ctx) {
+            return;
+        }
+        let name = dir
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| dir.display().to_string());
+        let r = add_folder(ctx, &name, &dir, "").and_then(|id| {
+            if self.place_on_top {
+                let items = enumerate();
+                let shown: Vec<NavItem> = pane_order(&items)
+                    .into_iter()
+                    .filter(|i| i.shown)
+                    .cloned()
+                    .collect();
+                if let Some(from) = shown.iter().position(|i| i.clsid == id)
+                    && from > 0
+                {
+                    reorder(
+                        ctx,
+                        &shown,
+                        from,
+                        0,
+                        format!("Placed \"{name}\" on top of the navigation pane"),
+                    )?;
                 }
-                let target = PathBuf::from(ed.target.trim().trim_matches('"'));
-                let r = match &ed.clsid {
-                    None => add_folder(ctx, &ed.name, &target, &ed.icon).map(|id| {
-                        self.selected = Some(id);
-                        format!("Added \"{}\".", ed.name.trim())
-                    }),
-                    Some(id) => {
-                        let item = self.items.iter().flatten().find(|i| &i.clsid == id).cloned();
-                        match item {
-                            Some(item) => edit_folder(ctx, &item, &ed.name, &target, &ed.icon)
-                                .map(|()| format!("Saved \"{}\".", ed.name.trim())),
-                            None => Err(anyhow::anyhow!("the folder no longer exists")),
-                        }
-                    }
-                };
-                self.done(r);
             }
-            Some(false) => self.editor = None,
-            None => {}
+            self.selected = Some(id);
+            Ok(format!("Added \"{name}\"; change its title below if you like."))
+        });
+        self.done(r);
+    }
+
+    /// The original's Edit group: Title and Path (plus the icon) of the selected
+    /// added folder.
+    fn edit_bar(&mut self, ui: &mut egui::Ui, ctx: &mut AppCtx<'_>, sel: Option<&NavItem>) {
+        // Load the fields when the selection changes.
+        match sel {
+            Some(NavItem {
+                clsid,
+                name,
+                kind: Kind::Folder { target, icon },
+                ..
+            }) => {
+                if self.editor.as_ref().is_none_or(|e| &e.clsid != clsid) {
+                    self.editor = Some(Editor {
+                        clsid: clsid.clone(),
+                        name: name.clone(),
+                        target: target.clone(),
+                        icon: icon.clone(),
+                    });
+                }
+            }
+            _ => self.editor = None,
+        }
+        let mut save = false;
+        frame::edit_bar(ui, |ui| {
+            let enabled = self.editor.is_some();
+            let mut empty = Editor {
+                clsid: String::new(),
+                name: String::new(),
+                target: String::new(),
+                icon: String::new(),
+            };
+            let ed = self.editor.as_mut().unwrap_or(&mut empty);
+            let w = (ui.available_width() - 110.0).max(200.0);
+            ui.add_enabled_ui(enabled, |ui| {
+                let label = |ui: &mut egui::Ui, t: &str| {
+                    ui.add_sized([40.0, 20.0], egui::Label::new(t));
+                };
+                ui.horizontal(|ui| {
+                    label(ui, "Title");
+                    ui.add(egui::TextEdit::singleline(&mut ed.name).desired_width(w));
+                });
+                ui.horizontal(|ui| {
+                    label(ui, "Path");
+                    ui.add(egui::TextEdit::singleline(&mut ed.target).desired_width(w));
+                    if ui.button(icons::FOLDER_OPEN).on_hover_text("Browse").clicked()
+                        && let Some(p) = rfd::FileDialog::new().pick_folder()
+                    {
+                        ed.target = p.display().to_string();
+                    }
+                });
+                ui.horizontal(|ui| {
+                    label(ui, "Icon");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut ed.icon)
+                            .hint_text("Default folder icon (or file.dll,index)")
+                            .desired_width(w),
+                    );
+                    if ui.button(icons::IMAGE).on_hover_text("Browse").clicked()
+                        && let Some(p) = rfd::FileDialog::new()
+                            .add_filter("Icons", &["ico", "dll", "exe"])
+                            .pick_file()
+                    {
+                        let is_ico = p.extension().is_some_and(|x| x.eq_ignore_ascii_case("ico"));
+                        ed.icon = if is_ico {
+                            p.display().to_string()
+                        } else {
+                            format!("{},0", p.display())
+                        };
+                    }
+                });
+                let ok = !ed.name.trim().is_empty() && !ed.target.trim().is_empty();
+                save = ui.add_enabled(ok, egui::Button::new("Save")).clicked();
+            })
+            .response
+            .on_disabled_hover_text("Select a folder you added to edit it");
+        });
+        if save
+            && let Some(ed) = self.editor.take()
+            && !self.dry(ctx)
+        {
+            let target = PathBuf::from(ed.target.trim().trim_matches('"'));
+            let r = match self.items.iter().flatten().find(|i| i.clsid == ed.clsid).cloned() {
+                Some(item) => edit_folder(ctx, &item, &ed.name, &target, &ed.icon)
+                    .map(|()| format!("Saved \"{}\".", ed.name.trim())),
+                None => Err(anyhow::anyhow!("the folder no longer exists")),
+            };
+            self.done(r);
         }
     }
 
-    fn items_tab(&mut self, ui: &mut egui::Ui, ctx: &mut AppCtx<'_>) {
+    fn items_page(&mut self, ui: &mut egui::Ui, ctx: &mut AppCtx<'_>) {
         let items = self.items.get_or_insert_with(enumerate).clone();
-        let sel = self
+        let sel_item = self
             .selected
             .as_ref()
-            .and_then(|id| items.iter().position(|i| &i.clsid == id));
-        let shown: Vec<NavItem> = items.iter().filter(|i| i.shown).cloned().collect();
-        let sel_item = sel.map(|i| items[i].clone());
+            .and_then(|id| items.iter().find(|i| &i.clsid == id))
+            .cloned();
+        let shown: Vec<NavItem> = pane_order(&items)
+            .into_iter()
+            .filter(|i| i.shown)
+            .cloned()
+            .collect();
         let sel_shown = sel_item
             .as_ref()
             .and_then(|s| shown.iter().position(|i| i.clsid == s.clsid));
         let is_folder = sel_item
             .as_ref()
             .is_some_and(|i| matches!(i.kind, Kind::Folder { .. }));
+        let is_shown = sel_item.as_ref().is_some_and(|i| i.shown);
 
-        match frame::toolbar(
-            ui,
-            &[
-                Some(ToolButton::new(icons::PLUS, "Add folder")),
-                Some(ToolButton::new(icons::PENCIL_SIMPLE, "Edit").enabled(is_folder)),
-                Some(ToolButton::new(icons::TRASH, "Remove").enabled(is_folder)),
-                None,
-                Some(
-                    ToolButton::new(
-                        icons::EYE_SLASH,
-                        if sel_item.as_ref().is_some_and(|i| i.shown) {
-                            "Hide"
-                        } else {
-                            "Show"
-                        },
-                    )
-                    .enabled(sel_item.is_some()),
-                ),
-                Some(ToolButton::new(icons::PUSH_PIN, "To top").enabled(sel_shown.is_some_and(|i| i > 0))),
-                Some(ToolButton::new(icons::ARROW_UP, "Up").enabled(sel_shown.is_some_and(|i| i > 0))),
-                Some(
-                    ToolButton::new(icons::ARROW_DOWN, "Down")
-                        .enabled(sel_shown.is_some_and(|i| i + 1 < shown.len())),
-                ),
-                None,
-                Some(ToolButton::new(icons::FOLDER_OPEN, "Open").enabled(sel_item.is_some())),
-                Some(ToolButton::new(icons::ARROWS_CLOCKWISE, "Refresh")),
-                Some(ToolButton::new(icons::WINDOWS_LOGO, "Restart Explorer")),
-            ],
-            |_| {},
-        ) {
-            Some(0) => {
-                self.editor = Some(Editor {
-                    clsid: None,
-                    name: String::new(),
-                    target: String::new(),
-                    icon: String::new(),
-                })
+        // The original's action column.
+        let mut act = None;
+        frame::right(ui, 190.0, |ui| {
+            ui.checkbox(&mut self.place_on_top, "Place on Top")
+                .on_hover_text("New folders go to the top of the navigation pane");
+            ui.add_space(4.0);
+            if frame::action(ui, icons::PLUS, "Add Folder", true) {
+                act = Some("add");
             }
-            Some(1) => {
-                if let Some(NavItem {
-                    clsid,
-                    name,
-                    kind: Kind::Folder { target, icon },
-                    ..
-                }) = sel_item
-                {
-                    self.editor = Some(Editor {
-                        clsid: Some(clsid),
-                        name,
-                        target,
-                        icon,
-                    });
-                }
+            ui.separator();
+            if frame::action(ui, icons::ARROW_UP, "Up", sel_shown.is_some_and(|i| i > 0)) {
+                act = Some("up");
             }
-            Some(2) => {
-                if let Some(item) = sel_item {
-                    self.confirm.ask(
-                        format!("Remove \"{}\" from the navigation pane?", item.name),
-                        Ask::Remove(item),
-                    );
-                }
+            if frame::action(
+                ui,
+                icons::ARROW_DOWN,
+                "Down",
+                sel_shown.is_some_and(|i| i + 1 < shown.len()),
+            ) {
+                act = Some("down");
             }
-            Some(4) => {
-                if let Some(item) = sel_item
-                    && !self.dry(ctx)
-                {
-                    let shown = !item.shown;
-                    let mut r = set_shown(ctx, &item, shown);
-                    // A newly shown item goes to the end of the shown items.
-                    if r.is_ok() && shown && item.order.is_none() {
-                        let last = items.iter().filter(|i| i.shown).filter_map(|i| i.order).max();
-                        let v = last.map_or(DEFAULT_ORDER, |l| l + 1);
-                        r = set_values(
-                            ctx,
-                            format!("Placed \"{}\" in the navigation pane", item.name),
-                            &[(own_key(&item.clsid), ORDER, registry::dword(v))],
-                        );
-                    }
-                    let verb = if shown { "Showing" } else { "Hiding" };
-                    self.done(r.map(|()| format!("{verb} \"{}\".", item.name)));
-                }
+            if frame::action(
+                ui,
+                icons::PUSH_PIN,
+                "Move to Top",
+                sel_shown.is_some_and(|i| i > 0),
+            ) {
+                act = Some("top");
             }
-            Some(b @ (5..=7)) => {
-                if let (Some(from), Some(item)) = (sel_shown, sel_item)
+            ui.separator();
+            if frame::action(ui, icons::EYE_SLASH, "Disable", sel_item.is_some() && is_shown) {
+                act = Some("hide");
+            }
+            if frame::action(ui, icons::CHECK, "Enable", sel_item.is_some() && !is_shown) {
+                act = Some("show");
+            }
+            if frame::action(ui, icons::X, "Remove", is_folder) {
+                act = Some("remove");
+            }
+            ui.separator();
+            if frame::action(ui, icons::DESKTOP, "This PC", true) {
+                act = Some("thispc");
+            }
+            if frame::action(ui, icons::GEAR, "Options", true) {
+                act = Some("options");
+            }
+            ui.separator();
+            if frame::action(ui, icons::FOLDER_OPEN, "Open", sel_item.is_some()) {
+                act = Some("open");
+            }
+            if frame::action(ui, icons::ARROWS_CLOCKWISE, "Refresh", true) {
+                act = Some("refresh");
+            }
+            if frame::action(ui, icons::WINDOWS_LOGO, "Restart Explorer", true) {
+                act = Some("explorer");
+            }
+        });
+        match act {
+            Some("add") => self.add_folder_dialog(ctx),
+            Some(b @ ("up" | "down" | "top")) => {
+                if let (Some(from), Some(item)) = (sel_shown, &sel_item)
                     && !self.dry(ctx)
                 {
                     let to = match b {
-                        5 => 0,
-                        6 => from - 1,
+                        "top" => 0,
+                        "up" => from - 1,
                         _ => from + 1,
                     };
                     let what = format!("Moved \"{}\" in the navigation pane", item.name);
@@ -681,8 +699,38 @@ impl NavPaneManager {
                     self.done(r);
                 }
             }
-            Some(9) => {
-                if let Some(item) = sel_item {
+            Some(b @ ("hide" | "show")) => {
+                if let Some(item) = &sel_item
+                    && !self.dry(ctx)
+                {
+                    let shown_now = b == "show";
+                    let mut r = set_shown(ctx, item, shown_now);
+                    // A newly shown item goes to the end of the shown items.
+                    if r.is_ok() && shown_now && item.order.is_none() {
+                        let last = items.iter().filter(|i| i.shown).filter_map(|i| i.order).max();
+                        let v = last.map_or(DEFAULT_ORDER, |l| l + 1);
+                        r = set_values(
+                            ctx,
+                            format!("Placed \"{}\" in the navigation pane", item.name),
+                            &[(own_key(&item.clsid), ORDER, registry::dword(v))],
+                        );
+                    }
+                    let verb = if shown_now { "Enabled" } else { "Disabled" };
+                    self.done(r.map(|()| format!("{verb} \"{}\".", item.name)));
+                }
+            }
+            Some("remove") => {
+                if let Some(item) = sel_item.clone() {
+                    self.confirm.ask(
+                        format!("Remove \"{}\" from the navigation pane?", item.name),
+                        Ask::Remove(item),
+                    );
+                }
+            }
+            Some("thispc") => wm_core::ui::request_open_tool(ui.ctx(), "thispc"),
+            Some("options") => self.options = true,
+            Some("open") => {
+                if let Some(item) = &sel_item {
                     let r = match &item.kind {
                         Kind::Folder { target, .. } => shell_open(&paths::expand_env(target), ""),
                         _ => shell_open(&format!("shell:::{}", item.clsid), ""),
@@ -692,8 +740,8 @@ impl NavPaneManager {
                     }
                 }
             }
-            Some(10) => self.items = None,
-            Some(11) => self.confirm.ask(
+            Some("refresh") => self.items = None,
+            Some("explorer") => self.confirm.ask(
                 "Restart File Explorer now? Open Explorer windows close.",
                 Ask::RestartExplorer,
             ),
@@ -702,65 +750,56 @@ impl NavPaneManager {
 
         let n = items.iter().filter(|i| i.shown).count();
         frame::status(ui, &format!("{} items, {n} shown", items.len()), |_| {});
-        frame::central_fixed(ui, |ui| self.items_table(ui, &items));
+        self.edit_bar(ui, ctx, sel_item.as_ref());
+        frame::central(ui, |ui| {
+            show_message(ui, &self.message);
+            self.tree(ui, &items);
+        });
     }
 
-    fn items_table(&mut self, ui: &mut egui::Ui, items: &[NavItem]) {
-        show_message(ui, &self.message);
-        let row_h = ui.text_style_height(&egui::TextStyle::Body) + 6.0;
-        TableBuilder::new(ui)
-            .striped(true)
-            .sense(egui::Sense::click())
-            .column(Column::exact(60.0))
-            .column(Column::initial(200.0).at_least(120.0))
-            .column(Column::exact(80.0))
-            .column(Column::exact(60.0))
-            .column(Column::remainder().at_least(120.0))
-            .header(row_h, |mut h| {
-                for t in ["Shown", "Name", "Type", "Order", "Location"] {
-                    h.col(|ui| {
-                        ui.strong(t);
-                    });
-                }
+    /// The original's tree: "Navigation pane" with its items in pane order; disabled
+    /// items are greyed.
+    fn tree(&mut self, ui: &mut egui::Ui, items: &[NavItem]) {
+        let id = ui.make_persistent_id("navpane-tree");
+        egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, true)
+            .show_header(ui, |ui| {
+                ui.label(egui::RichText::new(format!("{}  Navigation pane", icons::APP_WINDOW)).strong());
             })
-            .body(|body| {
-                body.rows(row_h, items.len(), |mut row| {
-                    let item = &items[row.index()];
-                    row.set_selected(self.selected.as_ref() == Some(&item.clsid));
-                    row.col(|ui| {
-                        ui.label(if item.shown { icons::CHECK } else { "" });
-                    });
-                    row.col(|ui| {
-                        if item.missing() {
-                            ui.colored_label(ui.visuals().error_fg_color, &item.name)
-                                .on_hover_text("The folder no longer exists");
-                        } else {
-                            ui.label(&item.name);
-                        }
-                    });
-                    row.col(|ui| {
-                        ui.label(item.type_label());
-                    });
-                    row.col(|ui| {
-                        ui.label(item.order.map_or("—".to_owned(), |o| o.to_string()));
-                    });
-                    row.col(|ui| {
-                        let loc = match &item.kind {
-                            Kind::Folder { target, .. } => target.clone(),
-                            _ => item.clsid.clone(),
-                        };
-                        ui.label(loc);
-                    });
-                    let resp = row.response();
-                    if resp.clicked() {
+            .body(|ui| {
+                for item in pane_order(items) {
+                    let icon = match item.kind {
+                        Kind::Folder { .. } => icons::FOLDER_OPEN,
+                        _ => icons::FOLDERS,
+                    };
+                    let mut text = egui::RichText::new(format!("{icon}  {}", item.name));
+                    if !item.shown {
+                        text = text.weak();
+                    }
+                    if item.missing() {
+                        text = text.color(ui.visuals().error_fg_color);
+                    }
+                    let sel = self.selected.as_ref() == Some(&item.clsid);
+                    let mut r = ui.selectable_label(sel, text);
+                    let mut tip = item.type_label().to_owned();
+                    if let Kind::Folder { target, .. } = &item.kind {
+                        tip = format!("{tip}: {target}");
+                    }
+                    if !item.shown {
+                        tip.push_str(" (disabled)");
+                    }
+                    if item.missing() {
+                        tip.push_str(" — the folder no longer exists");
+                    }
+                    r = r.on_hover_text(tip);
+                    if r.clicked() {
                         self.selected = Some(item.clsid.clone());
                     }
-                    if resp.double_clicked()
+                    if r.double_clicked()
                         && let Kind::Folder { target, .. } = &item.kind
                     {
                         reveal_in_explorer(Path::new(&paths::expand_env(target)));
                     }
-                });
+                }
             });
     }
 }
@@ -795,20 +834,28 @@ impl Tool for NavPaneManager {
                 }
             }
         }
-        self.editor_window(ui, ctx);
-        let mut sel = usize::from(self.tab == Tab::Options);
-        frame::left(ui, 180.0, |ui| {
-            section_nav(
-                ui,
-                &[(icons::LIST, "Items"), (icons::SLIDERS, "Options")],
-                &mut sel,
-            )
-        });
-        self.tab = if sel == 1 { Tab::Options } else { Tab::Items };
-        match self.tab {
-            Tab::Items => self.items_tab(ui, ctx),
-            Tab::Options => frame::nested(ui, |ui| self.panel.ui_framed(ui, ctx)),
+        if self.options {
+            let mut back = false;
+            egui::Panel::top("navpane-back")
+                .resizable(false)
+                .frame(egui::Frame::new().inner_margin(egui::Margin::symmetric(10, 4)))
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        back = ui
+                            .button(format!("{}  Navigation pane", icons::ARROW_UP))
+                            .clicked();
+                        ui.label("›");
+                        ui.strong("Options");
+                    });
+                });
+            if back {
+                self.options = false;
+            } else {
+                frame::nested(ui, |ui| self.panel.ui_framed(ui, ctx));
+            }
+            return;
         }
+        self.items_page(ui, ctx);
     }
 
     fn layout(&self) -> Layout {

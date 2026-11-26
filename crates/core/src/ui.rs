@@ -476,6 +476,73 @@ pub mod frame {
             .inner
     }
 
+    /// The original's vertical action column on the right (Add, Up, Down, Remove…):
+    /// fill it with [`action`] buttons and `ui.separator()` between groups.
+    pub fn right<R>(ui: &mut Ui, width: f32, add: impl FnOnce(&mut Ui) -> R) -> R {
+        let fill = strip_fill(ui);
+        egui::Panel::right("tf-right")
+            .resizable(false)
+            .exact_size(width)
+            .frame(
+                egui::Frame::new()
+                    .fill(fill)
+                    .inner_margin(egui::Margin::symmetric(6, 8)),
+            )
+            .show(ui, |ui| {
+                ui.spacing_mut().item_spacing.y = 2.0;
+                add(ui)
+            })
+            .inner
+    }
+
+    /// A flat, full-width icon + label button for [`right`]; true when clicked.
+    pub fn action(ui: &mut Ui, icon: &str, label: &str, enabled: bool) -> bool {
+        let (rect, resp) =
+            ui.allocate_exact_size(egui::vec2(ui.available_width(), 30.0), egui::Sense::click());
+        let hovered = enabled && resp.hovered();
+        if hovered {
+            ui.painter()
+                .rect_filled(rect, 4.0, ui.visuals().widgets.hovered.weak_bg_fill);
+        }
+        let color = if !enabled {
+            ui.visuals().weak_text_color().gamma_multiply(0.6)
+        } else if hovered {
+            ui.visuals().strong_text_color()
+        } else {
+            ui.visuals().text_color()
+        };
+        let icon_color = if enabled { super::ACCENT } else { color };
+        ui.painter().text(
+            rect.left_center() + egui::vec2(10.0, 0.0),
+            egui::Align2::LEFT_CENTER,
+            icon,
+            egui::FontId::proportional(18.0),
+            icon_color,
+        );
+        ui.painter().text(
+            rect.left_center() + egui::vec2(38.0, 0.0),
+            egui::Align2::LEFT_CENTER,
+            label,
+            egui::FontId::proportional(13.5),
+            color,
+        );
+        enabled && resp.clicked()
+    }
+
+    /// The original's "Edit" group along the bottom (title / path fields and their
+    /// buttons). Call it before [`central`].
+    pub fn edit_bar<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
+        egui::Panel::bottom("tf-edit")
+            .resizable(false)
+            .frame(egui::Frame::new().inner_margin(egui::Margin::symmetric(12, 8)))
+            .show(ui, |ui| {
+                ui.weak("Edit");
+                ui.separator();
+                add(ui)
+            })
+            .inner
+    }
+
     /// The main area: fills what's left and scrolls on its own.
     pub fn central<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
         egui::CentralPanel::default()
