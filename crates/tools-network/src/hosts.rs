@@ -8,10 +8,10 @@ use std::path::PathBuf;
 use crate::{browser_policy, favorites};
 use anyhow::{Context, Result, bail};
 use wm_core::{
-    AppCtx, Category, Tool, egui, paths,
+    AppCtx, Category, Layout, Tool, egui, icons, paths,
     process::{hidden_command, run_checked},
     task::BackgroundTask,
-    ui::{Message, show_message},
+    ui::{Message, ToolButton, empty_state, frame, section_nav, show_message},
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -168,17 +168,31 @@ impl Tool for UrlManager {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, ctx: &mut AppCtx<'_>) {
-        ui.horizontal(|ui| {
-            ui.selectable_value(&mut self.tab, Tab::Hosts, "Block or redirect sites");
-            ui.selectable_value(&mut self.tab, Tab::Browsers, "Browser lists");
-            ui.selectable_value(&mut self.tab, Tab::Favorites, "Check favorites");
-        });
-        ui.separator();
+        const TABS: [Tab; 3] = [Tab::Hosts, Tab::Browsers, Tab::Favorites];
+        let mut sel = TABS.iter().position(|t| *t == self.tab).unwrap_or(0);
+        if frame::left(ui, 200.0, |ui| {
+            section_nav(
+                ui,
+                &[
+                    (icons::STOP_CIRCLE, "Block or redirect sites"),
+                    (icons::GLOBE, "Browser lists"),
+                    (icons::BOOKMARK_SIMPLE, "Check favorites"),
+                ],
+                &mut sel,
+            )
+        }) {
+            self.message = None;
+        }
+        self.tab = TABS[sel];
         match self.tab {
             Tab::Hosts => self.hosts_ui(ui, ctx),
             Tab::Favorites => self.favorites_ui(ui, ctx),
-            Tab::Browsers => self.browsers.ui(ui, ctx),
+            Tab::Browsers => frame::central(ui, |ui| self.browsers.ui(ui, ctx)),
         }
+    }
+
+    fn layout(&self) -> Layout {
+        Layout::Fill
     }
 }
 
@@ -195,17 +209,24 @@ impl UrlManager {
             }
         }
         let marks = self.marks.get_or_insert_with(favorites::all_bookmarks).clone();
-        ui.label("Finds bookmarks in Edge, Chrome, Brave and the Windows Favorites folder whose sites have moved or no longer exist.");
-        ui.horizontal(|ui| {
-            let busy = self.check.is_some();
-            if ui
-                .add_enabled(
-                    !busy && !marks.is_empty(),
-                    egui::Button::new(format!("Check {} links", marks.len())),
-                )
-                .on_hover_text("Visits every web link once (16 at a time).")
-                .clicked()
-            {
+        let busy = self.check.is_some();
+        let done: Vec<favorites::Status> = self.status.iter().flatten().cloned().collect();
+        let check_label = format!("Check {}", marks.len());
+        match frame::toolbar(
+            ui,
+            &[
+                Some(ToolButton::new(icons::PLAY, &check_label).enabled(!busy && !marks.is_empty())),
+                Some(ToolButton::new(icons::STOP, "Cancel").enabled(busy)),
+                None,
+                Some(
+                    ToolButton::new(icons::FLOPPY_DISK, "Save report")
+                        .enabled(done.len() == marks.len() && !marks.is_empty()),
+                ),
+                Some(ToolButton::new(icons::ARROWS_CLOCKWISE, "Refresh").enabled(!busy)),
+            ],
+            |_| {},
+        ) {
+            Some(0) => {
                 let list = marks.clone();
                 self.status = vec![None; list.len()];
                 self.check = Some(BackgroundTask::spawn(ui.ctx(), move |p| {
@@ -216,47 +237,55 @@ impl UrlManager {
                     ))
                 }));
             }
-            if let Some(t) = &self.check {
-                ui.add(
-                    egui::ProgressBar::new(t.progress)
-                        .desired_width(200.0)
-                        .text(t.status.clone()),
-                );
-                if ui.button(ctx.i18n.tr("common-cancel")).clicked() {
+            Some(1) => {
+                if let Some(t) = &self.check {
                     t.cancel();
                 }
             }
-            if ui
-                .add_enabled(!busy, egui::Button::new(ctx.i18n.tr("common-refresh")))
-                .clicked()
-            {
-                self.marks = None;
-                self.status.clear();
-            }
-            ui.checkbox(&mut self.problems_only, "Only problems");
-            let done: Vec<favorites::Status> = self.status.iter().flatten().cloned().collect();
-            if done.len() == marks.len()
-                && !marks.is_empty()
-                && ui.button("Save report…").clicked()
-                && let Some(p) = rfd::FileDialog::new()
+            Some(3) => {
+                if let Some(p) = rfd::FileDialog::new()
                     .add_filter("CSV", &["csv"])
                     .set_file_name("favorites-check.csv")
                     .save_file()
-            {
-                self.message = Some(
-                    std::fs::write(&p, favorites::to_csv(&marks, &done))
-                        .map(|()| format!("Saved {}.", p.display()))
-                        .map_err(|e| format!("{e:#}")),
-                );
+                {
+                    self.message = Some(
+                        std::fs::write(&p, favorites::to_csv(&marks, &done))
+                            .map(|()| format!("Saved {}.", p.display()))
+                            .map_err(|e| format!("{e:#}")),
+                    );
+                }
             }
+            Some(4) => {
+                self.marks = None;
+                self.status.clear();
+            }
+            _ => {}
+        }
+        frame::options(ui, |ui| {
+            ui.checkbox(&mut self.problems_only, "Only problems");
+            ui.weak("Visits every web link once (16 at a time).");
         });
         let problems = self.status.iter().flatten().filter(|s| s.is_problem()).count();
-        if !self.status.is_empty() {
-            ui.weak(format!("{problems} broken or unreachable so far."));
-        }
-        show_message(ui, &self.message);
+        let status = if self.status.is_empty() {
+            format!("{} bookmarks in Edge, Chrome, Brave and Favorites", marks.len())
+        } else {
+            format!(
+                "{} of {} checked, {problems} broken or unreachable",
+                done.len(),
+                marks.len()
+            )
+        };
+        let progress = self.check.as_ref().map(|t| (t.progress, t.status.clone()));
+        frame::status(ui, &status, |ui| {
+            if let Some((p, text)) = progress {
+                ui.add(egui::ProgressBar::new(p).desired_width(200.0).text(text));
+            }
+        });
         let mut recycle = None;
-        egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
+        frame::central(ui, |ui| {
+            show_message(ui, &self.message);
+            ui.weak("Finds bookmarks whose sites have moved or no longer exist.");
+            ui.add_space(4.0);
             egui::Grid::new("fav-grid")
                 .striped(true)
                 .num_columns(4)
@@ -302,6 +331,13 @@ impl UrlManager {
                         ui.end_row();
                     }
                 });
+            if marks
+                .iter()
+                .any(|m| matches!(m.source, favorites::Source::Browser(_)))
+            {
+                ui.add_space(6.0);
+                ui.weak("To remove a browser bookmark, use the browser's own bookmark manager; editing its file while it runs would be undone.");
+            }
         });
         if let Some(p) = recycle {
             self.message = Some(
@@ -317,12 +353,6 @@ impl UrlManager {
             self.marks = None;
             self.status.clear();
         }
-        if marks
-            .iter()
-            .any(|m| matches!(m.source, favorites::Source::Browser(_)))
-        {
-            ui.weak("To remove a browser bookmark, open the link's row in the browser's own bookmark manager; editing its file while it runs would be undone.");
-        }
     }
 
     fn hosts_ui(&mut self, ui: &mut egui::Ui, ctx: &mut AppCtx<'_>) {
@@ -334,19 +364,35 @@ impl UrlManager {
             );
             self.dirty = false;
         }
-        if !ctx.elevated {
-            ui.weak("Saving changes to the hosts file needs the app to run as administrator.");
+        match frame::toolbar(
+            ui,
+            &[
+                Some(ToolButton::new(icons::FLOPPY_DISK, "Save").enabled(self.dirty && ctx.elevated)),
+                Some(ToolButton::new(icons::ARROW_COUNTER_CLOCKWISE, "Discard").enabled(self.dirty)),
+                None,
+                Some(ToolButton::new(icons::FILE_TEXT, "Open in Notepad")),
+            ],
+            |_| {},
+        ) {
+            Some(0) => self.message = Some(self.save(ctx).map_err(|e| format!("{e:#}"))),
+            Some(1) => self.lines = None,
+            Some(3) => {
+                let _ = std::process::Command::new("notepad").arg(hosts_path()).spawn();
+            }
+            _ => {}
         }
-        ui.label("Block a website by pointing it to 0.0.0.0, or redirect a name to another address.");
-        ui.horizontal(|ui| {
+        let filter_hint = format!("{}  {}", icons::MAGNIFYING_GLASS, ctx.i18n.tr("common-filter"));
+        frame::options(ui, |ui| {
+            ui.label("Block or redirect");
             ui.add(
                 egui::TextEdit::singleline(&mut self.host)
                     .hint_text("example.com")
-                    .desired_width(220.0),
+                    .desired_width(200.0),
             );
             ui.label("→");
-            ui.add(egui::TextEdit::singleline(&mut self.ip).desired_width(130.0));
-            if ui.button("Add").clicked() {
+            ui.add(egui::TextEdit::singleline(&mut self.ip).desired_width(120.0))
+                .on_hover_text("0.0.0.0 blocks the site; another address redirects it.");
+            if ui.button(format!("{}  Add", icons::PLUS)).clicked() {
                 let host = self.host.trim().to_lowercase();
                 let ip = self.ip.trim().to_owned();
                 self.message = Some(if !valid_host(&host) {
@@ -372,82 +418,87 @@ impl UrlManager {
                     Err("The hosts file could not be read.".into())
                 });
             }
+            ui.separator();
+            ui.add(
+                egui::TextEdit::singleline(&mut self.filter)
+                    .hint_text(filter_hint)
+                    .desired_width(180.0),
+            );
         });
-        ui.horizontal(|ui| {
-            if ui
-                .add_enabled(self.dirty && ctx.elevated, egui::Button::new("Save"))
-                .clicked()
-            {
-                self.message = Some(self.save(ctx).map_err(|e| format!("{e:#}")));
+        let entries = match &self.lines {
+            Some(Ok(lines)) => lines.iter().filter(|l| matches!(l, Line::Entry { .. })).count(),
+            _ => 0,
+        };
+        let status = format!(
+            "{entries} entries{}",
+            if self.dirty { ", not saved yet" } else { "" }
+        );
+        frame::status(ui, &status, |ui| {
+            if ctx.elevated {
+                ui.weak("Saving flushes the DNS cache.");
+            } else {
+                ui.weak("Saving the hosts file needs the app to run as administrator.");
             }
-            if ui
-                .add_enabled(self.dirty, egui::Button::new("Discard changes"))
-                .clicked()
-            {
-                self.lines = None;
-            }
-            if ui.button("Open in Notepad").clicked() {
-                let _ = std::process::Command::new("notepad").arg(hosts_path()).spawn();
-            }
-            ui.add(egui::TextEdit::singleline(&mut self.filter).hint_text(ctx.i18n.tr("common-filter")));
         });
-        if !ctx.elevated {
-            ui.weak(ctx.i18n.tr("shell-needs-admin"));
-        }
-        show_message(ui, &self.message);
-        ui.separator();
 
         let f = self.filter.to_lowercase();
         let mut remove = None;
         let mut changed = false;
-        match &mut self.lines {
-            Some(Ok(lines)) => {
-                let entries = lines.iter().filter(|l| matches!(l, Line::Entry { .. })).count();
-                if entries == 0 {
-                    ui.weak("The hosts file has no entries.");
-                }
-                egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
-                    egui::Grid::new("hosts")
-                        .num_columns(4)
-                        .striped(true)
-                        .spacing([16.0, 4.0])
-                        .show(ui, |ui| {
-                            for (i, l) in lines.iter_mut().enumerate() {
-                                let Line::Entry {
-                                    enabled,
-                                    ip,
-                                    hosts,
-                                    comment,
-                                } = l
-                                else {
-                                    continue;
-                                };
-                                if !f.is_empty() && !hosts.iter().any(|h| h.contains(&f)) {
-                                    continue;
+        frame::central(ui, |ui| {
+            show_message(ui, &self.message);
+            match &mut self.lines {
+                Some(Ok(lines)) => {
+                    if entries == 0 {
+                        empty_state(
+                            ui,
+                            icons::LINK,
+                            "The hosts file has no entries",
+                            "Add a site above to block it (0.0.0.0) or redirect it.",
+                        );
+                    }
+                    {
+                        egui::Grid::new("hosts")
+                            .num_columns(4)
+                            .striped(true)
+                            .spacing([16.0, 4.0])
+                            .show(ui, |ui| {
+                                for (i, l) in lines.iter_mut().enumerate() {
+                                    let Line::Entry {
+                                        enabled,
+                                        ip,
+                                        hosts,
+                                        comment,
+                                    } = l
+                                    else {
+                                        continue;
+                                    };
+                                    if !f.is_empty() && !hosts.iter().any(|h| h.contains(&f)) {
+                                        continue;
+                                    }
+                                    changed |= ui.checkbox(enabled, "").changed();
+                                    ui.label(hosts.join(" "));
+                                    ui.weak(format!(
+                                        "→ {ip}{}",
+                                        comment.as_ref().map(|c| format!("   # {c}")).unwrap_or_default()
+                                    ));
+                                    if ui.small_button("Remove").clicked() {
+                                        remove = Some(i);
+                                    }
+                                    ui.end_row();
                                 }
-                                changed |= ui.checkbox(enabled, "").changed();
-                                ui.label(hosts.join(" "));
-                                ui.weak(format!(
-                                    "→ {ip}{}",
-                                    comment.as_ref().map(|c| format!("   # {c}")).unwrap_or_default()
-                                ));
-                                if ui.small_button("Remove").clicked() {
-                                    remove = Some(i);
-                                }
-                                ui.end_row();
-                            }
-                        });
-                });
-                if let Some(i) = remove {
-                    lines.remove(i);
-                    changed = true;
+                            });
+                    }
+                    if let Some(i) = remove {
+                        lines.remove(i);
+                        changed = true;
+                    }
                 }
+                Some(Err(e)) => {
+                    ui.colored_label(ui.visuals().error_fg_color, e.clone());
+                }
+                None => {}
             }
-            Some(Err(e)) => {
-                ui.colored_label(ui.visuals().error_fg_color, e.clone());
-            }
-            None => {}
-        }
+        });
         if changed {
             self.dirty = true;
         }

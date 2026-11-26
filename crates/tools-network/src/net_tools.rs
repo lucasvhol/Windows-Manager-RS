@@ -14,7 +14,11 @@ use windows::Win32::NetworkManagement::IpHelper::{
     ICMP_ECHO_REPLY, IP_OPTION_INFORMATION, IcmpCloseHandle, IcmpCreateFile, IcmpSendEcho,
 };
 use windows::core::HSTRING;
-use wm_core::{AppCtx, Category, Tool, egui, task::BackgroundTask};
+use wm_core::{
+    AppCtx, Category, Layout, Tool, egui, icons,
+    task::BackgroundTask,
+    ui::{ToolButton, empty_state, frame, section_nav},
+};
 
 const IP_SUCCESS: u32 = 0;
 const IP_TTL_EXPIRED_TRANSIT: u32 = 11013;
@@ -322,25 +326,64 @@ impl Tool for NetworkTools {
         Category::Network
     }
 
+    fn layout(&self) -> Layout {
+        Layout::Fill
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, ctx: &mut AppCtx<'_>) {
-        ui.horizontal(|ui| {
-            for (m, label) in [
-                (Mode::Ping, "Ping"),
-                (Mode::Trace, "Traceroute"),
-                (Mode::Dns, "DNS lookup"),
-                (Mode::Ports, "Port check"),
-                (Mode::Scan, "IP scanner"),
-                (Mode::Geo, "Geolocation"),
-                (Mode::Whois, "Whois"),
-            ] {
-                ui.selectable_value(&mut self.mode, m, label);
+        if let Some(t) = &mut self.task {
+            t.poll();
+            if !t.status.is_empty() && self.output.last() != Some(&t.status) {
+                self.output.push(t.status.clone());
             }
-            ui.separator();
-            if ui
-                .button("Router page")
-                .on_hover_text("Opens your router's settings page (the default gateway) in the browser.")
-                .clicked()
-            {
+            if let Some(r) = t.take_result() {
+                self.task = None;
+                match r {
+                    Ok(lines) => self.output = lines,
+                    Err(e) => self.output.push(format!("Error: {e}")),
+                }
+            }
+        }
+        let mut sel = MODES.iter().position(|(m, _, _)| *m == self.mode).unwrap_or(0);
+        let nav: Vec<(&str, &str)> = MODES.iter().map(|(_, icon, label)| (*icon, *label)).collect();
+        frame::left(ui, 180.0, |ui| section_nav(ui, &nav, &mut sel));
+        self.mode = MODES[sel].0;
+
+        let busy = self.task.is_some();
+        if self.mode == Mode::Scan && self.range.is_empty() {
+            self.range = net_scan::local_range().unwrap_or_else(|| "192.168.1.0/24".into());
+        }
+        let ready = match self.mode {
+            Mode::Scan => !self.range.trim().is_empty(),
+            Mode::Geo => true,
+            _ => !self.host.trim().is_empty(),
+        };
+        let report = net_scan::wlan_report_path();
+        match frame::toolbar(
+            ui,
+            &[
+                Some(ToolButton::new(icons::PLAY, "Run").enabled(!busy && ready)),
+                Some(ToolButton::new(icons::STOP, "Stop").enabled(busy)),
+                Some(ToolButton::new(icons::COPY, "Copy").enabled(!self.output.is_empty())),
+                Some(ToolButton::new(icons::TRASH, "Clear").enabled(!busy && !self.output.is_empty())),
+                None,
+                Some(ToolButton::new(icons::GLOBE, "Router page")),
+                Some(
+                    ToolButton::new(icons::WIFI_HIGH, "Wi-Fi report")
+                        .enabled(ctx.elevated || report.exists()),
+                ),
+            ],
+            |_| {},
+        ) {
+            Some(0) => self.run(ui),
+            Some(1) => {
+                if let Some(t) = &self.task {
+                    t.cancel();
+                }
+            }
+            Some(2) => ui.ctx().copy_text(self.output.join("\n")),
+            Some(3) => self.output.clear(),
+            Some(5) => {
                 self.message = Some(match net_scan::default_gateway() {
                     Some(gw) => wm_core::shell::shell_open(&format!("http://{gw}/"), "")
                         .map(|()| format!("Opened http://{gw}/"))
@@ -348,15 +391,7 @@ impl Tool for NetworkTools {
                     None => Err("No default gateway: this PC isn't connected to a router.".into()),
                 });
             }
-            let report = net_scan::wlan_report_path();
-            if ui
-                .add_enabled(ctx.elevated || report.exists(), egui::Button::new("Wi-Fi report"))
-                .on_hover_text(
-                    "Windows' report of Wi-Fi connections, errors and disconnects over the last three days.",
-                )
-                .on_disabled_hover_text("Creating the report needs the app to run as administrator.")
-                .clicked()
-            {
+            Some(6) => {
                 let made = if ctx.elevated {
                     net_scan::make_wlan_report()
                 } else {
@@ -374,49 +409,27 @@ impl Tool for NetworkTools {
                         .map_err(|e| format!("{e:#}")),
                 );
             }
-        });
-        ui.separator();
-        wm_core::ui::show_message(ui, &self.message);
-        let busy = self.task.is_some();
-        if self.mode == Mode::Scan && self.range.is_empty() {
-            self.range = net_scan::local_range().unwrap_or_else(|| "192.168.1.0/24".into());
+            _ => {}
         }
-        ui.horizontal(|ui| {
-            match self.mode {
-                Mode::Scan => {
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.range)
-                            .hint_text("192.168.1.1-254 or 192.168.1.0/24")
-                            .desired_width(240.0),
-                    );
-                }
-                Mode::Geo => {
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.host)
-                            .hint_text("IP or host; empty = your public address")
-                            .desired_width(240.0),
-                    );
-                }
-                _ => {
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.host)
-                            .hint_text("Host name or IP")
-                            .desired_width(240.0),
-                    );
-                }
-            }
+        let mut enter = false;
+        frame::options(ui, |ui| {
+            let (text, hint) = match self.mode {
+                Mode::Scan => (&mut self.range, "192.168.1.1-254 or 192.168.1.0/24"),
+                Mode::Geo => (&mut self.host, "IP or host; empty = your public address"),
+                _ => (&mut self.host, "Host name or IP"),
+            };
+            let r = ui.add(
+                egui::TextEdit::singleline(text)
+                    .hint_text(hint)
+                    .desired_width(240.0),
+            );
+            enter = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
             match self.mode {
                 Mode::Trace => {
                     ui.checkbox(&mut self.locate, "Show hop locations").on_hover_text(
                         "Looks up each public hop on ipinfo.io, which sends those addresses to that service.",
                     );
                 }
-                Mode::Ports if ui.small_button("Common ports").clicked() => {
-                    self.ports = COMMON_PORTS.into();
-                }
-                _ => {}
-            }
-            match self.mode {
                 Mode::Dns => {
                     egui::ComboBox::from_id_salt("dns_type")
                         .selected_text(DNS_TYPES[self.dns_type].0)
@@ -427,101 +440,117 @@ impl Tool for NetworkTools {
                         });
                 }
                 Mode::Ports => {
+                    ui.label("Ports");
                     ui.add(
                         egui::TextEdit::singleline(&mut self.ports)
                             .hint_text("80, 443, 8000-8010")
                             .desired_width(180.0),
                     );
+                    if ui.small_button("Common ports").clicked() {
+                        self.ports = COMMON_PORTS.into();
+                    }
                 }
                 _ => {}
             }
-            let ready = match self.mode {
-                Mode::Scan => !self.range.trim().is_empty(),
-                Mode::Geo => true,
-                _ => !self.host.trim().is_empty(),
-            };
-            if ui.add_enabled(!busy && ready, egui::Button::new("Run")).clicked() {
-                let host = self.host.trim().to_owned();
-                let (mode, kind, ports) = (self.mode, DNS_TYPES[self.dns_type].1, self.ports.clone());
-                let (range, locate) = (self.range.clone(), self.locate);
-                self.output.clear();
-                self.task = Some(BackgroundTask::spawn(ui.ctx(), move |p| match mode {
-                    Mode::Ping => ping(&host, 4),
-                    Mode::Trace => {
-                        let mut lines = Vec::new();
-                        net_scan::traceroute3(&host, 30, locate, |l| {
-                            p.report(0.0, l.clone());
-                            lines.push(l);
-                        })?;
-                        Ok(lines)
-                    }
-                    Mode::Scan => {
-                        let r = net_scan::parse_range(&range)?;
-                        let hosts = net_scan::scan(r, &|f| p.report(f, ""), &|| p.is_cancelled());
-                        Ok(net_scan::host_lines(&hosts, r))
-                    }
-                    Mode::Geo => net_scan::geolocate(&host),
-                    Mode::Dns => dns_lookup(&host, kind),
-                    Mode::Ports => {
-                        let ports = parse_ports(&ports)?;
-                        let results = check_ports(&host, &ports)?;
-                        let open = results.iter().filter(|(_, o)| *o).count();
-                        let mut lines = vec![format!("{open} of {} ports open on {host}", results.len())];
-                        lines.extend(results.into_iter().filter(|(_, o)| *o || ports.len() <= 32).map(
-                            |(port, o)| {
-                                format!("{port:>5}  {}", if o { "open" } else { "closed or filtered" })
-                            },
-                        ));
-                        Ok(lines)
-                    }
-                    Mode::Whois => Ok(whois(&host)?.lines().map(str::to_owned).collect()),
-                }));
-            }
-            if let Some(t) = &self.task {
-                if self.mode == Mode::Scan {
-                    ui.add(
-                        egui::ProgressBar::new(t.progress)
-                            .desired_width(160.0)
-                            .show_percentage(),
-                    );
-                } else {
-                    ui.spinner();
-                }
-                if ui.small_button("Stop").clicked() {
-                    t.cancel();
-                }
+        });
+        if enter && !busy && ready {
+            self.run(ui);
+        }
+        let hint = match self.mode {
+            Mode::Ping => "Sends four echo requests.",
+            Mode::Trace => "Lists the routers between this PC and the host.",
+            Mode::Dns => "Asks your DNS server for the chosen record type.",
+            Mode::Ports => "Tries a TCP connection to each port.",
+            Mode::Scan => "Finds the devices that answer on your local network.",
+            Mode::Geo => "Sends the address to ipinfo.io when you press Run.",
+            Mode::Whois => "Asks IANA, then the registry that holds the name or address.",
+        };
+        let progress = self
+            .task
+            .as_ref()
+            .map(|t| t.progress)
+            .filter(|_| self.mode == Mode::Scan);
+        frame::status(ui, hint, |ui| {
+            if let Some(p) = progress {
+                ui.add(egui::ProgressBar::new(p).desired_width(180.0).show_percentage());
+            } else if busy {
+                ui.spinner();
             }
         });
-        if self.mode == Mode::Geo {
-            ui.weak("Sends the address to ipinfo.io when you press Run.");
-        }
-        if let Some(t) = &mut self.task {
-            t.poll();
-            if !t.status.is_empty() && self.output.last() != Some(&t.status) {
-                self.output.push(t.status.clone());
-            }
-            if let Some(r) = t.take_result() {
-                self.task = None;
-                match r {
-                    Ok(lines) => self.output = lines,
-                    Err(e) => self.output.push(format!("Error: {e}")),
-                }
-            }
-        }
-        ui.add_space(6.0);
-        egui::ScrollArea::vertical()
-            .auto_shrink(false)
-            .stick_to_bottom(true)
-            .show(ui, |ui| {
-                let mut text = self.output.join("\n");
-                ui.add(
-                    egui::TextEdit::multiline(&mut text)
-                        .font(egui::TextStyle::Monospace)
-                        .desired_width(f32::INFINITY)
-                        .interactive(true),
+        frame::central_fixed(ui, |ui| {
+            wm_core::ui::show_message(ui, &self.message);
+            if self.output.is_empty() && !busy {
+                let icon = MODES[sel].1;
+                empty_state(
+                    ui,
+                    icon,
+                    MODES[sel].2,
+                    "Enter a host above, then press Run (or Enter).",
                 );
-            });
-        let _ = ctx;
+                return;
+            }
+            egui::ScrollArea::vertical()
+                .auto_shrink(false)
+                .stick_to_bottom(true)
+                .show(ui, |ui| {
+                    let mut text = self.output.join("\n");
+                    ui.add(
+                        egui::TextEdit::multiline(&mut text)
+                            .font(egui::TextStyle::Monospace)
+                            .desired_width(f32::INFINITY)
+                            .interactive(true),
+                    );
+                });
+        });
+    }
+}
+
+const MODES: [(Mode, &str, &str); 7] = [
+    (Mode::Ping, icons::PLUGS, "Ping"),
+    (Mode::Trace, icons::TREE_STRUCTURE, "Traceroute"),
+    (Mode::Dns, icons::GLOBE, "DNS lookup"),
+    (Mode::Ports, icons::LINK, "Port check"),
+    (Mode::Scan, icons::NETWORK, "IP scanner"),
+    (Mode::Geo, icons::COMPASS, "Geolocation"),
+    (Mode::Whois, icons::MAGNIFYING_GLASS, "Whois"),
+];
+
+impl NetworkTools {
+    fn run(&mut self, ui: &egui::Ui) {
+        let host = self.host.trim().to_owned();
+        let (mode, kind, ports) = (self.mode, DNS_TYPES[self.dns_type].1, self.ports.clone());
+        let (range, locate) = (self.range.clone(), self.locate);
+        self.output.clear();
+        self.message = None;
+        self.task = Some(BackgroundTask::spawn(ui.ctx(), move |p| match mode {
+            Mode::Ping => ping(&host, 4),
+            Mode::Trace => {
+                let mut lines = Vec::new();
+                net_scan::traceroute3(&host, 30, locate, |l| {
+                    p.report(0.0, l.clone());
+                    lines.push(l);
+                })?;
+                Ok(lines)
+            }
+            Mode::Scan => {
+                let r = net_scan::parse_range(&range)?;
+                let hosts = net_scan::scan(r, &|f| p.report(f, ""), &|| p.is_cancelled());
+                Ok(net_scan::host_lines(&hosts, r))
+            }
+            Mode::Geo => net_scan::geolocate(&host),
+            Mode::Dns => dns_lookup(&host, kind),
+            Mode::Ports => {
+                let ports = parse_ports(&ports)?;
+                let results = check_ports(&host, &ports)?;
+                let open = results.iter().filter(|(_, o)| *o).count();
+                let mut lines = vec![format!("{open} of {} ports open on {host}", results.len())];
+                lines.extend(results.into_iter().filter(|(_, o)| *o || ports.len() <= 32).map(
+                    |(port, o)| format!("{port:>5}  {}", if o { "open" } else { "closed or filtered" }),
+                ));
+                Ok(lines)
+            }
+            Mode::Whois => Ok(whois(&host)?.lines().map(str::to_owned).collect()),
+        }));
     }
 }
 

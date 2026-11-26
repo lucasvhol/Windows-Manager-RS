@@ -13,7 +13,11 @@ use windows::Win32::NetworkManagement::IpHelper::{
     TCP_TABLE_OWNER_PID_ALL, UDP_TABLE_OWNER_PID,
 };
 use windows::Win32::NetworkManagement::Ndis::IfOperStatusUp;
-use wm_core::{AppCtx, Category, Tool, egui, task::Sampler, ui::format_bytes};
+use wm_core::{
+    AppCtx, Category, Layout, Tool, egui, icons,
+    task::Sampler,
+    ui::{ToolButton, format_bytes, frame},
+};
 
 const AF_INET: u32 = 2;
 const AF_INET6: u32 = 23;
@@ -408,39 +412,45 @@ impl NetworkMonitor {
         }
     }
 
-    fn throughput_ui(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
-            let label = |a: &str| {
-                if a.is_empty() {
-                    "All adapters".to_owned()
-                } else {
-                    a.to_owned()
-                }
-            };
-            egui::ComboBox::from_id_salt("netmon-adapter")
-                .selected_text(label(&self.adapter))
-                .show_ui(ui, |ui| {
-                    for name in self.stats.keys() {
-                        ui.selectable_value(&mut self.adapter, name.clone(), label(name));
-                    }
-                });
-            if ui
-                .button("Reset")
-                .on_hover_text("Clears the chart and the statistics.")
-                .clicked()
-            {
-                self.stats.clear();
+    fn toolbar(&mut self, ui: &mut egui::Ui) {
+        let label = |a: &str| {
+            if a.is_empty() {
+                "All adapters".to_owned()
+            } else {
+                a.to_owned()
             }
-            if ui
-                .button("Resource Monitor")
-                .on_hover_text("Windows' Resource Monitor, with traffic per process.")
-                .clicked()
-            {
+        };
+        let names: Vec<String> = self.stats.keys().cloned().collect();
+        let adapter = &mut self.adapter;
+        match frame::toolbar(
+            ui,
+            &[
+                Some(ToolButton::new(icons::ARROW_COUNTER_CLOCKWISE, "Reset")),
+                None,
+                Some(ToolButton::new(icons::CHART_LINE, "Resource Monitor")),
+            ],
+            |ui| {
+                egui::ComboBox::from_id_salt("netmon-adapter")
+                    .selected_text(label(adapter))
+                    .show_ui(ui, |ui| {
+                        for name in &names {
+                            ui.selectable_value(adapter, name.clone(), label(name));
+                        }
+                    });
+                ui.weak("Adapter");
+            },
+        ) {
+            Some(0) => self.stats.clear(),
+            Some(2) => {
                 self.message = wm_core::shell::shell_open("resmon.exe", "")
                     .err()
                     .map(|e| Err(format!("{e:#}")));
             }
-        });
+            _ => {}
+        }
+    }
+
+    fn throughput_ui(&mut self, ui: &mut egui::Ui) {
         wm_core::ui::show_message(ui, &self.message);
         let Some(s) = self.stats.get(&self.adapter).cloned() else {
             ui.weak("Measuring…");
@@ -517,11 +527,10 @@ impl Tool for NetworkMonitor {
             self.snap = s;
         }
 
-        self.throughput_ui(ui);
-        ui.add_space(6.0);
-        ui.strong("Connections");
-        ui.horizontal(|ui| {
-            ui.add(egui::TextEdit::singleline(&mut self.filter).hint_text(ctx.i18n.tr("common-filter")));
+        self.toolbar(ui);
+        let filter_hint = format!("{}  {}", icons::MAGNIFYING_GLASS, ctx.i18n.tr("common-filter"));
+        frame::options(ui, |ui| {
+            ui.label("Connections");
             for (s, label) in [
                 (Show::Established, "Connected"),
                 (Show::Listening, "Listening"),
@@ -529,6 +538,12 @@ impl Tool for NetworkMonitor {
             ] {
                 ui.selectable_value(&mut self.show, s, label);
             }
+            ui.separator();
+            ui.add(
+                egui::TextEdit::singleline(&mut self.filter)
+                    .hint_text(filter_hint)
+                    .desired_width(200.0),
+            );
         });
         let f = self.filter.to_lowercase();
         let mut visible: Vec<&Conn> = self
@@ -554,57 +569,65 @@ impl Tool for NetworkMonitor {
                 .cmp(&b.process.to_lowercase())
                 .then(a.local.cmp(&b.local))
         });
-        ui.weak(format!(
-            "{} of {} connections",
-            visible.len(),
-            self.snap.conns.len()
-        ));
-
-        TableBuilder::new(ui)
-            .striped(true)
-            .column(Column::initial(170.0).clip(true))
-            .column(Column::initial(60.0))
-            .column(Column::initial(60.0))
-            .column(Column::initial(220.0).clip(true))
-            .column(Column::initial(240.0).clip(true))
-            .column(Column::remainder())
-            .header(22.0, |mut h| {
-                for t in [
-                    "Process",
-                    "PID",
-                    "Protocol",
-                    "Local address",
-                    "Remote address",
-                    "State",
-                ] {
-                    h.col(|ui| {
-                        ui.strong(t);
-                    });
-                }
-            })
-            .body(|body| {
-                body.rows(20.0, visible.len(), |mut row| {
-                    let c = visible[row.index()];
-                    row.col(|ui| {
-                        ui.label(&c.process);
-                    });
-                    row.col(|ui| {
-                        ui.weak(c.pid.to_string());
-                    });
-                    row.col(|ui| {
-                        ui.weak(c.proto);
-                    });
-                    row.col(|ui| {
-                        ui.label(&c.local);
-                    });
-                    row.col(|ui| {
-                        ui.label(&c.remote);
-                    });
-                    row.col(|ui| {
-                        ui.label(c.state);
+        let status = format!("{} of {} connections", visible.len(), self.snap.conns.len());
+        frame::status(ui, &status, |ui| {
+            ui.weak("Updates every second.");
+        });
+        let visible: Vec<Conn> = visible.into_iter().cloned().collect();
+        frame::central_fixed(ui, |ui| {
+            self.throughput_ui(ui);
+            ui.add_space(8.0);
+            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
+            TableBuilder::new(ui)
+                .striped(true)
+                .column(Column::initial(170.0).clip(true))
+                .column(Column::initial(60.0))
+                .column(Column::initial(60.0))
+                .column(Column::initial(220.0).clip(true))
+                .column(Column::initial(240.0).clip(true))
+                .column(Column::remainder())
+                .header(22.0, |mut h| {
+                    for t in [
+                        "Process",
+                        "PID",
+                        "Protocol",
+                        "Local address",
+                        "Remote address",
+                        "State",
+                    ] {
+                        h.col(|ui| {
+                            ui.strong(t);
+                        });
+                    }
+                })
+                .body(|body| {
+                    body.rows(22.0, visible.len(), |mut row| {
+                        let c = &visible[row.index()];
+                        row.col(|ui| {
+                            ui.label(&c.process);
+                        });
+                        row.col(|ui| {
+                            ui.weak(c.pid.to_string());
+                        });
+                        row.col(|ui| {
+                            ui.weak(c.proto);
+                        });
+                        row.col(|ui| {
+                            ui.label(&c.local);
+                        });
+                        row.col(|ui| {
+                            ui.label(&c.remote);
+                        });
+                        row.col(|ui| {
+                            ui.label(c.state);
+                        });
                     });
                 });
-            });
+        });
+    }
+
+    fn layout(&self) -> Layout {
+        Layout::Fill
     }
 }
 

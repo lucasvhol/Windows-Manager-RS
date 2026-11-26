@@ -14,9 +14,9 @@ use windows::Win32::NetworkManagement::WiFi::{
 };
 use windows::core::{GUID, HSTRING, PWSTR};
 use wm_core::{
-    AppCtx, Category, Tool, egui, paths,
+    AppCtx, Category, Layout, Tool, egui, icons, paths,
     safety::UndoAction,
-    ui::{Confirm, Message, show_message},
+    ui::{Confirm, Message, ToolButton, empty_state, frame, section, show_message},
 };
 
 /// ERROR_SERVICE_NOT_ACTIVE: the WLAN AutoConfig service is not running (no Wi-Fi hardware).
@@ -264,27 +264,39 @@ impl Tool for WifiManager {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, ctx: &mut AppCtx<'_>) {
+        if frame::toolbar(
+            ui,
+            &[Some(ToolButton::new(icons::ARROWS_CLOCKWISE, "Refresh"))],
+            |_| {},
+        ) == Some(0)
+        {
+            self.state = None;
+            self.message = None;
+        }
         if self.state.is_none() {
             self.state = Some(self.load().map_err(|e| format!("{e:#}")));
         }
-        let state = match &self.state {
-            Some(Ok(Some(s))) => s,
-            Some(Ok(None)) => {
-                ui.label(
-                    "The WLAN AutoConfig service is not running; this PC probably has no Wi-Fi adapter.",
-                );
-                return;
-            }
-            Some(Err(e)) => {
-                ui.colored_label(ui.visuals().error_fg_color, e);
-                return;
-            }
-            None => return,
+        let unavailable = match &self.state {
+            Some(Ok(Some(s))) if s.interfaces.is_empty() => Some((
+                "No Wi-Fi adapter found".to_owned(),
+                "Plug in a Wi-Fi adapter, then press Refresh.".to_owned(),
+            )),
+            Some(Ok(Some(_))) => None,
+            Some(Ok(None)) | None => Some((
+                "No Wi-Fi on this PC".to_owned(),
+                "The WLAN AutoConfig service is not running; this PC probably has no Wi-Fi adapter."
+                    .to_owned(),
+            )),
+            Some(Err(e)) => Some(("Wi-Fi is unavailable".to_owned(), e.clone())),
         };
-        if state.interfaces.is_empty() {
-            ui.label("No Wi-Fi adapter found.");
+        if let Some((title, hint)) = unavailable {
+            frame::status(ui, "", |_| {});
+            frame::central(ui, |ui| empty_state(ui, icons::WIFI_HIGH, &title, &hint));
             return;
         }
+        let Some(Ok(Some(state))) = &self.state else {
+            return;
+        };
         let iface = state.interfaces[self.iface.min(state.interfaces.len() - 1)].clone();
         let profiles = state.profiles.clone();
         let networks = state.networks.clone();
@@ -306,50 +318,91 @@ impl Tool for WifiManager {
             self.state = None;
         }
 
-        ui.horizontal(|ui| {
-            ui.label(format!("Adapter: {}", iface.description));
-            if ui.button(ctx.i18n.tr("common-refresh")).clicked() {
-                self.state = None;
-            }
-        });
-        show_message(ui, &self.message);
-        ui.separator();
-
-        ui.strong(format!("Saved networks ({})", profiles.len()));
+        frame::status(
+            ui,
+            &format!(
+                "{}: {} saved networks, {} in range",
+                iface.description,
+                profiles.len(),
+                networks.len()
+            ),
+            |_| {},
+        );
         let mut forget = None;
         let mut reveal = None;
-        egui::Grid::new("wifi_profiles")
-            .num_columns(4)
-            .striped(true)
-            .spacing([16.0, 4.0])
-            .show(ui, |ui| {
-                for p in &profiles {
-                    ui.label(&p.name);
-                    ui.weak(format!(
-                        "{}{}",
-                        p.authentication,
-                        if p.auto_connect {
-                            " · connects automatically"
-                        } else {
-                            ""
-                        }
-                    ));
-                    match self.revealed.get(&p.name) {
-                        Some(key) => {
-                            ui.add(egui::Label::new(egui::RichText::new(key).monospace()).selectable(true));
-                        }
-                        None => {
-                            if ui.small_button("Show password").clicked() {
-                                reveal = Some(p.name.clone());
+        frame::central(ui, |ui| {
+            show_message(ui, &self.message);
+            section(
+                ui,
+                &format!("Saved networks ({})", profiles.len()),
+                |_| {},
+                |ui| {
+                    egui::Grid::new("wifi_profiles")
+                        .num_columns(4)
+                        .striped(true)
+                        .spacing([16.0, 4.0])
+                        .show(ui, |ui| {
+                            for p in &profiles {
+                                ui.label(&p.name);
+                                ui.weak(format!(
+                                    "{}{}",
+                                    p.authentication,
+                                    if p.auto_connect {
+                                        " · connects automatically"
+                                    } else {
+                                        ""
+                                    }
+                                ));
+                                match self.revealed.get(&p.name) {
+                                    Some(key) => {
+                                        ui.add(
+                                            egui::Label::new(egui::RichText::new(key).monospace())
+                                                .selectable(true),
+                                        );
+                                    }
+                                    None => {
+                                        if ui.small_button("Show password").clicked() {
+                                            reveal = Some(p.name.clone());
+                                        }
+                                    }
+                                }
+                                if ui.small_button("Forget").clicked() {
+                                    forget = Some(p.name.clone());
+                                }
+                                ui.end_row();
                             }
-                        }
-                    }
-                    if ui.small_button("Forget").clicked() {
-                        forget = Some(p.name.clone());
-                    }
-                    ui.end_row();
-                }
-            });
+                        });
+                },
+            );
+            ui.add_space(8.0);
+            section(
+                ui,
+                &format!("Networks in range ({})", networks.len()),
+                |_| {},
+                |ui| {
+                    egui::Grid::new("wifi_networks")
+                        .num_columns(3)
+                        .striped(true)
+                        .spacing([16.0, 4.0])
+                        .show(ui, |ui| {
+                            for n in &networks {
+                                ui.label(&n.ssid);
+                                ui.add(
+                                    egui::ProgressBar::new(n.signal as f32 / 100.0)
+                                        .desired_width(120.0)
+                                        .text(format!("{}%", n.signal)),
+                                );
+                                ui.weak(format!(
+                                    "{}{}",
+                                    if n.secured { "secured" } else { "open" },
+                                    if n.saved { " · saved" } else { "" }
+                                ));
+                                ui.end_row();
+                            }
+                        });
+                },
+            );
+        });
         if let Some(name) = reveal {
             let key = open()
                 .ok()
@@ -374,29 +427,10 @@ impl Tool for WifiManager {
                 name,
             );
         }
+    }
 
-        ui.add_space(10.0);
-        ui.strong(format!("Networks in range ({})", networks.len()));
-        egui::Grid::new("wifi_networks")
-            .num_columns(3)
-            .striped(true)
-            .spacing([16.0, 4.0])
-            .show(ui, |ui| {
-                for n in &networks {
-                    ui.label(&n.ssid);
-                    ui.add(
-                        egui::ProgressBar::new(n.signal as f32 / 100.0)
-                            .desired_width(120.0)
-                            .text(format!("{}%", n.signal)),
-                    );
-                    ui.weak(format!(
-                        "{}{}",
-                        if n.secured { "secured" } else { "open" },
-                        if n.saved { " · saved" } else { "" }
-                    ));
-                    ui.end_row();
-                }
-            });
+    fn layout(&self) -> Layout {
+        Layout::Fill
     }
 }
 
