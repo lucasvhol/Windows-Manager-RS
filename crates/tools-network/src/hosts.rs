@@ -168,15 +168,28 @@ impl Tool for UrlManager {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, ctx: &mut AppCtx<'_>) {
-        const TABS: [Tab; 3] = [Tab::Hosts, Tab::Browsers, Tab::Favorites];
+        // The original's sections, in its order, under its heading band.
+        const TABS: [Tab; 3] = [Tab::Favorites, Tab::Hosts, Tab::Browsers];
         let mut sel = TABS.iter().position(|t| *t == self.tab).unwrap_or(0);
+        egui::Panel::top("hosts-band")
+            .resizable(false)
+            .frame(egui::Frame::new().inner_margin(egui::Margin::symmetric(12, 8)))
+            .show(ui, |ui| {
+                ui.vertical_centered(|ui| {
+                    ui.label(
+                        egui::RichText::new("Manage URLs, Hosts and website access")
+                            .strong()
+                            .size(15.0),
+                    );
+                });
+            });
         if frame::left(ui, 200.0, |ui| {
             section_nav(
                 ui,
                 &[
-                    (icons::STOP_CIRCLE, "Block or redirect sites"),
-                    (icons::GLOBE, "Browser lists"),
-                    (icons::BOOKMARK_SIMPLE, "Check favorites"),
+                    (icons::BOOKMARK_SIMPLE, "Favorites Checker"),
+                    (icons::FILE_TEXT, "Host Editor"),
+                    (icons::LOCK, "URL Blocker"),
                 ],
                 &mut sel,
             )
