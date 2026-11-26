@@ -65,7 +65,7 @@ Tools reachable only from a dropdown: Windows Features (System Protection), App 
 | (hub) Custom System | customsystem | Hub-only window in the original; could not be captured | | | | ➖ |
 | (hub) File Explorer Tweaker | explorertweaks | Hub-only window in the original; could not be captured | | | | ➖ |
 | NavigationPaneManager.exe | navpane | "Navigation pane" tree in pane order, action column on the right, Edit group (Title, Path) at the bottom, status line | Right column: Place on Top, Add Folder, Up, Down, Disable, Enable, Remove, This PC, Options | Add Utility is missing; the tree lists the items we can manage (This PC, Network and removable drives are not listed); Options opens our tweaks as a page with a back strip | Kept: Move to Top, Icon field, Open, Refresh, Restart Explorer | 🟡 |
-| ThisPCManager.exe | thispc | | | | | ❌ |
+| ThisPCManager.exe | thispc | List of what This PC shows, action column on the right, Edit group (Title, Parameter, Path) at the bottom, status line | Right column: Add File (+ Parameter box), Add Folder, Add Utility, Desktop Icon Settings, Enable, Remove, Remove All, This PC | Add Windows App is missing; Add Utility opens a list of Windows tools inside the column instead of a dialog | Kept: Personal Folders page, Icon field, Open, Refresh, Restart Explorer | 🟡 |
 | WinXMenuEditor.exe | winx | | | | | ❌ |
 | VisualCustomizer.exe | visual | | | | | ❌ |
 | BingImagesDownloader.exe | bing | | | | | ❌ |

@@ -10,18 +10,15 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Result, bail};
-use egui_extras::{Column, TableBuilder};
 use windows::core::GUID;
 use wm_core::{
-    AppCtx, Category, Layout, Tool,
-    egui::{self, Vec2},
-    icons, paths,
+    AppCtx, Category, Layout, Tool, egui, icons, paths,
     process::{hidden_command, restart_explorer},
     registry,
     safety::UndoAction,
     shell::shell_open,
     tweaks::TweakPanel,
-    ui::{Confirm, Message, ToolButton, frame, section_nav, show_message},
+    ui::{Confirm, Message, frame, show_message},
 };
 
 use crate::navpane::{
@@ -338,15 +335,9 @@ pub fn desktop_icon_settings() -> Result<()> {
     Ok(())
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Tab {
-    Items,
-    Folders,
-}
-
+/// The Edit group's fields, loaded from the selected item.
 struct Editor {
-    clsid: Option<String>,
-    kind: Kind,
+    clsid: String,
     name: String,
     target: String,
     args: String,
@@ -355,14 +346,20 @@ struct Editor {
 
 enum Ask {
     Remove(PcItem),
+    RemoveAll(Vec<PcItem>),
     RestartExplorer,
 }
 
 pub struct ThisPcManager {
-    tab: Tab,
+    /// The personal-folders tweaks are shown instead of the item list.
+    folders_page: bool,
     items: Option<Vec<PcItem>>,
     selected: Option<String>,
     editor: Option<Editor>,
+    /// The "Parameter" box under Add File (arguments for a program).
+    parameter: String,
+    /// The Windows tools list under Add Utility is open.
+    show_utilities: bool,
     panel: TweakPanel,
     confirm: Confirm<Ask>,
     message: Message,
@@ -371,14 +368,25 @@ pub struct ThisPcManager {
 impl Default for ThisPcManager {
     fn default() -> Self {
         Self {
-            tab: Tab::Items,
+            folders_page: false,
             items: None,
             selected: None,
             editor: None,
+            parameter: String::new(),
+            show_utilities: false,
             panel: TweakPanel::new(TOOL, crate::THISPC_TWEAKS),
             confirm: Confirm::default(),
             message: None,
         }
+    }
+}
+
+fn kind_icon(kind: Kind) -> &'static str {
+    match kind {
+        Kind::Folder => icons::FOLDER_OPEN,
+        Kind::File => icons::FILE_TEXT,
+        Kind::Program => icons::APP_WINDOW,
+        Kind::Utility => icons::WRENCH,
     }
 }
 
@@ -396,122 +404,147 @@ impl ThisPcManager {
                 .map_err(|e| format!("{e:#}")),
         );
         self.items = None;
+        self.editor = None;
     }
 
-    fn editor_window(&mut self, ui: &egui::Ui, ctx: &mut AppCtx<'_>) {
-        let Some(ed) = &mut self.editor else { return };
-        let mut result = None;
-        let title = if ed.clsid.is_some() {
-            "Edit item"
+    /// Adds a picked file (a program when it is an .exe and friends) or folder.
+    fn add_picked(&mut self, ctx: &AppCtx<'_>, folder: bool) {
+        let picked = if folder {
+            rfd::FileDialog::new().pick_folder()
         } else {
-            "Add to This PC"
+            rfd::FileDialog::new().pick_file()
         };
-        egui::Window::new(title)
-            .collapsible(false)
-            .resizable(false)
-            .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
-            .show(ui.ctx(), |ui| {
-                egui::Grid::new("thispc-edit").num_columns(2).show(ui, |ui| {
-                    ui.label("Type");
-                    ui.add_enabled_ui(ed.clsid.is_none(), |ui| {
-                        ui.horizontal(|ui| {
-                            for k in [Kind::Folder, Kind::File, Kind::Program] {
-                                ui.selectable_value(&mut ed.kind, k, k.label());
-                            }
-                        });
+        let Some(p) = picked else { return };
+        if self.dry(ctx) {
+            return;
+        }
+        let kind = if folder {
+            Kind::Folder
+        } else if p.extension().is_some_and(|e| {
+            ["exe", "bat", "cmd", "com", "msc"]
+                .iter()
+                .any(|x| e.eq_ignore_ascii_case(x))
+        }) {
+            Kind::Program
+        } else {
+            Kind::File
+        };
+        let name = p
+            .file_stem()
+            .or(p.file_name())
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| p.display().to_string());
+        let args = if kind == Kind::Program {
+            self.parameter.clone()
+        } else {
+            String::new()
+        };
+        let r = add(ctx, kind, &name, &p, &args, "").map(|id| {
+            self.selected = Some(id);
+            format!("Added \"{name}\"; change its title below if you like.")
+        });
+        self.done(r);
+    }
+
+    /// The original's Edit group: Title, Parameter and Path (plus the icon).
+    fn edit_bar(&mut self, ui: &mut egui::Ui, ctx: &mut AppCtx<'_>, sel: Option<&PcItem>) {
+        match sel {
+            Some(i) if i.own() => {
+                if self.editor.as_ref().is_none_or(|e| e.clsid != i.clsid) {
+                    self.editor = Some(Editor {
+                        clsid: i.clsid.clone(),
+                        name: i.name.clone(),
+                        target: i.target.clone(),
+                        args: i.args.clone(),
+                        icon: i.icon.clone(),
                     });
-                    ui.end_row();
-                    ui.label(ed.kind.label());
-                    ui.horizontal(|ui| {
-                        ui.add(egui::TextEdit::singleline(&mut ed.target).desired_width(260.0));
-                        if ui.button("Browse…").clicked() {
-                            let picked = match ed.kind {
-                                Kind::Folder => rfd::FileDialog::new().pick_folder(),
-                                Kind::Program => rfd::FileDialog::new()
-                                    .add_filter("Programs", &["exe", "bat", "cmd", "com", "msc"])
-                                    .pick_file(),
-                                _ => rfd::FileDialog::new().pick_file(),
-                            };
-                            if let Some(p) = picked {
-                                ed.target = p.display().to_string();
-                                if ed.name.is_empty() {
-                                    ed.name = p
-                                        .file_stem()
-                                        .or(p.file_name())
-                                        .map(|s| s.to_string_lossy().into_owned())
-                                        .unwrap_or_else(|| ed.target.clone());
-                                }
-                            }
-                        }
-                    });
-                    ui.end_row();
-                    if ed.kind == Kind::Program {
-                        ui.label("Arguments");
-                        ui.add(egui::TextEdit::singleline(&mut ed.args).desired_width(260.0));
-                        ui.end_row();
-                    }
-                    ui.label("Name");
-                    ui.text_edit_singleline(&mut ed.name);
-                    ui.end_row();
-                    ui.label("Icon");
-                    ui.horizontal(|ui| {
-                        ui.add(
-                            egui::TextEdit::singleline(&mut ed.icon)
-                                .hint_text("Default icon")
-                                .desired_width(220.0),
-                        );
-                        if ui.button("Browse…").clicked()
-                            && let Some(p) = rfd::FileDialog::new()
-                                .add_filter("Icons", &["ico", "dll", "exe"])
-                                .pick_file()
-                        {
-                            let is_ico = p.extension().is_some_and(|x| x.eq_ignore_ascii_case("ico"));
-                            ed.icon = if is_ico {
-                                p.display().to_string()
-                            } else {
-                                format!("{},0", p.display())
-                            };
-                        }
-                    });
-                    ui.end_row();
-                });
-                ui.weak("Icons from a DLL or EXE take an index after a comma, e.g. imageres.dll,-3.");
-                ui.horizontal(|ui| {
-                    let ok = !ed.name.trim().is_empty() && !ed.target.trim().is_empty();
-                    if ui.add_enabled(ok, egui::Button::new("Save")).clicked() {
-                        result = Some(true);
-                    }
-                    if ui.button(ctx.i18n.tr("common-cancel")).clicked() {
-                        result = Some(false);
-                    }
-                });
-            });
-        match result {
-            Some(true) => {
-                let ed = self.editor.take().expect("open");
-                if self.dry(ctx) {
-                    return;
                 }
-                let target = PathBuf::from(ed.target.trim().trim_matches('"'));
-                let r = match &ed.clsid {
-                    None => add(ctx, ed.kind, &ed.name, &target, &ed.args, &ed.icon).map(|id| {
-                        self.selected = Some(id);
-                        format!("Added \"{}\".", ed.name.trim())
-                    }),
-                    Some(id) => match self.items.iter().flatten().find(|i| &i.clsid == id).cloned() {
-                        Some(item) => edit(ctx, &item, &ed.name, &target, &ed.args, &ed.icon)
-                            .map(|()| format!("Saved \"{}\".", ed.name.trim())),
-                        None => Err(anyhow::anyhow!("the item no longer exists")),
-                    },
-                };
-                self.done(r);
             }
-            Some(false) => self.editor = None,
-            None => {}
+            _ => self.editor = None,
+        }
+        let is_program = sel.is_some_and(|i| i.kind == Kind::Program);
+        let is_folder = sel.is_some_and(|i| i.kind == Kind::Folder);
+        let mut save = false;
+        frame::edit_bar(ui, |ui| {
+            let enabled = self.editor.is_some();
+            let mut empty = Editor {
+                clsid: String::new(),
+                name: String::new(),
+                target: String::new(),
+                args: String::new(),
+                icon: String::new(),
+            };
+            let ed = self.editor.as_mut().unwrap_or(&mut empty);
+            let w = (ui.available_width() - 110.0).max(200.0);
+            ui.add_enabled_ui(enabled, |ui| {
+                let label = |ui: &mut egui::Ui, t: &str| {
+                    ui.add_sized([64.0, 20.0], egui::Label::new(t));
+                };
+                ui.horizontal(|ui| {
+                    label(ui, "Title");
+                    ui.add(egui::TextEdit::singleline(&mut ed.name).desired_width(w));
+                });
+                ui.horizontal(|ui| {
+                    label(ui, "Path");
+                    ui.add(egui::TextEdit::singleline(&mut ed.target).desired_width(w));
+                    if ui.button(icons::FOLDER_OPEN).on_hover_text("Browse").clicked() {
+                        let picked = if is_folder {
+                            rfd::FileDialog::new().pick_folder()
+                        } else {
+                            rfd::FileDialog::new().pick_file()
+                        };
+                        if let Some(p) = picked {
+                            ed.target = p.display().to_string();
+                        }
+                    }
+                });
+                ui.add_enabled_ui(is_program, |ui| {
+                    ui.horizontal(|ui| {
+                        label(ui, "Parameter");
+                        ui.add(egui::TextEdit::singleline(&mut ed.args).desired_width(w));
+                    });
+                });
+                ui.horizontal(|ui| {
+                    label(ui, "Icon");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut ed.icon)
+                            .hint_text("Default icon (or file.dll,index)")
+                            .desired_width(w),
+                    );
+                    if ui.button(icons::IMAGE).on_hover_text("Browse").clicked()
+                        && let Some(p) = rfd::FileDialog::new()
+                            .add_filter("Icons", &["ico", "dll", "exe"])
+                            .pick_file()
+                    {
+                        let is_ico = p.extension().is_some_and(|x| x.eq_ignore_ascii_case("ico"));
+                        ed.icon = if is_ico {
+                            p.display().to_string()
+                        } else {
+                            format!("{},0", p.display())
+                        };
+                    }
+                });
+                let ok = !ed.name.trim().is_empty() && !ed.target.trim().is_empty();
+                save = ui.add_enabled(ok, egui::Button::new("Save")).clicked();
+            })
+            .response
+            .on_disabled_hover_text("Select an item you added to edit it");
+        });
+        if save
+            && let Some(ed) = self.editor.take()
+            && !self.dry(ctx)
+        {
+            let target = PathBuf::from(ed.target.trim().trim_matches('"'));
+            let r = match self.items.iter().flatten().find(|i| i.clsid == ed.clsid).cloned() {
+                Some(item) => edit(ctx, &item, &ed.name, &target, &ed.args, &ed.icon)
+                    .map(|()| format!("Saved \"{}\".", ed.name.trim())),
+                None => Err(anyhow::anyhow!("the item no longer exists")),
+            };
+            self.done(r);
         }
     }
 
-    fn items_tab(&mut self, ui: &mut egui::Ui, ctx: &mut AppCtx<'_>) {
+    fn items_page(&mut self, ui: &mut egui::Ui, ctx: &mut AppCtx<'_>) {
         let items = self.items.get_or_insert_with(enumerate).clone();
         let sel = self
             .selected
@@ -519,72 +552,126 @@ impl ThisPcManager {
             .and_then(|id| items.iter().find(|i| &i.clsid == id))
             .cloned();
         let own = sel.as_ref().is_some_and(PcItem::own);
-        match frame::toolbar(
-            ui,
-            &[
-                Some(ToolButton::new(icons::PLUS, "Add")),
-                Some(ToolButton::new(icons::PENCIL_SIMPLE, "Edit").enabled(own)),
-                Some(ToolButton::new(icons::TRASH, "Remove").enabled(own)),
-                None,
-                Some(
-                    ToolButton::new(
-                        icons::EYE_SLASH,
-                        if sel.as_ref().is_some_and(|i| i.enabled) {
-                            "Turn off"
-                        } else {
-                            "Turn on"
-                        },
-                    )
-                    .enabled(sel.is_some()),
-                ),
-                Some(ToolButton::new(icons::FOLDER_OPEN, "Open").enabled(sel.is_some())),
-                None,
-                Some(ToolButton::new(icons::DESKTOP, "Desktop icons")),
-                Some(ToolButton::new(icons::ARROWS_CLOCKWISE, "Refresh")),
-                Some(ToolButton::new(icons::WINDOWS_LOGO, "Restart Explorer")),
-            ],
-            |_| {},
-        ) {
-            Some(0) => {
-                self.editor = Some(Editor {
-                    clsid: None,
-                    kind: Kind::Folder,
-                    name: String::new(),
-                    target: String::new(),
-                    args: String::new(),
-                    icon: String::new(),
-                })
+        let own_items: Vec<PcItem> = items.iter().filter(|i| i.own()).cloned().collect();
+        let enabled = sel.as_ref().is_some_and(|i| i.enabled);
+
+        // The original's action column.
+        let mut act = None;
+        let mut add_utility = None;
+        frame::right(ui, 200.0, |ui| {
+            if frame::action(ui, icons::PLUS, "Add File", true) {
+                act = Some("file");
             }
-            Some(1) => {
-                if let Some(i) = sel {
-                    self.editor = Some(Editor {
-                        clsid: Some(i.clsid),
-                        kind: i.kind,
-                        name: i.name,
-                        target: i.target,
-                        args: i.args,
-                        icon: i.icon,
-                    });
+            ui.add(
+                egui::TextEdit::singleline(&mut self.parameter)
+                    .hint_text("Parameter")
+                    .desired_width(ui.available_width()),
+            )
+            .on_hover_text("Arguments for a program added with Add File");
+            if frame::action(ui, icons::PLUS, "Add Folder", true) {
+                act = Some("folder");
+            }
+            if frame::action(ui, icons::PLUS, "Add Utility", true) {
+                self.show_utilities = !self.show_utilities;
+            }
+            if self.show_utilities {
+                let off: Vec<&PcItem> = items
+                    .iter()
+                    .filter(|i| i.kind == Kind::Utility && !i.enabled)
+                    .collect();
+                ui.indent("thispc-utils", |ui| {
+                    if off.is_empty() {
+                        ui.weak("Every Windows tool is listed.");
+                    }
+                    for u in off {
+                        if ui.small_button(&u.name).clicked() {
+                            add_utility = Some(u.clone());
+                        }
+                    }
+                });
+            }
+            if frame::action(ui, icons::GEAR, "Desktop Icon Settings", true) {
+                act = Some("desktop");
+            }
+            ui.separator();
+            if frame::action(
+                ui,
+                if enabled { icons::EYE_SLASH } else { icons::CHECK },
+                if enabled { "Disable" } else { "Enable" },
+                sel.is_some(),
+            ) {
+                act = Some("toggle");
+            }
+            if frame::action(ui, icons::X, "Remove", own) {
+                act = Some("remove");
+            }
+            if frame::action(ui, icons::X, "Remove All", !own_items.is_empty()) {
+                act = Some("removeall");
+            }
+            ui.separator();
+            if frame::action(ui, icons::DESKTOP, "This PC", true) {
+                act = Some("thispc");
+            }
+            if frame::action(ui, icons::FOLDERS, "Personal Folders", true) {
+                act = Some("folders");
+            }
+            ui.separator();
+            if frame::action(ui, icons::FOLDER_OPEN, "Open", sel.is_some()) {
+                act = Some("open");
+            }
+            if frame::action(ui, icons::ARROWS_CLOCKWISE, "Refresh", true) {
+                act = Some("refresh");
+            }
+            if frame::action(ui, icons::WINDOWS_LOGO, "Restart Explorer", true) {
+                act = Some("explorer");
+            }
+        });
+        if let Some(u) = add_utility
+            && !self.dry(ctx)
+        {
+            let r = set_enabled(ctx, &u, true).map(|()| format!("Added \"{}\".", u.name));
+            self.selected = Some(u.clsid.clone());
+            self.done(r);
+        }
+        match act {
+            Some("file") => self.add_picked(ctx, false),
+            Some("folder") => self.add_picked(ctx, true),
+            Some("desktop") => {
+                if let Err(e) = desktop_icon_settings() {
+                    self.message = Some(Err(format!("{e:#}")));
                 }
             }
-            Some(2) => {
-                if let Some(i) = sel {
+            Some("toggle") => {
+                if let Some(i) = &sel
+                    && !self.dry(ctx)
+                {
+                    let on = !i.enabled;
+                    let verb = if on { "Enabled" } else { "Disabled" };
+                    let r = set_enabled(ctx, i, on).map(|()| format!("{verb} \"{}\".", i.name));
+                    self.done(r);
+                }
+            }
+            Some("remove") => {
+                if let Some(i) = sel.clone() {
                     self.confirm
                         .ask(format!("Remove \"{}\" from This PC?", i.name), Ask::Remove(i));
                 }
             }
-            Some(4) => {
-                if let Some(i) = sel
-                    && !self.dry(ctx)
-                {
-                    let on = !i.enabled;
-                    let verb = if on { "Turned on" } else { "Turned off" };
-                    let r = set_enabled(ctx, &i, on).map(|()| format!("{verb} \"{}\".", i.name));
-                    self.done(r);
+            Some("removeall") => self.confirm.ask(
+                format!(
+                    "Remove all {} items you added to This PC? Windows tools are only turned off by Disable.",
+                    own_items.len()
+                ),
+                Ask::RemoveAll(own_items.clone()),
+            ),
+            Some("thispc") => {
+                if let Err(e) = shell_open("shell:MyComputerFolder", "") {
+                    self.message = Some(Err(format!("{e:#}")));
                 }
             }
-            Some(5) => {
-                if let Some(i) = sel {
+            Some("folders") => self.folders_page = true,
+            Some("open") => {
+                if let Some(i) = &sel {
                     let r = match i.kind {
                         Kind::Utility => shell_open(&format!("shell:::{}", i.clsid), ""),
                         Kind::Program => shell_open(&paths::expand_env(&i.target), &i.args),
@@ -595,13 +682,8 @@ impl ThisPcManager {
                     }
                 }
             }
-            Some(7) => {
-                if let Err(e) = desktop_icon_settings() {
-                    self.message = Some(Err(format!("{e:#}")));
-                }
-            }
-            Some(8) => self.items = None,
-            Some(9) => self.confirm.ask(
+            Some("refresh") => self.items = None,
+            Some("explorer") => self.confirm.ask(
                 "Restart File Explorer now? Open Explorer windows close.",
                 Ask::RestartExplorer,
             ),
@@ -610,58 +692,50 @@ impl ThisPcManager {
 
         let on = items.iter().filter(|i| i.enabled).count();
         frame::status(ui, &format!("{} items, {on} in This PC", items.len()), |_| {});
-        frame::central_fixed(ui, |ui| self.items_table(ui, &items));
+        self.edit_bar(ui, ctx, sel.as_ref());
+        frame::central(ui, |ui| {
+            show_message(ui, &self.message);
+            self.list(ui, &items);
+        });
     }
 
-    fn items_table(&mut self, ui: &mut egui::Ui, items: &[PcItem]) {
-        show_message(ui, &self.message);
-        let row_h = ui.text_style_height(&egui::TextStyle::Body) + 6.0;
-        TableBuilder::new(ui)
-            .striped(true)
-            .sense(egui::Sense::click())
-            .column(Column::exact(50.0))
-            .column(Column::initial(200.0).at_least(120.0))
-            .column(Column::exact(80.0))
-            .column(Column::remainder().at_least(120.0))
-            .header(row_h, |mut h| {
-                for t in ["On", "Name", "Type", "Opens"] {
-                    h.col(|ui| {
-                        ui.strong(t);
-                    });
-                }
-            })
-            .body(|body| {
-                body.rows(row_h, items.len(), |mut row| {
-                    let item = &items[row.index()];
-                    row.set_selected(self.selected.as_ref() == Some(&item.clsid));
-                    row.col(|ui| {
-                        ui.label(if item.enabled { icons::CHECK } else { "" });
-                    });
-                    row.col(|ui| {
-                        if item.missing() {
-                            ui.colored_label(ui.visuals().error_fg_color, &item.name)
-                                .on_hover_text("The target no longer exists");
-                        } else {
-                            ui.label(&item.name);
-                        }
-                    });
-                    row.col(|ui| {
-                        ui.label(item.kind.label());
-                    });
-                    row.col(|ui| {
-                        let opens = if item.own() {
-                            format!("{} {}", item.target, item.args).trim().to_owned()
-                        } else {
-                            item.clsid.clone()
-                        };
-                        ui.label(opens);
-                    });
-                    let resp = row.response();
-                    if resp.clicked() {
-                        self.selected = Some(item.clsid.clone());
-                    }
-                });
-            });
+    /// What This PC shows: items added here (greyed when disabled), then the Windows
+    /// tools that are listed. Other Windows tools come in through Add Utility.
+    fn list(&mut self, ui: &mut egui::Ui, items: &[PcItem]) {
+        let shown: Vec<&PcItem> = items.iter().filter(|i| i.own() || i.enabled).collect();
+        if shown.is_empty() {
+            wm_core::ui::empty_state(
+                ui,
+                icons::DESKTOP,
+                "Nothing added to This PC",
+                "Use Add File, Add Folder or Add Utility on the right.",
+            );
+            return;
+        }
+        for item in shown {
+            let mut text = egui::RichText::new(format!("{}  {}", kind_icon(item.kind), item.name));
+            if !item.enabled {
+                text = text.weak();
+            }
+            if item.missing() {
+                text = text.color(ui.visuals().error_fg_color);
+            }
+            let sel = self.selected.as_ref() == Some(&item.clsid);
+            let mut tip = item.kind.label().to_owned();
+            if item.own() {
+                tip = format!("{tip}: {} {}", item.target, item.args).trim().to_owned();
+            }
+            if !item.enabled {
+                tip.push_str(" (not in This PC)");
+            }
+            if item.missing() {
+                tip.push_str(" — the target no longer exists");
+            }
+            let r = ui.selectable_label(sel, text).on_hover_text(tip);
+            if r.clicked() {
+                self.selected = Some(item.clsid.clone());
+            }
+        }
     }
 }
 
@@ -684,6 +758,16 @@ impl Tool for ThisPcManager {
                         self.done(r);
                     }
                 }
+                Ask::RemoveAll(list) => {
+                    if !self.dry(ctx) {
+                        let r = list
+                            .iter()
+                            .try_for_each(|i| remove(ctx, i))
+                            .map(|()| format!("Removed {} items.", list.len()));
+                        self.selected = None;
+                        self.done(r);
+                    }
+                }
                 Ask::RestartExplorer => {
                     if !self.dry(ctx) {
                         self.message = Some(
@@ -695,25 +779,31 @@ impl Tool for ThisPcManager {
                 }
             }
         }
-        self.editor_window(ui, ctx);
-        let mut sel = usize::from(self.tab == Tab::Folders);
-        frame::left(ui, 190.0, |ui| {
-            section_nav(
-                ui,
-                &[(icons::LIST, "Items"), (icons::FOLDERS, "Personal folders")],
-                &mut sel,
-            )
-        });
-        self.tab = if sel == 1 { Tab::Folders } else { Tab::Items };
-        match self.tab {
-            Tab::Items => self.items_tab(ui, ctx),
-            Tab::Folders => frame::nested(ui, |ui| {
+        if self.folders_page {
+            let mut back = false;
+            egui::Panel::top("thispc-back")
+                .resizable(false)
+                .frame(egui::Frame::new().inner_margin(egui::Margin::symmetric(10, 4)))
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        back = ui.button(format!("{}  This PC items", icons::ARROW_UP)).clicked();
+                        ui.label("›");
+                        ui.strong("Personal folders");
+                    });
+                });
+            if back {
+                self.folders_page = false;
+                return;
+            }
+            frame::nested(ui, |ui| {
                 frame::options(ui, |ui| {
                     ui.weak("Which personal folders This PC shows. Applies to all users (administrator required).");
                 });
                 self.panel.ui_framed(ui, ctx);
-            }),
+            });
+            return;
         }
+        self.items_page(ui, ctx);
     }
 
     fn layout(&self) -> Layout {
