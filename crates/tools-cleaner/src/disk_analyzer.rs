@@ -210,71 +210,6 @@ pub fn scan(root: &Path, progress: &Progress<ScanResult>) -> ScanResult {
     }
 }
 
-/// Squarified treemap layout: returns one rectangle per size (same order), filling `area`.
-pub fn squarify(sizes: &[f64], area: Rect) -> Vec<Rect> {
-    let total: f64 = sizes.iter().sum();
-    let mut out = vec![Rect::NOTHING; sizes.len()];
-    if total <= 0.0 || area.width() <= 0.0 || area.height() <= 0.0 {
-        return out;
-    }
-    let scale = (area.width() as f64 * area.height() as f64) / total;
-    let mut order: Vec<usize> = (0..sizes.len()).filter(|&i| sizes[i] > 0.0).collect();
-    order.sort_by(|&a, &b| sizes[b].total_cmp(&sizes[a]));
-    let mut rect = area;
-    let mut i = 0;
-    while i < order.len() {
-        let short = rect.width().min(rect.height()) as f64;
-        // Grow the row while the worst aspect ratio improves.
-        let mut row = vec![order[i]];
-        let mut row_area = sizes[order[i]] * scale;
-        let worst = |areas: &[f64], sum: f64| {
-            let (mx, mn) = areas
-                .iter()
-                .fold((0f64, f64::MAX), |(a, b), &x| (a.max(x), b.min(x)));
-            ((short * short * mx) / (sum * sum)).max((sum * sum) / (short * short * mn))
-        };
-        let mut j = i + 1;
-        while j < order.len() {
-            let a = sizes[order[j]] * scale;
-            let current: Vec<f64> = row.iter().map(|&k| sizes[k] * scale).collect();
-            let mut next = current.clone();
-            next.push(a);
-            if worst(&next, row_area + a) > worst(&current, row_area) {
-                break;
-            }
-            row.push(order[j]);
-            row_area += a;
-            j += 1;
-        }
-        // Lay the row along the short side.
-        let thickness = (row_area / short) as f32;
-        let mut offset = 0.0f32;
-        let horizontal = rect.width() >= rect.height(); // row is a column on the left
-        for &k in &row {
-            let len = ((sizes[k] * scale) / row_area * short) as f32;
-            out[k] = if horizontal {
-                Rect::from_min_size(
-                    Pos2::new(rect.left(), rect.top() + offset),
-                    Vec2::new(thickness, len),
-                )
-            } else {
-                Rect::from_min_size(
-                    Pos2::new(rect.left() + offset, rect.top()),
-                    Vec2::new(len, thickness),
-                )
-            };
-            offset += len;
-        }
-        rect = if horizontal {
-            Rect::from_min_max(Pos2::new(rect.left() + thickness, rect.top()), rect.max)
-        } else {
-            Rect::from_min_max(Pos2::new(rect.left(), rect.top() + thickness), rect.max)
-        };
-        i = j;
-    }
-    out
-}
-
 /// How sizes are shown (and written to text and HTML exports).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Unit {
@@ -453,27 +388,225 @@ pub fn export(node: &DirNode, format: ExportFormat, unit: Unit) -> String {
     out
 }
 
-fn tile_color(i: usize, dark: bool) -> Color32 {
-    const HUES: [(u8, u8, u8); 6] = [
-        (66, 133, 180),
-        (90, 160, 110),
-        (200, 140, 60),
-        (150, 100, 170),
-        (190, 90, 90),
-        (80, 160, 160),
-    ];
-    let (r, g, b) = HUES[i % HUES.len()];
-    if dark {
-        Color32::from_rgb(r / 4 * 3, g / 4 * 3, b / 4 * 3)
+/// Slice colours of the pie chart (the original's Office chart palette).
+const PIE_COLORS: [Color32; 10] = [
+    Color32::from_rgb(0x4F, 0x81, 0xBD),
+    Color32::from_rgb(0xC0, 0x50, 0x4D),
+    Color32::from_rgb(0x9B, 0xBB, 0x59),
+    Color32::from_rgb(0x80, 0x64, 0xA2),
+    Color32::from_rgb(0x4B, 0xAC, 0xC6),
+    Color32::from_rgb(0xF7, 0x96, 0x46),
+    Color32::from_rgb(0x2C, 0x5D, 0x95),
+    Color32::from_rgb(0x96, 0x3C, 0x3A),
+    Color32::from_rgb(0x76, 0x92, 0x3C),
+    Color32::from_rgb(0x5F, 0x49, 0x7A),
+];
+/// The pie shows this many folders; the rest are one "[Other folders]" slice.
+const PIE_MAX: usize = 14;
+/// Share bar behind the tree labels.
+const SHARE_BAR: Color32 = Color32::from_rgba_premultiplied(28, 66, 44, 70);
+
+/// One slice of the pie chart.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Slice {
+    pub label: String,
+    pub size: u64,
+    /// The child folder it stands for (None for the files and "other" slices).
+    pub child: Option<usize>,
+}
+
+/// The slices of `node`'s pie, in drawing order: its largest folders, the rest as one
+/// "[Other folders]" slice, and the files directly in it as "[Files]", like the original.
+pub fn pie_slices(node: &DirNode, max: usize) -> Vec<Slice> {
+    let mut out: Vec<Slice> = node
+        .children
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| c.size > 0)
+        .take(max)
+        .map(|(i, c)| Slice {
+            label: c.name.clone(),
+            size: c.size,
+            child: Some(i),
+        })
+        .collect();
+    let shown: u64 = out.iter().map(|s| s.size).sum();
+    let other = node.size - node.own_files_size - shown;
+    if other > 0 {
+        out.push(Slice {
+            label: "[Other folders]".into(),
+            size: other,
+            child: None,
+        });
+    }
+    if node.own_files_size > 0 {
+        out.push(Slice {
+            label: "[Files]".into(),
+            size: node.own_files_size,
+            child: None,
+        });
+    }
+    out
+}
+
+/// `s` cut to `max` characters with an ellipsis.
+fn shorten(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        s.to_owned()
     } else {
-        Color32::from_rgb(r, g, b)
+        s.chars().take(max - 1).chain(['…']).collect()
     }
 }
 
-#[derive(PartialEq, Eq, Clone, Copy)]
-enum View {
-    Folders,
-    LargestFiles,
+/// Draws the pie of `node` with labelled slices and a legend; returns the child folder
+/// whose slice was clicked.
+fn pie_chart(ui: &mut egui::Ui, node: &DirNode, unit: Unit) -> Option<usize> {
+    use std::f32::consts::{FRAC_PI_2, TAU};
+    let slices = pie_slices(node, PIE_MAX);
+    let total = slices.iter().map(|s| s.size).sum::<u64>().max(1) as f32;
+    let (rect, response) = ui.allocate_exact_size(ui.available_size(), Sense::click());
+    let painter = ui.painter_at(rect);
+    let text_color = ui.visuals().text_color();
+    if slices.is_empty() {
+        painter.text(
+            rect.center(),
+            egui::Align2::CENTER_CENTER,
+            "This folder is empty.",
+            egui::FontId::proportional(13.0),
+            ui.visuals().weak_text_color(),
+        );
+        return None;
+    }
+    // Legend texts first: the legend gets its own column on the right.
+    let font = egui::FontId::proportional(12.0);
+    let texts: Vec<String> = slices
+        .iter()
+        .map(|s| format!("{} ({})", shorten(&s.label, 40), unit.format(s.size)))
+        .collect();
+    let rows: Vec<_> = texts
+        .iter()
+        .map(|t| painter.layout_no_wrap(t.clone(), font.clone(), text_color))
+        .collect();
+    let legend_w = rows.iter().map(|g| g.size().x).fold(0.0, f32::max) + 22.0;
+    let chart = if rect.width() - legend_w > 360.0 {
+        Rect::from_min_max(rect.min, Pos2::new(rect.right() - legend_w - 8.0, rect.bottom()))
+    } else {
+        rect
+    };
+    let center = chart.center();
+    // Callout labels need room on both sides; narrow windows rely on the legend.
+    let callouts = chart.width() >= 760.0;
+    let margin = if callouts { 170.0 } else { 16.0 };
+    let radius = ((chart.width() - 2.0 * margin).min(chart.height() - 2.0 * 50.0) / 2.0).max(40.0);
+    let at = |a: f32, r: f32| center + Vec2::new(a.cos(), a.sin()) * r;
+
+    // Which slice is under the pointer (angles run clockwise from 12 o'clock).
+    let hovered = response.hover_pos().and_then(|p| {
+        let d = p - center;
+        if d.length() > radius {
+            return None;
+        }
+        let rel = (d.y.atan2(d.x) + FRAC_PI_2).rem_euclid(TAU) / TAU * total;
+        let mut acc = 0.0;
+        slices.iter().position(|s| {
+            acc += s.size as f32;
+            rel < acc
+        })
+    });
+
+    let mut start = -FRAC_PI_2;
+    let mut labels: Vec<(f32, String, f32)> = Vec::new(); // (mid angle, text, sweep)
+    for (i, s) in slices.iter().enumerate() {
+        let sweep = s.size as f32 / total * TAU;
+        let mut color = PIE_COLORS[i % PIE_COLORS.len()];
+        if hovered == Some(i) {
+            color = color.lerp_to_gamma(Color32::WHITE, 0.25);
+        }
+        let steps = ((sweep / 0.02).ceil() as usize).max(2);
+        let mut mesh = egui::Mesh::default();
+        mesh.colored_vertex(center, color);
+        for k in 0..=steps {
+            mesh.colored_vertex(at(start + sweep * k as f32 / steps as f32, radius), color);
+        }
+        for k in 1..=steps as u32 {
+            mesh.add_triangle(0, k, k + 1);
+        }
+        painter.add(mesh);
+        if slices.len() > 1 {
+            painter.line_segment(
+                [center, at(start, radius)],
+                Stroke::new(1.0, ui.visuals().panel_fill),
+            );
+        }
+        labels.push((start + sweep / 2.0, texts[i].clone(), sweep));
+        start += sweep;
+    }
+
+    // Callout labels outside the pie, nudged apart on each side; tiny slices only
+    // get one when there are few slices (the legend lists all of them).
+    let few = slices.len() <= 6;
+    for right in [true, false] {
+        let mut side: Vec<(f32, &String)> = labels
+            .iter()
+            .filter(|(m, _, sweep)| callouts && (m.cos() >= 0.0) == right && (few || *sweep > 0.05))
+            .map(|(m, t, _)| (*m, t))
+            .collect();
+        side.sort_by(|a, b| at(a.0, radius).y.total_cmp(&at(b.0, radius).y));
+        let mut last_y = f32::MIN;
+        for (m, text) in side {
+            let elbow = at(m, radius + 16.0);
+            let y = elbow.y.max(last_y + 20.0);
+            last_y = y;
+            let dx = if right { 14.0 } else { -14.0 };
+            let end = Pos2::new(elbow.x + dx, y);
+            let line = Stroke::new(1.0, ui.visuals().weak_text_color());
+            painter.line_segment([at(m, radius), elbow], line);
+            painter.line_segment([elbow, end], line);
+            let galley = painter.layout_no_wrap(text.clone(), font.clone(), text_color);
+            let size = galley.size() + Vec2::new(8.0, 4.0);
+            let x = if right { end.x } else { end.x - size.x };
+            let x = x.min(chart.right() - size.x).max(chart.left());
+            let min = Pos2::new(x, y - size.y / 2.0);
+            let boxed = Rect::from_min_size(min, size);
+            painter.rect_filled(boxed, 0.0, ui.visuals().extreme_bg_color);
+            painter.rect_stroke(
+                boxed,
+                0.0,
+                Stroke::new(1.0, ui.visuals().widgets.noninteractive.bg_stroke.color),
+                egui::StrokeKind::Inside,
+            );
+            painter.galley(min + Vec2::new(4.0, 2.0), galley, text_color);
+        }
+    }
+
+    // Legend in the bottom-right corner.
+    let mut y = rect.bottom() - rows.len() as f32 * 17.0 - 4.0;
+    for (i, g) in rows.into_iter().enumerate() {
+        let x = rect.right() - legend_w;
+        painter.rect_filled(
+            Rect::from_min_size(Pos2::new(x, y + 3.0), Vec2::splat(10.0)),
+            1.0,
+            PIE_COLORS[i % PIE_COLORS.len()],
+        );
+        painter.galley(Pos2::new(x + 16.0, y), g, text_color);
+        y += 17.0;
+    }
+
+    let hovered = hovered?;
+    let s = &slices[hovered];
+    let tip = format!(
+        "{} — {} ({:.1}%)",
+        s.child
+            .map(|c| node.children[c].path.display().to_string())
+            .unwrap_or_else(|| s.label.clone()),
+        unit.format(s.size),
+        s.size as f32 / total * 100.0
+    );
+    let response = response.on_hover_text_at_pointer(tip);
+    let child = s
+        .child
+        .filter(|&c| !node.children[c].children.is_empty() || node.children[c].own_files > 0)?;
+    response.clicked().then_some(child)
 }
 
 /// What the running scan will do with its result.
@@ -483,10 +616,16 @@ enum Job {
     Branch(Vec<usize>),
 }
 
+#[derive(PartialEq, Eq, Clone, Copy)]
+enum View {
+    Chart,
+    LargestFiles,
+}
+
 pub struct DiskAnalyzer {
     task: Option<(Job, BackgroundTask<ScanResult>)>,
     result: Option<ScanResult>,
-    /// Indices from the root to the folder being viewed.
+    /// Indices from the root to the selected folder.
     trail: Vec<usize>,
     view: View,
     unit: Unit,
@@ -505,7 +644,7 @@ impl Default for DiskAnalyzer {
             task: None,
             result: None,
             trail: Vec::new(),
-            view: View::Folders,
+            view: View::Chart,
             unit: Unit::Auto,
             drives: Vec::new(),
             drive: 0,
@@ -533,6 +672,11 @@ impl DiskAnalyzer {
             Job::Branch(self.trail.clone()),
             BackgroundTask::spawn(ctx, move |p| Ok(scan(&path, p))),
         ));
+    }
+
+    fn selected_path(&self) -> Option<PathBuf> {
+        let r = self.result.as_ref()?;
+        Some(DisplayNode::at(&r.root, &self.trail).path.clone())
     }
 
     fn refresh_drives(&mut self) {
@@ -600,152 +744,6 @@ impl DiskAnalyzer {
         }));
     }
 
-    fn folders_view(&mut self, ui: &mut egui::Ui, result: &ScanResult) {
-        let node = DisplayNode::at(&result.root, &self.trail).clone();
-        let unit = self.unit;
-
-        // Breadcrumb.
-        ui.horizontal_wrapped(|ui| {
-            let mut n = &result.root;
-            if ui.link(&n.name).clicked() {
-                self.trail.clear();
-            }
-            for depth in 0..self.trail.len() {
-                n = &n.children[self.trail[depth]];
-                ui.label("›");
-                if ui.link(&n.name).clicked() {
-                    self.trail.truncate(depth + 1);
-                }
-            }
-        });
-        ui.weak(format!("{} in {} files", unit.format(node.size), node.files));
-
-        // Treemap of children (+ the folder's own files as one tile).
-        let height = (ui.available_height() * 0.45).clamp(140.0, 320.0);
-        let (rect, response) =
-            ui.allocate_exact_size(Vec2::new(ui.available_width(), height), Sense::click());
-        let mut sizes: Vec<f64> = node.children.iter().map(|c| c.size as f64).collect();
-        sizes.push(node.own_files_size as f64);
-        let tiles = squarify(&sizes, rect.shrink(1.0));
-        let painter = ui.painter_at(rect);
-        let dark = ui.visuals().dark_mode;
-        let hover = response.hover_pos();
-        let mut hovered = None;
-        for (i, tile) in tiles.iter().enumerate() {
-            if !tile.is_positive() {
-                continue;
-            }
-            let is_files = i == node.children.len();
-            let fill = if is_files {
-                ui.visuals().faint_bg_color
-            } else {
-                tile_color(i, dark)
-            };
-            painter.rect_filled(tile.shrink(1.0), 2.0, fill);
-            painter.rect_stroke(
-                tile.shrink(1.0),
-                2.0,
-                Stroke::new(1.0, ui.visuals().panel_fill),
-                egui::StrokeKind::Inside,
-            );
-            let name = if is_files {
-                "(files)".to_owned()
-            } else {
-                node.children[i].name.clone()
-            };
-            if tile.width() > 60.0 && tile.height() > 18.0 {
-                painter.text(
-                    tile.left_top() + Vec2::new(4.0, 3.0),
-                    egui::Align2::LEFT_TOP,
-                    format!("{name}\n{}", unit.format(sizes[i] as u64)),
-                    egui::FontId::proportional(11.0),
-                    if is_files {
-                        ui.visuals().text_color()
-                    } else {
-                        Color32::WHITE
-                    },
-                );
-            }
-            if hover.is_some_and(|h| tile.contains(h)) {
-                hovered = Some(i);
-            }
-        }
-        if let Some(i) = hovered {
-            let label = if i < node.children.len() {
-                format!(
-                    "{} — {}",
-                    node.children[i].path.display(),
-                    unit.format(node.children[i].size)
-                )
-            } else {
-                format!(
-                    "Files directly in this folder — {}",
-                    unit.format(node.own_files_size)
-                )
-            };
-            let response = response.on_hover_text(label);
-            if response.clicked() && i < node.children.len() && !node.children[i].children.is_empty() {
-                self.trail.push(i);
-            }
-        }
-
-        ui.add_space(6.0);
-        let mut open = None;
-        let mut drill = None;
-        TableBuilder::new(ui)
-            .striped(true)
-            .column(Column::initial(280.0).clip(true))
-            .column(Column::initial(90.0))
-            .column(Column::initial(160.0))
-            .column(Column::initial(80.0))
-            .column(Column::remainder())
-            .header(20.0, |mut h| {
-                for t in ["Folder", "Size", "Share", "Files", ""] {
-                    h.col(|ui| {
-                        ui.strong(t);
-                    });
-                }
-            })
-            .body(|body| {
-                body.rows(20.0, node.children.len(), |mut row| {
-                    let i = row.index();
-                    let c = &node.children[i];
-                    row.col(|ui| {
-                        if c.children.is_empty() {
-                            ui.label(&c.name);
-                        } else if ui.link(&c.name).clicked() {
-                            drill = Some(i);
-                        }
-                    });
-                    row.col(|ui| {
-                        ui.label(unit.format(c.size));
-                    });
-                    row.col(|ui| {
-                        let share = c.size as f32 / node.size.max(1) as f32;
-                        ui.add(
-                            egui::ProgressBar::new(share)
-                                .desired_width(150.0)
-                                .text(format!("{:.1}%", share * 100.0)),
-                        );
-                    });
-                    row.col(|ui| {
-                        ui.label(c.files.to_string());
-                    });
-                    row.col(|ui| {
-                        if ui.small_button("Explore").clicked() {
-                            open = Some(c.path.clone());
-                        }
-                    });
-                });
-            });
-        if let Some(i) = drill {
-            self.trail.push(i);
-        }
-        if let Some(p) = open {
-            let _ = std::process::Command::new("explorer").arg(p).spawn();
-        }
-    }
-
     fn largest_view(&mut self, ui: &mut egui::Ui, result: &ScanResult) {
         let mut recycle = None;
         let unit = self.unit;
@@ -771,12 +769,14 @@ impl DiskAnalyzer {
                         ui.label(path.display().to_string());
                     });
                     row.col(|ui| {
-                        if ui.small_button("Show").clicked() {
-                            reveal_in_explorer(path);
-                        }
-                        if ui.small_button("Recycle…").clicked() {
-                            recycle = Some(path.clone());
-                        }
+                        ui.horizontal(|ui| {
+                            if ui.small_button("Show").clicked() {
+                                reveal_in_explorer(path);
+                            }
+                            if ui.small_button("Recycle…").clicked() {
+                                recycle = Some(path.clone());
+                            }
+                        });
                     });
                 });
             });
@@ -786,22 +786,19 @@ impl DiskAnalyzer {
         }
     }
 
-    fn poll_task(&mut self, ui: &mut egui::Ui, ctx: &AppCtx<'_>) {
-        let Some((_, task)) = &mut self.task else { return };
+    /// Polls the scan; returns the status-bar text while it runs.
+    fn poll_task(&mut self) -> Option<String> {
+        let (_, task) = self.task.as_mut()?;
         task.poll();
-        ui.horizontal(|ui| {
-            ui.spinner();
-            ui.label(if task.status.is_empty() {
-                "Scanning…"
-            } else {
-                &task.status
-            });
-            if ui.button(ctx.i18n.tr("common-cancel")).clicked() {
-                task.cancel();
-            }
-        });
+        let status = if task.status.is_empty() {
+            "Analyzing…".to_owned()
+        } else {
+            format!("Analyzing… {}", task.status)
+        };
         let cancelled = task.is_cancelled();
-        let Some(r) = task.take_result() else { return };
+        let Some(r) = task.take_result() else {
+            return Some(status);
+        };
         let (job, _) = self.task.take().expect("task present");
         match (r, job) {
             // A cancelled branch rescan holds partial numbers; keep the old ones.
@@ -822,6 +819,7 @@ impl DiskAnalyzer {
         if self.result.is_some() {
             self.refresh_drives();
         }
+        None
     }
 }
 
@@ -868,18 +866,25 @@ impl Tool for DiskAnalyzer {
 
         let busy = self.task.is_some();
         let has = self.result.is_some();
+        // The original's toolbar; its Analyze Drives and Unit drop-downs are the
+        // pickers in the strip below.
         let clicked = frame::toolbar(
             ui,
             &[
                 Some(
-                    ToolButton::new(icons::HARD_DRIVES, "Analyze drive")
+                    ToolButton::new(icons::HARD_DRIVES, "Analyze Drives")
                         .enabled(!busy && !self.drives.is_empty()),
                 ),
-                Some(ToolButton::new(icons::FOLDER_OPEN, "Analyze folder").enabled(!busy)),
+                Some(ToolButton::new(icons::FILE_SEARCH, "Analyze Folder").enabled(!busy)),
                 None,
-                Some(ToolButton::new(icons::ARROWS_CLOCKWISE, "Rescan branch").enabled(!busy && has)),
-                Some(ToolButton::new(icons::ARROW_SQUARE_OUT, "Explore").enabled(has)),
+                Some(ToolButton::new(icons::ARROWS_CLOCKWISE, "Rescan Branch").enabled(!busy && has)),
+                None,
+                Some(ToolButton::new(icons::FOLDER_OPEN, "Open Folder").enabled(has)),
+                Some(ToolButton::new(icons::ARROW_SQUARE_OUT, "Explore Folder").enabled(has)),
+                None,
                 Some(ToolButton::new(icons::UPLOAD, "Export").enabled(!busy && has)),
+                None,
+                Some(ToolButton::new(icons::X, "Close")),
             ],
             |_| {},
         );
@@ -914,7 +919,7 @@ impl Tool for DiskAnalyzer {
                 );
             }
             ui.separator();
-            ui.label("Units:");
+            ui.label("Unit:");
             egui::ComboBox::from_id_salt("da-unit")
                 .selected_text(self.unit.label())
                 .show_ui(ui, |ui| {
@@ -924,12 +929,14 @@ impl Tool for DiskAnalyzer {
                 });
         });
 
-        // Status bar: totals on the left, the Explorer menu entry on the right (like
-        // the original's "Add to Context Menu").
-        let status = match &self.result {
-            Some(r) => format!(
-                "{} files, {}{}",
-                r.total_files,
+        // Status bar: the original's "Analysis completed. Target: …" line, with the
+        // "Add to Context Menu" box on the right.
+        let running = self.poll_task();
+        let status = match (&running, &self.result) {
+            (Some(s), _) => s.clone(),
+            (None, Some(r)) => format!(
+                "Analysis completed. Target: {} (Total: {}){}",
+                r.root.path.display(),
                 self.unit.format(r.root.size),
                 if r.errors > 0 {
                     format!(", {} folders not readable", r.errors)
@@ -937,17 +944,23 @@ impl Tool for DiskAnalyzer {
                     String::new()
                 }
             ),
-            None => "Ready".into(),
+            (None, None) => "Ready".into(),
         };
         let mut toggle_menu = false;
+        let mut cancel = false;
         frame::status(ui, &status, |ui| {
             let mut on = installed;
-            toggle_menu = ui
-                .checkbox(&mut on, "Add to Explorer's right-click menu")
-                .changed();
+            toggle_menu = ui.checkbox(&mut on, "Add to Context Menu").changed();
+            if running.is_some() {
+                ui.spinner();
+                cancel = ui.button(ctx.i18n.tr("common-cancel")).clicked();
+            }
         });
         if toggle_menu {
             self.toggle_menu(ctx);
+        }
+        if cancel && let Some((_, t)) = &self.task {
+            t.cancel();
         }
 
         match clicked {
@@ -963,52 +976,68 @@ impl Tool for DiskAnalyzer {
                 }
             }
             Some(3) => self.rescan_branch(ui.ctx()),
-            Some(4) => {
-                if let Some(r) = &self.result {
-                    let p = DisplayNode::at(&r.root, &self.trail).path.clone();
+            Some(5) => {
+                if let Some(p) = self.selected_path() {
                     let _ = std::process::Command::new("explorer").arg(p).spawn();
                 }
             }
-            Some(5) => self.export_current(),
+            Some(6) => {
+                if let Some(p) = self.selected_path() {
+                    reveal_in_explorer(&p);
+                }
+            }
+            Some(8) => self.export_current(),
+            Some(10) => ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close),
             _ => {}
         }
 
-        // Left: the folder tree, like the original's navigation pane.
-        if let Some(result) = self.result.clone() {
-            let mut pick = None;
-            frame::left(ui, 230.0, |ui| {
+        // Left: the folder tree ("size - name" with a share bar, like the original).
+        let result = self.result.clone();
+        let mut pick = None;
+        frame::left(ui, 290.0, |ui| {
+            ui.spacing_mut().item_spacing.y = 1.0;
+            if let Some(result) = &result {
                 folder_tree(
                     ui,
                     &result.root,
+                    1.0,
                     &mut Vec::new(),
                     &self.trail,
                     self.unit,
                     &mut pick,
                 );
-            });
-            if let Some(t) = pick {
-                self.trail = t;
-                self.view = View::Folders;
             }
+        });
+        if let Some(t) = pick {
+            self.trail = t;
         }
 
         frame::central_fixed(ui, |ui| {
-            self.poll_task(ui, ctx);
             show_message(ui, &self.message);
-            let Some(result) = self.result.clone() else {
+            let Some(result) = result else {
                 if self.task.is_none() {
                     empty_state(
                         ui,
                         icons::HARD_DRIVES,
                         "Analyze a drive or a folder",
-                        "See which folders and files use the space, as a map and a list. \
-                         Pick the drive above, or choose a folder.",
+                        "See which folders use the space, as a tree and a pie chart. \
+                         Pick the drive above and click Analyze Drives, or click Analyze Folder.",
                     );
                 }
                 return;
             };
+            // The chart's own strip: up one level (the original's only button there)
+            // and the largest-files list.
             ui.horizontal(|ui| {
-                ui.selectable_value(&mut self.view, View::Folders, "Folders");
+                if ui
+                    .add_enabled(!self.trail.is_empty(), egui::Button::new(icons::ARROW_UP))
+                    .on_hover_text("Up one level")
+                    .clicked()
+                {
+                    self.trail.pop();
+                }
+                ui.separator();
+                ui.selectable_value(&mut self.view, View::Chart, "Chart");
                 ui.selectable_value(
                     &mut self.view,
                     View::LargestFiles,
@@ -1017,7 +1046,13 @@ impl Tool for DiskAnalyzer {
             });
             ui.separator();
             match self.view {
-                View::Folders => self.folders_view(ui, &result),
+                View::Chart => {
+                    let node = DisplayNode::at(&result.root, &self.trail);
+                    if let Some(i) = pie_chart(ui, node, self.unit) {
+                        self.trail.push(i);
+                        expand_to(ui.ctx(), &self.trail);
+                    }
+                }
                 View::LargestFiles => self.largest_view(ui, &result),
             }
         });
@@ -1028,42 +1063,110 @@ impl Tool for DiskAnalyzer {
     }
 }
 
-/// Folder tree for the left pane. Folders with subfolders expand; clicking a folder
-/// shows it in the main area. `at` is the path of indices to `node`.
+fn tree_id(at: &[usize]) -> egui::Id {
+    egui::Id::unique(("da-tree", at))
+}
+
+/// Opens the tree along `trail`, so it follows clicks in the chart.
+fn expand_to(ctx: &egui::Context, trail: &[usize]) {
+    for k in 0..trail.len() {
+        let mut s = egui::collapsing_header::CollapsingState::load_with_default_open(
+            ctx,
+            tree_id(&trail[..k]),
+            false,
+        );
+        s.set_open(true);
+        s.store(ctx);
+    }
+}
+
+/// One tree row: a share bar behind the label, highlighted when selected.
+fn tree_row(ui: &mut egui::Ui, selected: bool, share: f32, text: String) -> egui::Response {
+    let color = ui.visuals().text_color();
+    let galley = ui
+        .painter()
+        .layout_no_wrap(text, egui::FontId::proportional(13.0), color);
+    let (rect, response) = ui.allocate_exact_size(galley.size() + Vec2::new(8.0, 4.0), Sense::click());
+    let painter = ui.painter();
+    if selected {
+        painter.rect_filled(rect, 2.0, ui.visuals().selection.bg_fill);
+    } else if response.hovered() {
+        painter.rect_filled(rect, 2.0, ui.visuals().widgets.hovered.weak_bg_fill);
+    }
+    if share > 0.0 {
+        let bar = Rect::from_min_size(rect.min, Vec2::new(rect.width() * share.min(1.0), rect.height()));
+        painter.rect_filled(bar, 2.0, SHARE_BAR);
+    }
+    painter.galley(rect.min + Vec2::new(4.0, 2.0), galley, color);
+    response
+}
+
+/// Folder tree for the left pane: the root as "name (Total: size)", folders as
+/// "size - name" with a bar for their share of the parent, and the files directly in
+/// a folder as "size - [n Files]". `at` is the path of indices to `node`.
 fn folder_tree(
     ui: &mut egui::Ui,
     node: &DirNode,
+    share: f32,
     at: &mut Vec<usize>,
     trail: &[usize],
     unit: Unit,
     pick: &mut Option<Vec<usize>>,
 ) {
     let selected = at.as_slice() == trail;
-    let label = egui::RichText::new(format!("{}  {}", node.name, unit.format(node.size)));
-    let label = if selected { label.strong() } else { label };
-    if node.children.is_empty() {
-        if ui.selectable_label(selected, label).clicked() {
-            *pick = Some(at.clone());
-        }
+    let text = if at.is_empty() {
+        format!(
+            "{}  {} (Total: {})",
+            icons::FOLDER_OPEN,
+            node.name,
+            unit.format(node.size)
+        )
+    } else {
+        format!(
+            "{}  {} - {}",
+            icons::FOLDER_OPEN,
+            unit.format(node.size),
+            node.name
+        )
+    };
+    let share = if at.is_empty() { 0.0 } else { share };
+    let has_body = !node.children.is_empty();
+    if !has_body {
+        ui.horizontal(|ui| {
+            ui.add_space(ui.spacing().icon_width + ui.spacing().item_spacing.x);
+            if tree_row(ui, selected, share, text).clicked() {
+                *pick = Some(at.clone());
+            }
+        });
         return;
     }
-    let id = ui.make_persistent_id(("da-tree", at.clone()));
-    // Open along the selected path so the tree follows navigation in the main area.
-    let on_path = trail.starts_with(at);
-    egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, at.is_empty() || on_path)
+    egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), tree_id(at), at.is_empty())
         .show_header(ui, |ui| {
-            if ui.selectable_label(selected, label).clicked() {
+            if tree_row(ui, selected, share, text).clicked() {
                 *pick = Some(at.clone());
             }
         })
         .body(|ui| {
-            for (i, c) in node.children.iter().enumerate().take(200) {
-                if c.children.is_empty() && c.size == 0 {
+            let total = node.size.max(1) as f32;
+            for (i, c) in node.children.iter().enumerate().take(500) {
+                if c.size == 0 && c.children.is_empty() {
                     continue;
                 }
                 at.push(i);
-                folder_tree(ui, c, at, trail, unit, pick);
+                folder_tree(ui, c, c.size as f32 / total, at, trail, unit, pick);
                 at.pop();
+            }
+            if node.own_files > 0 {
+                let text = format!(
+                    "{}  {} - [{} Files]",
+                    icons::FILE_TEXT,
+                    unit.format(node.own_files_size),
+                    node.own_files
+                );
+                ui.horizontal(|ui| {
+                    ui.add_space(ui.spacing().icon_width + ui.spacing().item_spacing.x);
+                    tree_row(ui, false, node.own_files_size as f32 / total, text);
+                });
             }
         });
 }
@@ -1073,25 +1176,42 @@ mod tests {
     use super::*;
 
     #[test]
-    fn squarify_preserves_area_and_bounds() {
-        let area = Rect::from_min_size(Pos2::ZERO, Vec2::new(600.0, 400.0));
-        let sizes = [6.0, 6.0, 4.0, 3.0, 2.0, 2.0, 1.0, 0.0];
-        let tiles = squarify(&sizes, area);
-        let total: f64 = sizes.iter().sum();
-        for (s, t) in sizes.iter().zip(&tiles) {
-            if *s == 0.0 {
-                assert!(!t.is_positive());
-                continue;
-            }
-            let expected = s / total * 240_000.0;
-            let actual = (t.width() * t.height()) as f64;
-            assert!(
-                (expected - actual).abs() / expected < 0.01,
-                "area {actual} vs {expected}"
-            );
-            assert!(area.expand(0.5).contains_rect(*t), "{t:?} outside");
-        }
-        assert!(squarify(&[], area).is_empty());
+    fn pie_groups_small_folders_and_files() {
+        let leaf = |name: &str, size: u64| DirNode {
+            name: name.into(),
+            size,
+            own_files_size: size,
+            own_files: 1,
+            ..Default::default()
+        };
+        let mut root = DirNode {
+            own_files_size: 5,
+            own_files: 2,
+            children: vec![
+                leaf("a", 50),
+                leaf("b", 30),
+                leaf("empty", 0),
+                leaf("c", 10),
+                leaf("d", 5),
+            ],
+            ..Default::default()
+        };
+        root.resum();
+        let got: Vec<(String, u64, Option<usize>)> = pie_slices(&root, 2)
+            .into_iter()
+            .map(|s| (s.label, s.size, s.child))
+            .collect();
+        let want: Vec<(String, u64, Option<usize>)> = [
+            ("a", 50, Some(0)),
+            ("b", 30, Some(1)),
+            ("[Other folders]", 15, None),
+            ("[Files]", 5, None),
+        ]
+        .into_iter()
+        .map(|(l, s, c)| (l.to_owned(), s, c))
+        .collect();
+        assert_eq!(got, want);
+        assert!(pie_slices(&DirNode::default(), 5).is_empty());
     }
 
     fn run_scan(root: &Path) -> ScanResult {
