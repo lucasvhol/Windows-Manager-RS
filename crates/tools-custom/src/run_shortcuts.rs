@@ -5,6 +5,7 @@
 //! shortcut named after the alias in a folder of this app that is added to the
 //! user's PATH (the Run dialog also finds `.lnk` files on the PATH).
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
@@ -23,7 +24,7 @@ use wm_core::{
     registry,
     safety::UndoAction,
     shell::{ShortcutSpec, create_shortcut, read_shortcut, shell_open},
-    ui::{Confirm, Message, ToolButton, frame, show_message},
+    ui::{Confirm, Message, frame, show_message},
 };
 
 const TOOL: &str = "runshortcuts";
@@ -394,7 +395,7 @@ pub fn restore(ctx: &AppCtx<'_>, file: &Path) -> Result<(usize, usize)> {
 }
 
 enum Ask {
-    Remove(Box<Alias>),
+    Remove(Vec<Alias>),
     Restore(PathBuf),
 }
 
@@ -403,6 +404,8 @@ pub struct RunShortcuts {
     items: Option<Vec<Alias>>,
     selected: Option<String>,
     filter: String,
+    /// Ticked names (Delete takes these; names whose target is gone start ticked).
+    checked: HashSet<String>,
     draft: Option<NewAlias>,
     confirm: Confirm<Ask>,
     message: Message,
@@ -532,56 +535,170 @@ impl Tool for RunShortcuts {
                 self.message = Some(Ok(ctx.i18n.tr("common-dry-run-skip")));
             } else {
                 let r = match ask {
-                    Ask::Remove(a) => remove(ctx, &a).map(|_| format!("Removed \"{}\".", a.alias)),
+                    Ask::Remove(list) => {
+                        let mut failed = Vec::new();
+                        for a in &list {
+                            if let Err(e) = remove(ctx, a) {
+                                failed.push(format!("{}: {e:#}", a.alias));
+                            }
+                        }
+                        let n = list.len() - failed.len();
+                        if failed.is_empty() {
+                            Ok(format!("Deleted {n} names."))
+                        } else {
+                            Err(anyhow::anyhow!("Deleted {n}; failed: {}", failed.join("; ")))
+                        }
+                    }
                     Ask::Restore(f) => restore(ctx, &f)
                         .map(|(a, s)| format!("Added {a} names; {s} already existed or could not be added.")),
                 };
+                self.checked.clear();
                 self.done(r);
             }
         }
         self.draft_window(ui, ctx);
+        let fresh = self.items.is_none();
         let items = self.items.get_or_insert_with(enumerate).clone();
+        if fresh {
+            // Like the original: names whose target is gone come ticked, ready to delete.
+            self.checked = items
+                .iter()
+                .filter(|a| a.broken)
+                .map(|a| a.location.clone())
+                .collect();
+        }
         let selected = self
             .selected
             .as_ref()
             .and_then(|k| items.iter().find(|a| &a.location == k))
             .cloned();
-        let writable = selected.as_ref().is_some_and(|a| !a.machine || ctx.elevated);
-        match frame::toolbar(
+        let writable = |a: &Alias| !a.machine || ctx.elevated;
+        let ticked: Vec<Alias> = items
+            .iter()
+            .filter(|a| self.checked.contains(&a.location) && writable(a))
+            .cloned()
+            .collect();
+        let targets: Vec<Alias> = if ticked.is_empty() {
+            selected.iter().filter(|a| writable(a)).cloned().collect()
+        } else {
+            ticked
+        };
+
+        // The original's heading band.
+        egui::Panel::top("run-band")
+            .resizable(false)
+            .frame(egui::Frame::new().inner_margin(egui::Margin::symmetric(12, 8)))
+            .show(ui, |ui| {
+                ui.vertical_centered(|ui| {
+                    ui.label(
+                        egui::RichText::new("Edits shortcuts that executed on the Run dialog box")
+                            .strong()
+                            .size(15.0),
+                    );
+                });
+            });
+        let status = format!(
+            "{} names, {} yours, {} whose target is missing, {} ticked",
+            items.len(),
+            items.iter().filter(|a| !a.machine).count(),
+            items.iter().filter(|a| a.broken).count(),
+            self.checked.len()
+        );
+        frame::status(ui, &status, |ui| {
+            ui.weak("Type these names in the Run dialog (Win+R) or File Explorer's address bar.");
+        });
+
+        // The original's bottom bar.
+        let mut act = None;
+        let all = !items.is_empty() && items.iter().all(|a| self.checked.contains(&a.location));
+        let some = !all && !self.checked.is_empty();
+        let mut select_all = None;
+        frame::footer(
             ui,
-            &[
-                Some(ToolButton::new(icons::PLUS, "New name")),
-                Some(
-                    ToolButton::new(icons::PLAY, "Run").enabled(selected.as_ref().is_some_and(|a| !a.broken)),
-                ),
-                Some(ToolButton::new(icons::TRASH, "Remove").enabled(writable)),
-                None,
-                Some(ToolButton::new(icons::FLOPPY_DISK, "Back up")),
-                Some(ToolButton::new(icons::CLOCK_COUNTER_CLOCKWISE, "Restore")),
-                Some(ToolButton::new(icons::ARROWS_CLOCKWISE, "Refresh")),
-            ],
-            |_| {},
-        ) {
-            Some(0) => self.draft = Some(NewAlias::default()),
-            Some(1) => {
+            |ui| {
+                let mut on = all;
+                if ui
+                    .add(egui::Checkbox::new(&mut on, "Select All").indeterminate(some))
+                    .changed()
+                {
+                    select_all = Some(on);
+                }
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.filter)
+                        .hint_text(format!("{}  Search", icons::MAGNIFYING_GLASS))
+                        .desired_width(160.0),
+                );
+            },
+            |ui| {
+                if ui.button("Exit").clicked() {
+                    act = Some("exit");
+                }
+                if ui
+                    .add_enabled(
+                        selected.as_ref().is_some_and(|a| !a.broken),
+                        egui::Button::new("Execute"),
+                    )
+                    .clicked()
+                {
+                    act = Some("execute");
+                }
+                let del = if targets.len() > 1 {
+                    format!("Delete ({})", targets.len())
+                } else {
+                    "Delete".to_owned()
+                };
+                if ui
+                    .add_enabled(!targets.is_empty(), egui::Button::new(del))
+                    .clicked()
+                {
+                    act = Some("delete");
+                }
+                if ui.button("Add").clicked() {
+                    act = Some("add");
+                }
+                ui.menu_button(format!("Backup  {}", icons::CARET_DOWN), |ui| {
+                    if ui.button("Back up the names you added…").clicked() {
+                        act = Some("backup");
+                        ui.close();
+                    }
+                    if ui.button("Restore from a backup…").clicked() {
+                        act = Some("restore");
+                        ui.close();
+                    }
+                });
+                if ui.button("Refresh").clicked() {
+                    act = Some("refresh");
+                }
+            },
+        );
+        if let Some(on) = select_all {
+            self.checked = if on {
+                items.iter().map(|a| a.location.clone()).collect()
+            } else {
+                HashSet::new()
+            };
+        }
+        match act {
+            Some("exit") => ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close),
+            Some("execute") => {
                 if let Some(a) = &selected {
                     self.message = execute(a).err().map(|e| Err(format!("{e:#}")));
                 }
             }
-            Some(2) => {
-                if let Some(a) = &selected {
-                    let warn = if a.machine {
-                        " Programs or scripts may rely on this system-wide name."
-                    } else {
-                        ""
-                    };
-                    self.confirm.ask(
-                        format!("Remove the Run name \"{}\"?{warn}", a.alias),
-                        Ask::Remove(Box::new(a.clone())),
-                    );
-                }
+            Some("delete") => {
+                let names: Vec<&str> = targets.iter().map(|a| a.alias.as_str()).collect();
+                let warn = if targets.iter().any(|a| a.machine) {
+                    " Programs or scripts may rely on system-wide names."
+                } else {
+                    ""
+                };
+                self.confirm.ask(
+                    format!("Delete the Run names {}?{warn}", names.join(", ")),
+                    Ask::Remove(targets.clone()),
+                );
             }
-            Some(4) => {
+            Some("add") => self.draft = Some(NewAlias::default()),
+            Some("backup") => {
                 if let Some(f) = rfd::FileDialog::new()
                     .set_file_name("Run names.json")
                     .add_filter("JSON", &["json"])
@@ -594,7 +711,7 @@ impl Tool for RunShortcuts {
                     );
                 }
             }
-            Some(5) => {
+            Some("restore") => {
                 if let Some(f) = rfd::FileDialog::new().add_filter("JSON", &["json"]).pick_file() {
                     self.confirm.ask(
                         format!("Add the Run names saved in {}?", f.display()),
@@ -602,27 +719,10 @@ impl Tool for RunShortcuts {
                     );
                 }
             }
-            Some(6) => self.items = None,
+            Some("refresh") => self.items = None,
             _ => {}
         }
-        let filter_hint = ctx.i18n.tr("common-filter");
-        frame::options(ui, |ui| {
-            ui.add(
-                egui::TextEdit::singleline(&mut self.filter)
-                    .hint_text(format!("{}  {filter_hint}", icons::MAGNIFYING_GLASS))
-                    .desired_width(200.0),
-            );
-        });
-        let status = format!(
-            "{} names, {} yours, {} whose target is missing",
-            items.len(),
-            items.iter().filter(|a| !a.machine).count(),
-            items.iter().filter(|a| a.broken).count()
-        );
-        frame::status(ui, &status, |ui| {
-            ui.weak("Type these names in the Run dialog (Win+R) or File Explorer's address bar.");
-        });
-        frame::central_fixed(ui, |ui| self.table(ui, &items));
+        frame::central_fixed(ui, |ui| self.table(ui, &items, ctx.elevated));
     }
 
     fn layout(&self) -> Layout {
@@ -631,7 +731,7 @@ impl Tool for RunShortcuts {
 }
 
 impl RunShortcuts {
-    fn table(&mut self, ui: &mut egui::Ui, items: &[Alias]) {
+    fn table(&mut self, ui: &mut egui::Ui, items: &[Alias], elevated: bool) {
         show_message(ui, &self.message);
         let f = self.filter.to_lowercase();
         let visible: Vec<&Alias> = items
@@ -641,17 +741,21 @@ impl RunShortcuts {
             })
             .collect();
         let mut clicked = None;
+        let mut toggles = Vec::new();
+        let mut run = None;
+        let red = ui.visuals().error_fg_color;
+        let warn = ui.visuals().warn_fg_color;
         ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
         TableBuilder::new(ui)
             .striped(true)
             .sense(egui::Sense::click())
-            .column(Column::initial(140.0).clip(true))
-            .column(Column::initial(90.0))
-            .column(Column::initial(70.0))
+            .column(Column::exact(24.0))
+            .column(Column::initial(160.0).clip(true))
+            .column(Column::remainder().at_least(200.0).clip(true))
             .column(Column::initial(80.0))
-            .column(Column::remainder().clip(true))
+            .column(Column::initial(80.0))
             .header(22.0, |mut h| {
-                for t in ["Name", "Type", "For", "Available", "Opens"] {
+                for t in ["", "Name", "Path", "Type", "Available"] {
                     h.col(|ui| {
                         ui.strong(t);
                     });
@@ -662,35 +766,59 @@ impl RunShortcuts {
                     let a = visible[row.index()];
                     row.set_selected(self.selected.as_ref() == Some(&a.location));
                     row.col(|ui| {
-                        if a.broken {
-                            ui.colored_label(ui.visuals().error_fg_color, &a.alias);
-                        } else {
-                            ui.strong(&a.alias);
+                        let mut on = self.checked.contains(&a.location);
+                        if ui
+                            .add_enabled(!a.machine || elevated, egui::Checkbox::without_text(&mut on))
+                            .on_disabled_hover_text("Needs administrator rights")
+                            .changed()
+                        {
+                            toggles.push(a.location.clone());
                         }
                     });
                     row.col(|ui| {
-                        ui.weak(a.what());
-                    });
-                    row.col(|ui| {
-                        ui.weak(if a.machine { "All users" } else { "You" });
-                    });
-                    row.col(|ui| {
                         if a.broken {
-                            ui.colored_label(ui.visuals().error_fg_color, "Missing");
+                            ui.colored_label(red, &a.alias);
                         } else {
-                            ui.weak("Yes");
+                            ui.label(&a.alias).on_hover_text(a.what());
                         }
                     });
                     row.col(|ui| {
-                        ui.weak(format!("{} {}", a.target, a.args).trim().to_owned());
+                        ui.label(format!("{} {}", a.target, a.args).trim().to_owned());
                     });
-                    if row.response().clicked() {
+                    row.col(|ui| {
+                        ui.label(if a.machine { "System" } else { "User" });
+                    });
+                    row.col(|ui| {
+                        if a.broken {
+                            ui.colored_label(red, "Deletable")
+                                .on_hover_text("Its target no longer exists");
+                        } else if a.target.trim().is_empty() {
+                            ui.colored_label(warn, "No path").on_hover_text(
+                                "Registered without a program path; Windows may still use it, so it is not ticked",
+                            );
+                        } else {
+                            ui.label("Yes");
+                        }
+                    });
+                    let r = row.response();
+                    if r.clicked() {
                         clicked = Some(a.location.clone());
+                    }
+                    if r.double_clicked() && !a.broken {
+                        run = Some((*a).clone());
                     }
                 });
             });
+        for k in toggles {
+            if !self.checked.remove(&k) {
+                self.checked.insert(k);
+            }
+        }
         if clicked.is_some() {
             self.selected = clicked;
+        }
+        if let Some(a) = run {
+            self.message = execute(&a).err().map(|e| Err(format!("{e:#}")));
         }
     }
 }

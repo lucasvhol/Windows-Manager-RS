@@ -71,7 +71,7 @@ Tools reachable only from a dropdown: Windows Features (System Protection), App 
 | BingImagesDownloader.exe | bing | | | | | ❌ |
 | JumpListQuickLauncher.exe | jumplist | | | | | ❌ |
 | HotkeyManager.exe | hotkeys | | | | | ❌ |
-| RunShortcutCreator.exe | runshortcuts | | | | | ❌ |
+| RunShortcutCreator.exe | runshortcuts | Heading band "Edits shortcuts that executed on the Run dialog box", ticked list, bottom bar Select All + Search, Refresh, Backup ▾, Add, Delete, Execute, Exit | Columns Name, Path, Type (System / User), Available (Yes / Deletable in red; broken names start ticked) | Names with no path show "No path" and are not ticked (the original calls them Deletable); no program icons in the Name column; Add opens our New Run name dialog | Kept: status line with counts | ✅ |
 | ContextMenuManager.exe | contextmenu | | | | | ❌ |
 | StartMenuManager.exe | startmenu | | | | | ❌ |
 | (hub) System Security | systemsecurity | | | | | ❌ |
