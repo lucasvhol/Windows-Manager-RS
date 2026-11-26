@@ -13,7 +13,7 @@ use wm_core::{
     safety::ChangeJournal,
 };
 
-use crate::hub::{self, Summary, catalog, widgets};
+use crate::hub::{Summary, catalog, widgets};
 
 pub struct Shell {
     tools: Vec<Box<dyn Tool>>,
@@ -66,13 +66,13 @@ impl Shell {
             .map(|w| w[1].as_str())
             .collect();
         let open = tools.iter().map(|t| requested.contains(&t.id())).collect();
-        // `--category <n>` starts on the n-th rail entry (0 = Home).
+        // `--category <n>` starts on the n-th rail entry (0 = Automation).
         let category = args
             .windows(2)
             .find(|w| w[0] == "--category")
             .and_then(|w| w[1].parse::<usize>().ok())
-            .and_then(|n| Category::ALL.get(n).copied())
-            .unwrap_or(Category::Home);
+            .and_then(|n| rail_categories().nth(n))
+            .unwrap_or(Category::OneClick);
         let config_locked = config.password_hash.is_some();
         Self {
             i18n: I18n::new(&config.language),
@@ -154,7 +154,30 @@ impl Shell {
                             .margin(egui::Margin::symmetric(8, 5)),
                     );
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        // Like the original: only Update and About up here.
+                        // Like the original: Update, and About with a small menu beside it.
+                        let mut open = None;
+                        ui.menu_button(icons::CARET_DOWN, |ui| {
+                            for id in ["journal", "settings"] {
+                                if ui
+                                    .button(format!("{}  {}", catalog::tool_icon(id), self.title_of(id)))
+                                    .clicked()
+                                {
+                                    open = Some(id);
+                                    ui.close();
+                                }
+                            }
+                            ui.separator();
+                            if ui
+                                .button(format!("{}  {}", icons::INFO, self.i18n.tr("hub-about")))
+                                .clicked()
+                            {
+                                self.about_open = true;
+                                ui.close();
+                            }
+                        });
+                        if let Some(id) = open {
+                            self.open_tool(&ctx, id);
+                        }
                         if widgets::header_button(ui, icons::INFO, &self.i18n.tr("hub-about")).clicked() {
                             self.about_open = true;
                         }
@@ -191,7 +214,7 @@ impl Shell {
             .show(root, |ui| {
                 ui.spacing_mut().item_spacing.y = 0.0;
                 ui.add_space(4.0);
-                for cat in Category::ALL {
+                for cat in rail_categories() {
                     let selected = self.category == cat && self.search.is_empty();
                     if widgets::rail_item(
                         ui,
@@ -207,30 +230,11 @@ impl Shell {
                         self.search.clear();
                     }
                 }
-                let mut open = None;
                 ui.with_layout(egui::Layout::bottom_up(egui::Align::Center), |ui| {
                     ui.add_space(10.0);
                     ui.weak(&self.summary.build);
                     ui.weak(&self.summary.os);
-                    ui.add_space(8.0);
-                    ui.horizontal(|ui| {
-                        ui.add_space(12.0);
-                        for id in ["journal", "settings"] {
-                            let text = format!("{}  {}", catalog::tool_icon(id), self.title_of(id));
-                            if ui
-                                .add(egui::Button::new(egui::RichText::new(text).size(13.0)).frame(false))
-                                .clicked()
-                            {
-                                open = Some(id);
-                            }
-                        }
-                    });
-                    ui.separator();
                 });
-                if let Some(id) = open {
-                    let ctx = ui.ctx().clone();
-                    self.open_tool(&ctx, id);
-                }
             });
     }
 
@@ -269,16 +273,6 @@ impl Shell {
                         ui.weak(self.i18n.tr("hub-no-results"));
                     }
                     to_open.extend(self.tile_grid(ui, &ids));
-                } else if self.category == Category::Home {
-                    let actions = hub::home(
-                        ui,
-                        &self.summary,
-                        &self.journal,
-                        &self.i18n,
-                        &self.config.recent_tools,
-                        self.elevated,
-                    );
-                    to_open.extend(actions.open);
                 } else {
                     let ids: Vec<String> = catalog::TILES
                         .iter()
@@ -286,6 +280,14 @@ impl Shell {
                         .map(|(_, ids)| ids.iter().map(|s| (*s).to_owned()).collect())
                         .unwrap_or_default();
                     to_open.extend(self.tile_grid(ui, &ids));
+                    if self.category == Category::Misc {
+                        ui.add_space(24.0);
+                        let id = catalog::MISC_LINK;
+                        let text = format!("{}  {}", catalog::tool_icon(id), self.title_of(id));
+                        if ui.link(text).clicked() {
+                            to_open.push(id.to_owned());
+                        }
+                    }
                 }
             });
         });
@@ -517,6 +519,11 @@ impl Shell {
         }
         self.saved_config = self.config.clone();
     }
+}
+
+/// The categories in the hub's rail, in order (Home holds only Settings and the journal).
+fn rail_categories() -> impl Iterator<Item = Category> {
+    Category::ALL.into_iter().filter(|c| *c != Category::Home)
 }
 
 fn viewport_id(tool_id: &str) -> ViewportId {

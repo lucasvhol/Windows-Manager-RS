@@ -84,7 +84,7 @@ and exits with 0 on success. **My Task** schedules these with Task Scheduler.
 
 | Path | Purpose |
 |------|---------|
-| `app/` | eframe binary: window shell, sidebar, Home / Change Journal / Settings, `--run` mode |
+| `app/` | eframe binary: window shell, hub (category rail and tiles), Change Journal / Settings, `--run` mode |
 | `crates/core/` | `Tool` trait, config, i18n (Fluent), elevation, background tasks, registry/ACL/shell helpers, tweak engine, safety layer |
 | `crates/tools-info/` | Information tools |
 | `crates/tools-optimizer/` | Optimizer tools (`tweaks/speed.toml`) |

@@ -3,12 +3,20 @@
 
 use wm_core::{Category, icons as i};
 
-/// Tile order per category. Tools not listed here are reachable through search,
-/// a related-tools dropdown or the header buttons, but get no tile of their own.
+/// Tile order per category, as in the original's hub (left to right, row by row).
+/// Tools not listed here are reachable through a tile's dropdown ([`related`]),
+/// search, or the header's About menu, but get no tile of their own.
 pub const TILES: &[(Category, &[&str])] = &[
     (
         Category::OneClick,
-        &["fixer", "oneclickclean", "killprocs", "repair", "wizard"],
+        &[
+            "systemprotection",
+            "killprocs",
+            "fixer",
+            "oneclickclean",
+            "repair",
+            "wizard",
+        ],
     ),
     (
         Category::Information,
@@ -29,13 +37,13 @@ pub const TILES: &[(Category, &[&str])] = &[
             "junk",
             "duplicates",
             "regclean",
+            "regdefrag",
         ],
     ),
     (
         Category::Customization,
         &[
             "customsystem",
-            "appsettings",
             "explorertweaks",
             "visual",
             "jumplist",
@@ -43,7 +51,6 @@ pub const TILES: &[(Category, &[&str])] = &[
             "runshortcuts",
             "contextmenu",
             "startmenu",
-            "winx",
         ],
     ),
     (
@@ -51,17 +58,12 @@ pub const TILES: &[(Category, &[&str])] = &[
         &[
             "systemsecurity",
             "othersecurity",
-            "devicesecurity",
-            "systemprotection",
             "lockdown",
             "filesecurity",
             "privacy",
             "securitylock",
+            "devicesecurity",
             "undelete",
-            "unlocker",
-            "imagehijack",
-            "winfeatures",
-            "applocker",
         ],
     ),
     (
@@ -77,27 +79,25 @@ pub const TILES: &[(Category, &[&str])] = &[
     ),
     (
         Category::Misc,
-        &[
-            "mytask",
-            "utilities",
-            "splitter",
-            "supercopy",
-            "regtools",
-            "bing",
-            "movefolders",
-            "compat",
-            "downloadwin",
-        ],
+        &["mytask", "utilities", "splitter", "supercopy", "regtools"],
     ),
 ];
 
-/// Tools offered in a tile's dropdown.
+/// Shown as a link under the Misc. Utilities tiles, like the original.
+pub const MISC_LINK: &str = "downloadwin";
+
+/// Tools offered in a tile's dropdown: the original's split tiles (System Protection,
+/// File Explorer Tweaker), plus our tools that have no tile of their own.
 pub fn related(id: &str) -> &'static [&'static str] {
     match id {
-        "explorertweaks" => &["navpane", "thispc"],
-        "startup" => &["services", "tasks"],
-        "fixer" => &["repair"],
-        "regclean" => &["regdefrag", "regtools"],
+        "systemprotection" => &["winfeatures"],
+        "customsystem" => &["appsettings"],
+        "explorertweaks" => &["navpane", "thispc", "winx"],
+        "visual" => &["bing"],
+        "systemsecurity" => &["imagehijack"],
+        "filesecurity" => &["unlocker"],
+        "securitylock" => &["applocker"],
+        "utilities" => &["movefolders", "compat"],
         _ => &[],
     }
 }
@@ -187,16 +187,3 @@ pub fn tool_icon(id: &str) -> &'static str {
         _ => i::APP_WINDOW,
     }
 }
-
-/// Recommended maintenance order shown on the Home page: (step title, tools).
-pub const MAINTENANCE: &[(&str, &[&str])] = &[
-    ("Clean up junk and traces", &["oneclickclean"]),
-    ("Fix common problems", &["fixer", "repair"]),
-    ("Trim what starts with Windows", &["startup", "services", "tasks"]),
-    (
-        "Reclaim disk space",
-        &["diskanalyzer", "duplicates", "uninstaller"],
-    ),
-    ("Tidy the registry and your privacy", &["regclean", "privacy"]),
-    ("Make Windows yours", &["visual", "explorertweaks"]),
-];

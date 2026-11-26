@@ -1,5 +1,5 @@
 param([int[]]$Category = @(0), [int]$Wait = 8, [string]$Prefix = "hub", [string]$OutDir = $env:TEMP, [int]$Width = 0, [int]$Height = 0)
-# Dev helper: starts our debug build on each rail entry (--category <n>, 0 = Home) and
+# Dev helper: starts our debug build on each rail entry (--category <n>, 0 = Automation) and
 # captures only the hub window with PrintWindow (never the screen). -Width/-Height
 # resize the window first, to check narrow layouts.
 Set-Location (Split-Path -Parent $PSScriptRoot)
