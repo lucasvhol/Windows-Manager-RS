@@ -601,10 +601,10 @@ pub mod tests {
     #[test]
     fn paths() {
         let dirs: HashMap<u64, (String, u64)> =
-            [(40, ("Users".to_owned(), 5)), (41, ("Lucas".to_owned(), 40))]
+            [(40, ("Users".to_owned(), 5)), (41, ("Alex".to_owned(), 40))]
                 .into_iter()
                 .collect();
-        assert_eq!(build_path(&dirs, 41), r"\Users\Lucas");
+        assert_eq!(build_path(&dirs, 41), r"\Users\Alex");
         assert_eq!(build_path(&dirs, 5), r"\");
         assert_eq!(build_path(&dirs, 999), r"\?");
     }
