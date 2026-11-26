@@ -11,7 +11,7 @@ use wm_core::{
     AppCtx, Category, Layout, Tool, egui, icons,
     safety::UndoAction,
     task::BackgroundTask,
-    ui::{Message, ToolButton, empty_state, format_bytes, frame, section_nav, show_message},
+    ui::{Message, ToolButton, empty_state, format_bytes, frame, show_message},
 };
 
 use crate::carve::{self, RawVolume};
@@ -235,6 +235,8 @@ pub struct FileUndelete {
     good_only: bool,
     file_type: FileType,
     keep_folders: bool,
+    /// Deep Scan (by content) instead of Deleted Scan (the file table).
+    deep: bool,
     marked: std::collections::HashSet<u64>,
     recover: Option<BackgroundTask<RecoverResult>>,
     message: Message,
@@ -250,6 +252,7 @@ impl Default for FileUndelete {
             good_only: true,
             file_type: FileType::All,
             keep_folders: true,
+            deep: false,
             marked: Default::default(),
             recover: None,
             message: None,
@@ -393,69 +396,15 @@ impl Tool for FileUndelete {
     fn ui(&mut self, ui: &mut egui::Ui, ctx: &mut AppCtx<'_>) {
         self.poll(ctx);
         let drives = if ctx.elevated { drives() } else { Vec::new() };
-        let labels: Vec<String> = drives
-            .iter()
-            .map(|(d, fs)| {
-                if fs.is_empty() {
-                    format!("{d}:  (unreadable)")
-                } else {
-                    format!("{d}:  {fs}")
-                }
-            })
-            .collect();
-        let nav: Vec<(&str, &str)> = labels.iter().map(|l| (icons::HARD_DRIVES, l.as_str())).collect();
-        let mut sel = drives.iter().position(|(d, _)| *d == self.drive).unwrap_or(0);
-        frame::left(ui, 170.0, |ui| {
-            ui.weak("Drive");
-            ui.add_space(4.0);
-            section_nav(ui, &nav, &mut sel)
-        });
-        if let Some((d, _)) = drives.get(sel) {
+        if !drives.iter().any(|(d, _)| *d == self.drive)
+            && let Some((d, _)) = drives.first()
+        {
             self.drive = *d;
         }
         let is_ntfs = drives.iter().any(|(d, fs)| *d == self.drive && fs == "NTFS");
         let busy = self.scan.is_some() || self.recover.is_some();
         let n = self.marked.len();
-        let recover_label = format!("Recover {n}…");
         let ok = ctx.elevated && !busy;
-        match frame::toolbar(
-            ui,
-            &[
-                Some(ToolButton::new(icons::MAGNIFYING_GLASS, "Scan").enabled(ok && is_ntfs)),
-                Some(ToolButton::new(icons::FILE_SEARCH, "Deep scan").enabled(ok)),
-                Some(ToolButton::new(icons::STOP, "Cancel").enabled(self.scan.is_some())),
-                None,
-                Some(ToolButton::new(icons::DOWNLOAD, &recover_label).enabled(ok && n > 0)),
-            ],
-            |_| {},
-        ) {
-            Some(0) => self.start_scan(ui, false),
-            Some(1) => self.start_scan(ui, true),
-            Some(2) => {
-                if let Some(t) = &self.scan {
-                    t.cancel();
-                }
-            }
-            Some(4) => self.start_recover(ui),
-            _ => {}
-        }
-        frame::options(ui, |ui| {
-            ui.add(
-                egui::TextEdit::singleline(&mut self.filter)
-                    .hint_text(format!("{}  Filter by name or folder", icons::MAGNIFYING_GLASS))
-                    .desired_width(200.0),
-            );
-            egui::ComboBox::from_id_salt("undelete-type")
-                .selected_text(self.file_type.label())
-                .show_ui(ui, |ui| {
-                    for t in FileType::ALL {
-                        ui.selectable_value(&mut self.file_type, t, t.label());
-                    }
-                });
-            ui.checkbox(&mut self.good_only, "Only files in good condition");
-            ui.checkbox(&mut self.keep_folders, "Recover with folders")
-                .on_hover_text("Rebuilds the folders the files were in, inside the destination.");
-        });
 
         let f = self.filter.to_lowercase();
         let visible: Vec<usize> = self
@@ -476,9 +425,109 @@ impl Tool for FileUndelete {
                     .collect()
             })
             .unwrap_or_default();
+        let all_marked = !visible.is_empty()
+            && self
+                .found
+                .as_ref()
+                .is_some_and(|(_, files)| visible.iter().all(|i| self.marked.contains(&files[*i].record)));
+
+        // The original's toolbar: the pickers, then Scan, Select All, Recover, Exit.
+        let scanning = self.scan.is_some();
+        let clicked = frame::toolbar(
+            ui,
+            &[
+                Some(if scanning {
+                    ToolButton::new(icons::STOP, "Stop")
+                } else {
+                    ToolButton::new(icons::MAGNIFYING_GLASS, "Scan").enabled(ok && (self.deep || is_ntfs))
+                }),
+                None,
+                Some(
+                    ToolButton::new(
+                        icons::LIST_CHECKS,
+                        if all_marked { "Select None" } else { "Select All" },
+                    )
+                    .enabled(!visible.is_empty()),
+                ),
+                Some(ToolButton::new(icons::ARROW_COUNTER_CLOCKWISE, "Recover").enabled(ok && n > 0)),
+                None,
+                Some(ToolButton::new(icons::SIGN_OUT, "Exit")),
+            ],
+            |_| {},
+        );
+        match clicked {
+            Some(0) if scanning => {
+                if let Some(t) = &self.scan {
+                    t.cancel();
+                }
+            }
+            Some(0) => self.start_scan(ui, self.deep),
+            Some(2) => {
+                if let Some((_, files)) = &self.found {
+                    for i in &visible {
+                        let r = files[*i].record;
+                        if all_marked {
+                            self.marked.remove(&r);
+                        } else {
+                            self.marked.insert(r);
+                        }
+                    }
+                }
+            }
+            Some(3) => self.start_recover(ui),
+            Some(5) => ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close),
+            _ => {}
+        }
+        frame::options(ui, |ui| {
+            let label = |d: char, fs: &str| {
+                if fs.is_empty() {
+                    format!("{d}:  (unreadable)")
+                } else {
+                    format!("{d}:  [{fs}]")
+                }
+            };
+            let current = drives
+                .iter()
+                .find(|(d, _)| *d == self.drive)
+                .map(|(d, fs)| label(*d, fs))
+                .unwrap_or_default();
+            ui.add_enabled_ui(!busy, |ui| {
+                egui::ComboBox::from_id_salt("undelete-drive")
+                    .selected_text(current)
+                    .width(150.0)
+                    .show_ui(ui, |ui| {
+                        for (d, fs) in &drives {
+                            ui.selectable_value(&mut self.drive, *d, label(*d, fs));
+                        }
+                    });
+                egui::ComboBox::from_id_salt("undelete-kind")
+                    .selected_text(if self.deep { "Deep Scan" } else { "Deleted Scan" })
+                    .width(130.0)
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut self.deep, false, "Deleted Scan")
+                            .on_hover_text("Reads the NTFS file table: names and folders are kept");
+                        ui.selectable_value(&mut self.deep, true, "Deep Scan").on_hover_text(
+                            "Finds the files of a formatted or damaged drive by their content (names and folders are lost)",
+                        );
+                    });
+            });
+            egui::ComboBox::from_id_salt("undelete-type")
+                .selected_text(self.file_type.label())
+                .width(150.0)
+                .show_ui(ui, |ui| {
+                    for t in FileType::ALL {
+                        ui.selectable_value(&mut self.file_type, t, t.label());
+                    }
+                });
+            ui.separator();
+            ui.checkbox(&mut self.good_only, "Only files in good condition");
+            ui.checkbox(&mut self.keep_folders, "Recover with folders")
+                .on_hover_text("Rebuilds the folders the files were in, inside the destination.");
+        });
+
         let status = match &self.found {
             Some((d, files)) => format!(
-                "{} of {} deleted files on {d}:, {n} marked",
+                "Selected: {n}/{} items ({} deleted files on {d}:)",
                 visible.len(),
                 files.len()
             ),
@@ -491,6 +540,11 @@ impl Tool for FileUndelete {
             .map(|t| (t.progress, t.status.clone()))
             .or_else(|| self.recover.as_ref().map(|t| (t.progress, t.status.clone())));
         frame::status(ui, &status, |ui| {
+            ui.add(
+                egui::TextEdit::singleline(&mut self.filter)
+                    .hint_text(format!("{}  Search", icons::MAGNIFYING_GLASS))
+                    .desired_width(180.0),
+            );
             if let Some((p, text)) = progress {
                 ui.add(egui::ProgressBar::new(p).desired_width(260.0).text(text));
             }
@@ -511,8 +565,8 @@ impl Tool for FileUndelete {
                     ui,
                     icons::ARROW_COUNTER_CLOCKWISE,
                     "Pick a drive and scan it",
-                    "Scan reads the NTFS file table and finds recently deleted files. Deep scan finds the files \
-                     of a formatted or damaged drive by their content (names and folders are lost). \
+                    "Deleted Scan reads the NTFS file table and finds recently deleted files. Deep Scan finds the \
+                     files of a formatted or damaged drive by their content (names and folders are lost). \
                      Files are recovered to another drive.",
                 );
                 return;
@@ -522,13 +576,13 @@ impl Tool for FileUndelete {
             TableBuilder::new(ui)
                 .striped(true)
                 .column(Column::exact(28.0))
-                .column(Column::initial(220.0).clip(true))
+                .column(Column::initial(200.0).clip(true))
                 .column(Column::initial(280.0).clip(true))
                 .column(Column::initial(80.0))
-                .column(Column::initial(120.0))
+                .column(Column::initial(130.0))
                 .column(Column::remainder())
                 .header(22.0, |mut h| {
-                    for t in ["", "Name", "Folder", "Size", "Modified", "Condition"] {
+                    for t in ["", "File Name", "Path", "Size", "Last Modified", "Condition"] {
                         h.col(|ui| {
                             ui.strong(t);
                         });
@@ -551,13 +605,13 @@ impl Tool for FileUndelete {
                             ui.label(&x.name);
                         });
                         row.col(|ui| {
-                            ui.weak(&x.path);
+                            ui.label(&x.path);
                         });
                         row.col(|ui| {
                             ui.label(format_bytes(x.size));
                         });
                         row.col(|ui| {
-                            ui.weak(&x.modified);
+                            ui.label(&x.modified);
                         });
                         row.col(|ui| {
                             let (text, good) = condition(x);
