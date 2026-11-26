@@ -41,28 +41,28 @@ pub struct Location {
 pub const LOCATIONS: [Location; 10] = [
     Location {
         id: "files",
-        label: "Files",
+        label: "File",
         icon: icons::FILE_TEXT,
         classes: &["*"],
         background: false,
     },
     Location {
         id: "all",
-        label: "Files and folders",
+        label: "All File System Objects",
         icon: icons::COPY,
         classes: &["AllFilesystemObjects"],
         background: false,
     },
     Location {
         id: "folders",
-        label: "Folders",
+        label: "Folder",
         icon: icons::FOLDERS,
         classes: &["Directory", "Folder"],
         background: false,
     },
     Location {
         id: "background",
-        label: "Folder background",
+        label: "Directory Background",
         icon: icons::FOLDER_OPEN,
         classes: &[r"Directory\Background"],
         background: true,
@@ -76,7 +76,7 @@ pub const LOCATIONS: [Location; 10] = [
     },
     Location {
         id: "drives",
-        label: "Drives",
+        label: "Drive",
         icon: icons::HARD_DRIVES,
         classes: &["Drive"],
         background: false,
@@ -104,7 +104,7 @@ pub const LOCATIONS: [Location; 10] = [
     },
     Location {
         id: "libraries",
-        label: "Libraries",
+        label: "Library Folder",
         icon: icons::STACK,
         classes: &["LibraryFolder", r"LibraryFolder\background"],
         background: false,

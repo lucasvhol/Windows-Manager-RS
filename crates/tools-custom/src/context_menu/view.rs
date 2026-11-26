@@ -367,9 +367,9 @@ impl ContextMenuManager {
     fn classic_option(&mut self, ui: &mut egui::Ui, ctx: &mut AppCtx<'_>) {
         let mut classic = classic_menu_enabled();
         if ui
-            .checkbox(
-                &mut classic,
-                "Always show the full classic context menu (Windows 11)",
+            .checkbox(&mut classic, "Restore classic context menu")
+            .on_hover_text(
+                "Windows 11: always show the full classic context menu instead of \"Show more options\"",
             )
             .changed()
             && !self.dry(ctx)
@@ -402,28 +402,40 @@ impl ContextMenuManager {
             .as_ref()
             .is_some_and(|e| e.writable(ctx.elevated) && !e.protected());
 
+        let target_exists = selected
+            .as_ref()
+            .and_then(|e| e.target.as_ref())
+            .is_some_and(|t| std::path::Path::new(t).exists());
+        // The original's toolbar (Repair is ours; File Type and Open With List are pages
+        // in the list on the left).
         match frame::toolbar(
             ui,
             &[
-                Some(ToolButton::new(icons::PLUS, "Add command")),
-                Some(ToolButton::new(icons::TRASH, "Delete").enabled(can_write)),
-                None,
-                Some(
-                    ToolButton::new(icons::INFO, "Properties").enabled(
-                        selected
-                            .as_ref()
-                            .and_then(|e| e.target.as_ref())
-                            .is_some_and(|t| std::path::Path::new(t).exists()),
-                    ),
-                ),
-                Some(ToolButton::new(icons::TREE_STRUCTURE, "Registry").enabled(selected.is_some())),
-                None,
-                Some(ToolButton::new(icons::FIRST_AID_KIT, "Repair")),
                 Some(ToolButton::new(icons::ARROWS_CLOCKWISE, "Refresh")),
+                Some(ToolButton::new(icons::X, "Delete").enabled(can_write)),
+                None,
+                Some(ToolButton::new(icons::CLIPBOARD_TEXT, "Properties").enabled(target_exists)),
+                Some(ToolButton::new(icons::FOLDER_OPEN, "Open File Location").enabled(target_exists)),
+                Some(ToolButton::new(icons::TREE_STRUCTURE, "Open in Registry").enabled(selected.is_some())),
+                None,
+                Some(ToolButton::new(icons::PLUS, "Add Menu")),
+                Some(ToolButton::new(icons::FIRST_AID_KIT, "Repair")),
+                None,
+                Some(ToolButton::new(icons::SIGN_OUT, "Exit")),
             ],
             |_| {},
         ) {
             Some(0) => {
+                self.reload();
+                self.message = None;
+            }
+            Some(4) => {
+                if let Some(t) = selected.as_ref().and_then(|e| e.target.clone()) {
+                    wm_core::shell::reveal_in_explorer(std::path::Path::new(&t));
+                }
+            }
+            Some(10) => ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close),
+            Some(7) => {
                 let here = if self.section < LOCATIONS.len() {
                     vec![LOCATIONS[self.section].id]
                 } else {
@@ -462,12 +474,12 @@ impl ContextMenuManager {
                     let _ = show_properties(std::path::Path::new(&t));
                 }
             }
-            Some(4) => {
+            Some(5) => {
                 if let Some(e) = &selected {
                     let _ = registry::open_in_regedit(&e.key);
                 }
             }
-            Some(6) => {
+            Some(8) => {
                 let all_classes: Vec<String> = LOCATIONS
                     .iter()
                     .flat_map(|l| l.classes.iter().map(|c| (*c).to_owned()))
@@ -499,14 +511,10 @@ impl ContextMenuManager {
                     );
                 }
             }
-            Some(7) => {
-                self.reload();
-                self.message = None;
-            }
             _ => {}
         }
-        frame::options(ui, |ui| {
-            if self.section == FILE_TYPE {
+        if self.section == FILE_TYPE {
+            frame::options(ui, |ui| {
                 ui.label("File type: .");
                 let r = ui.add(egui::TextEdit::singleline(&mut self.ext).desired_width(90.0));
                 if (r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)))
@@ -516,10 +524,8 @@ impl ContextMenuManager {
                     self.selected = None;
                 }
                 ui.weak(format!("Looks in: {}", self.classes().join(", ")));
-                ui.separator();
-            }
-            self.classic_option(ui, ctx);
-        });
+            });
+        }
 
         let f = self.filter.to_lowercase();
         let visible: Vec<&Entry> = entries
@@ -535,13 +541,19 @@ impl ContextMenuManager {
             visible.iter().filter(|e| e.broken).count()
         );
         let filter_hint = format!("{}  {}", icons::MAGNIFYING_GLASS, ctx.i18n.tr("common-filter"));
+        let mut search = std::mem::take(&mut self.filter);
         frame::status(ui, &status, |ui| {
             ui.add(
-                egui::TextEdit::singleline(&mut self.filter)
+                egui::TextEdit::singleline(&mut search)
                     .hint_text(filter_hint)
                     .desired_width(180.0),
             );
+            // The original's "Restore classic context menu" box (Windows 11).
+            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                self.classic_option(ui, ctx);
+            });
         });
+        self.filter = search;
         let mut toggle = None;
         let mut clicked = None;
         frame::central_fixed(ui, |ui| {
@@ -568,12 +580,12 @@ impl ContextMenuManager {
                 .striped(true)
                 .sense(egui::Sense::click())
                 .column(Column::exact(24.0))
-                .column(Column::initial(230.0).clip(true))
+                .column(Column::initial(200.0).clip(true))
                 .column(Column::initial(72.0))
-                .column(Column::initial(44.0))
-                .column(Column::initial(60.0))
-                .column(Column::initial(150.0).clip(true))
-                .column(Column::initial(80.0))
+                .column(Column::initial(64.0))
+                .column(Column::initial(90.0))
+                .column(Column::initial(130.0).clip(true))
+                .column(Column::initial(110.0))
                 .column(Column::initial(70.0))
                 .column(Column::remainder().clip(true))
                 .header(22.0, |mut h| {
@@ -581,12 +593,12 @@ impl ContextMenuManager {
                         "",
                         "Name",
                         "Type",
-                        "Shift",
-                        "Position",
+                        "Shift Key",
+                        "Item Position",
                         "Company",
-                        "Signature",
+                        "Digital Signature",
                         "For",
-                        "",
+                        "Status",
                     ] {
                         h.col(|ui| {
                             ui.strong(t);
@@ -642,8 +654,12 @@ impl ContextMenuManager {
                         row.col(|ui| {
                             if e.broken {
                                 ui.colored_label(ui.visuals().warn_fg_color, "Program missing");
+                            } else if !e.enabled {
+                                ui.weak("Disabled");
                             } else if e.ours() {
-                                ui.weak("Added here");
+                                ui.label("Added here");
+                            } else {
+                                ui.label("Enabled");
                             }
                         });
                         if row.response().clicked() {
@@ -1082,10 +1098,10 @@ impl Tool for ContextMenuManager {
         self.editor_window(ui, ctx);
         let mut nav: Vec<(&str, &str)> = LOCATIONS.iter().map(|l| (l.icon, l.label)).collect();
         nav.extend([
-            (icons::FILE_SEARCH, "File type…"),
-            (icons::APP_WINDOW, "Open with"),
-            (icons::PLUS, "New menu"),
-            (icons::ARROW_SQUARE_OUT, "Send to"),
+            (icons::FILE_SEARCH, "File Type"),
+            (icons::APP_WINDOW, "Open With List"),
+            (icons::PLUS, "New"),
+            (icons::ARROW_SQUARE_OUT, "Send To"),
         ]);
         if frame::left(ui, 190.0, |ui| section_nav(ui, &nav, &mut self.section)) {
             self.entries = None;
