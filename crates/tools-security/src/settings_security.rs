@@ -402,7 +402,8 @@ impl Default for SettingsSecurity {
     fn default() -> Self {
         Self {
             tab: Tab::Restrictions,
-            panel: TweakPanel::new(TOOL, include_str!("../tweaks/lockdown.toml")),
+            panel: TweakPanel::new(TOOL, include_str!("../tweaks/lockdown.toml"))
+                .with_extra(Box::new(crate::system_keys::WindowsKeysSetting::default())),
             pages: None,
             cpl: None,
             cpl_items: None,

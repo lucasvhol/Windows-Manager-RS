@@ -92,3 +92,48 @@ key = 'HKCU\Software\Microsoft\Windows\CurrentVersion\Policies\ActiveDesktop'
 name = "NoChangingWallPaper"
 on = { dword = 1 }
 off = "delete"
+
+[[tweak]]
+id = "cad_no_lock"
+title = "Remove \"Lock\" (Win+L stops working too)"
+description = "Takes Lock off the Ctrl+Alt+Del screen and the Start menu, and turns off Win+L, so the PC can't be locked by this user."
+group = "Lock system keys"
+[[tweak.set]]
+key = 'HKCU\Software\Microsoft\Windows\CurrentVersion\Policies\System'
+name = "DisableLockWorkstation"
+on = { dword = 1 }
+off = "delete"
+
+[[tweak]]
+id = "cad_no_change_password"
+title = "Remove \"Change a password\""
+description = "Takes Change a password off the Ctrl+Alt+Del screen for this user."
+group = "Lock system keys"
+[[tweak.set]]
+key = 'HKCU\Software\Microsoft\Windows\CurrentVersion\Policies\System'
+name = "DisableChangePassword"
+on = { dword = 1 }
+off = "delete"
+
+[[tweak]]
+id = "cad_no_sign_out"
+title = "Remove \"Sign out\""
+description = "Takes Sign out off the Ctrl+Alt+Del screen and the Start menu for this user."
+group = "Lock system keys"
+effect = "sign-out"
+[[tweak.set]]
+key = 'HKCU\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer'
+name = "NoLogoff"
+on = { dword = 1 }
+off = "delete"
+
+[[tweak]]
+id = "cad_hide_switch_user"
+title = "Remove \"Switch user\" (all accounts)"
+description = "Hides Switch user on the Ctrl+Alt+Del screen, the Start menu and the sign-in screen, for every account."
+group = "Lock system keys"
+[[tweak.set]]
+key = 'HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
+name = "HideFastUserSwitching"
+on = { dword = 1 }
+off = "delete"

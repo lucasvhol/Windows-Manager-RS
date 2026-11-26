@@ -204,7 +204,8 @@ impl ExtraSetting for ThemeScheduleSetting {
 // ---------------------------------------------------------------------------------
 // Caps Lock (Scancode Map)
 
-const KEYBOARD: &str = r"HKLM\SYSTEM\CurrentControlSet\Control\Keyboard Layout";
+use wm_core::keyboard::{self, current_map};
+
 const CAPS: u16 = 0x3A;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -250,39 +251,6 @@ impl CapsMode {
     }
 }
 
-/// Entries of a Scancode Map: (key it becomes, key pressed).
-pub fn parse_map(bytes: &[u8]) -> Vec<(u16, u16)> {
-    if bytes.len() < 16 {
-        return Vec::new();
-    }
-    let count = u32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]) as usize;
-    bytes[12..]
-        .as_chunks::<4>()
-        .0
-        .iter()
-        .take(count.saturating_sub(1))
-        .map(|c| (u16::from_le_bytes([c[0], c[1]]), u16::from_le_bytes([c[2], c[3]])))
-        .filter(|&(_, from)| from != 0)
-        .collect()
-}
-
-pub fn build_map(entries: &[(u16, u16)]) -> Vec<u8> {
-    let mut out = vec![0u8; 8];
-    out.extend(((entries.len() + 1) as u32).to_le_bytes());
-    for (to, from) in entries {
-        out.extend(to.to_le_bytes());
-        out.extend(from.to_le_bytes());
-    }
-    out.extend([0u8; 4]);
-    out
-}
-
-fn current_map() -> Vec<(u16, u16)> {
-    registry::read_raw(KEYBOARD, "Scancode Map")
-        .map(|v| parse_map(&v.bytes))
-        .unwrap_or_default()
-}
-
 pub fn caps_mode() -> Option<CapsMode> {
     match current_map().iter().find(|(_, from)| *from == CAPS) {
         None => Some(CapsMode::Normal),
@@ -292,16 +260,8 @@ pub fn caps_mode() -> Option<CapsMode> {
 
 /// Changes only the Caps Lock entry; other key remaps are kept.
 pub fn set_caps_mode(ctx: &AppCtx<'_>, mode: CapsMode) -> Result<()> {
-    let snap = registry::snapshot(KEYBOARD, "Scancode Map");
-    let mut entries: Vec<(u16, u16)> = current_map().into_iter().filter(|(_, f)| *f != CAPS).collect();
-    if let Some(to) = mode.scancode() {
-        entries.push((to, CAPS));
-    }
-    if entries.is_empty() {
-        registry::delete_value(KEYBOARD, "Scancode Map")?;
-    } else {
-        registry::write_raw(KEYBOARD, "Scancode Map", &registry::binary(&build_map(&entries)))?;
-    }
+    let new: Vec<(u16, u16)> = mode.scancode().map(|to| (to, CAPS)).into_iter().collect();
+    let snap = keyboard::replace_keys(&[CAPS], &new)?;
     ctx.journal.record(
         "customsystem",
         format!("Caps Lock key set to: {} (restart needed)", mode.label()),
@@ -405,16 +365,15 @@ mod tests {
 
     #[test]
     fn scancode_maps_round_trip_and_keep_other_keys() {
+        use wm_core::keyboard::{build_map, merge, parse_map};
         // Right Alt -> Left Ctrl, already on the PC.
         let existing = build_map(&[(0x1D, 0xE038)]);
         assert_eq!(existing.len(), 8 + 4 + 4 + 4);
         let parsed = parse_map(&existing);
         assert_eq!(parsed, vec![(0x1D, 0xE038)]);
-        let mut with_caps: Vec<(u16, u16)> = parsed.into_iter().filter(|(_, f)| *f != CAPS).collect();
-        with_caps.push((CapsMode::Esc.scancode().unwrap(), CAPS));
+        let with_caps = merge(&parsed, &[CAPS], &[(CapsMode::Esc.scancode().unwrap(), CAPS)]);
         let bytes = build_map(&with_caps);
         assert_eq!(parse_map(&bytes), vec![(0x1D, 0xE038), (0x01, 0x3A)]);
-        assert!(parse_map(&[0; 4]).is_empty());
         assert_eq!(CapsMode::from_scancode(0x1D), Some(CapsMode::Ctrl));
         let _ = caps_mode();
     }
