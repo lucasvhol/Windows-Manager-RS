@@ -279,6 +279,45 @@ impl Tool for SecurityLock {
 }
 
 impl SecurityLock {
+    /// Sets Encrypt (true) or Decrypt (false).
+    pub fn set_encrypt(&mut self, encrypt: bool) {
+        if self.task.is_none() {
+            self.mode = if encrypt { Mode::Encrypt } else { Mode::Decrypt };
+        }
+    }
+
+    /// Asks to run the job (like the form's own button); returns why it can't yet.
+    pub fn request(&mut self) -> Result<(), String> {
+        let encrypting = self.mode == Mode::Encrypt;
+        let files = collect(&self.targets, encrypting);
+        if self.task.is_some() {
+            return Err("A job is already running.".into());
+        }
+        if files.is_empty() {
+            return Err(if encrypting {
+                "Add the files or folders to encrypt first.".into()
+            } else {
+                "Add .wmlock files (or folders holding them) first.".into()
+            });
+        }
+        if self.password.is_empty() {
+            return Err("Enter the password below first.".into());
+        }
+        if encrypting && self.password != self.confirm_password {
+            return Err("The passwords do not match.".into());
+        }
+        let text = if encrypting {
+            format!(
+                "Encrypt {} files? Without the password they cannot be recovered by anyone, including you.",
+                files.len()
+            )
+        } else {
+            format!("Decrypt {} files?", files.len())
+        };
+        self.confirm.ask(text, ());
+        Ok(())
+    }
+
     /// Uses a list kept elsewhere (Files and Folders); ignored while a job runs.
     pub fn set_targets(&mut self, targets: &[PathBuf]) {
         if self.task.is_none() {

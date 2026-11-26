@@ -28,7 +28,7 @@ use wm_core::{
     process::{hidden_command, run_checked},
     safety::UndoAction,
     task::BackgroundTask,
-    ui::{Confirm, Message, ToolButton, frame, show_message},
+    ui::{Confirm, Message, frame, show_message},
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -415,6 +415,8 @@ pub struct FileSecurity {
     /// The item whose permissions are shown.
     selected: Option<usize>,
     tab: Tab,
+    /// The Encrypt tab is on Decrypt File.
+    decrypt: bool,
     lock: SecurityLock,
     security: Option<Result<Security, String>>,
     recursive: bool,
@@ -454,85 +456,10 @@ impl FileSecurity {
         self.holders = None;
     }
 
-    fn list_toolbar(&mut self, ui: &mut egui::Ui, ctx: &AppCtx<'_>) {
-        let (has_sel, has_items) = (self.selected.is_some(), !self.items.is_empty());
-        let mut menu_change = None;
-        let installed = *self.menu_installed.get_or_insert_with(|| VERB.is_installed());
-        let clicked = frame::toolbar(
-            ui,
-            &[
-                Some(ToolButton::new(icons::PLUS, "Add files")),
-                Some(ToolButton::new(icons::FOLDERS, "Add folder")),
-                Some(ToolButton::new(icons::MINUS, "Remove").enabled(has_sel)),
-                Some(ToolButton::new(icons::TRASH, "Clear list").enabled(has_items)),
-            ],
-            |ui| {
-                let mut on = installed;
-                if ui
-                    .checkbox(&mut on, "In Explorer's right-click menu")
-                    .on_hover_text(
-                        "Adds \"Encrypt, shred or unlock with Win Manager\" for files and folders.",
-                    )
-                    .changed()
-                {
-                    menu_change = Some(on);
-                }
-            },
-        );
-        match clicked {
-            Some(0) => {
-                if let Some(files) = rfd::FileDialog::new().pick_files() {
-                    self.add(files);
-                }
-            }
-            Some(1) => {
-                if let Some(d) = rfd::FileDialog::new().pick_folder() {
-                    self.add([d]);
-                }
-            }
-            Some(2) => {
-                if let Some(i) = self.selected {
-                    self.items.remove(i);
-                    self.selected = (!self.items.is_empty()).then(|| i.min(self.items.len() - 1));
-                    self.load();
-                    self.holders = None;
-                }
-            }
-            Some(3) => {
-                self.items.clear();
-                self.selected = None;
-                self.security = None;
-                self.holders = None;
-            }
-            _ => {}
-        }
-        if let Some(on) = menu_change {
-            let r = if on {
-                VERB.install(ctx.journal, "filesecurity")
-            } else {
-                VERB.uninstall(ctx.journal, "filesecurity")
-            };
-            self.message = Some(
-                r.map(|()| "Explorer menu updated.".into())
-                    .map_err(|e| format!("{e:#}")),
-            );
-            self.menu_installed = None;
-        }
-    }
-
     fn list_ui(&mut self, ui: &mut egui::Ui) {
-        ui.weak("Files and folders");
-        ui.add_space(4.0);
-        let dropped: Vec<PathBuf> = ui.ctx().input(|i| {
-            i.raw
-                .dropped_files
-                .iter()
-                .map(|f| f.path().to_path_buf())
-                .collect()
-        });
-        if !dropped.is_empty() {
-            self.add(dropped);
-        }
+        ui.strong("Files");
+        ui.separator();
+
         let mut clicked = None;
         if self.items.is_empty() {
             ui.weak("Add files or folders, or drop them on this window.");
@@ -559,6 +486,18 @@ impl FileSecurity {
             self.selected = Some(i);
             self.load();
         }
+    }
+
+    /// Asks to shred the files in the list.
+    fn ask_shred(&mut self) {
+        let files = file_tools::shred_files(&self.items).len();
+        if files == 0 || self.shred_task.is_some() {
+            return;
+        }
+        self.shred_confirm.ask(
+            format!("Shred {files} files? They can't be recovered, not even from the Change Journal."),
+            (),
+        );
     }
 
     fn shred_ui(&mut self, ui: &mut egui::Ui, ctx: &AppCtx<'_>) {
@@ -917,42 +856,169 @@ impl Tool for FileSecurity {
                 self.add([p]);
             }
         }
-        self.list_toolbar(ui, ctx);
-        frame::options(ui, |ui| {
-            ui.selectable_value(
-                &mut self.tab,
-                Tab::Encrypt,
-                format!("{}  Encrypt and decrypt", icons::LOCK),
-            );
-            ui.selectable_value(&mut self.tab, Tab::Shred, format!("{}  Shred", icons::SCISSORS));
-            ui.selectable_value(
-                &mut self.tab,
-                Tab::Permissions,
-                format!("{}  Permissions", icons::KEY),
-            );
-            ui.selectable_value(
-                &mut self.tab,
-                Tab::Unlock,
-                format!("{}  Unlock", icons::FILE_LOCK),
-            );
+        let dropped: Vec<PathBuf> = ui.ctx().input(|i| {
+            i.raw
+                .dropped_files
+                .iter()
+                .map(|f| f.path().to_path_buf())
+                .collect()
         });
+        if !dropped.is_empty() {
+            self.add(dropped);
+        }
+
+        // The original's tabs.
+        let before = (self.tab, self.decrypt);
+        egui::Panel::top("fs-tabs")
+            .resizable(false)
+            .frame(egui::Frame::new().inner_margin(egui::Margin::symmetric(10, 6)))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    for (tab, decrypt, icon, label) in [
+                        (Tab::Encrypt, false, icons::LOCK, "Encrypt File"),
+                        (Tab::Encrypt, true, icons::KEY, "Decrypt File"),
+                        (Tab::Shred, false, icons::SCISSORS, "Shred File"),
+                        (
+                            Tab::Permissions,
+                            false,
+                            icons::SHIELD_CHECK,
+                            "File & Folder Permission",
+                        ),
+                        (Tab::Unlock, false, icons::FILE_LOCK, "File & Folder Unlocker"),
+                    ] {
+                        let on = self.tab == tab && (tab != Tab::Encrypt || self.decrypt == decrypt);
+                        if ui
+                            .selectable_label(on, egui::RichText::new(format!("{icon}  {label}")).size(14.0))
+                            .clicked()
+                        {
+                            self.tab = tab;
+                            self.decrypt = decrypt;
+                        }
+                    }
+                });
+            });
+        if before != (self.tab, self.decrypt) {
+            self.message = None;
+        }
+        self.lock.set_encrypt(!self.decrypt);
+
+        // The original's action column.
+        let (has_sel, has_items) = (self.selected.is_some(), !self.items.is_empty());
+        let installed = *self.menu_installed.get_or_insert_with(|| VERB.is_installed());
+        let action = match self.tab {
+            Tab::Encrypt if self.decrypt => Some((icons::KEY, "Decrypt File")),
+            Tab::Encrypt => Some((icons::LOCK, "Encrypt File")),
+            Tab::Shred => Some((icons::SCISSORS, "Shred File")),
+            Tab::Unlock => Some((icons::MAGNIFYING_GLASS, "Find Programs")),
+            Tab::Permissions => None,
+        };
+        let mut act = None;
+        frame::right(ui, 210.0, |ui| {
+            if frame::action(ui, icons::PLUS, "Add File", true) {
+                act = Some("file");
+            }
+            if frame::action(ui, icons::FOLDERS, "Add Folder", true) {
+                act = Some("folder");
+            }
+            if frame::action(ui, icons::X, "Remove Selected", has_sel) {
+                act = Some("remove");
+            }
+            if frame::action(ui, icons::X, "Remove All", has_items) {
+                act = Some("clear");
+            }
+            if let Some((icon, label)) = action
+                && frame::action(ui, icon, label, has_items)
+            {
+                act = Some("run");
+            }
+            ui.separator();
+            let label = if installed {
+                "Remove from Context Menu"
+            } else {
+                "Add to Context Menu"
+            };
+            if frame::action(ui, icons::LIST, label, true) {
+                act = Some("menu");
+            }
+        });
+        match act {
+            Some("file") => {
+                if let Some(files) = rfd::FileDialog::new().pick_files() {
+                    self.add(files);
+                }
+            }
+            Some("folder") => {
+                if let Some(d) = rfd::FileDialog::new().pick_folder() {
+                    self.add([d]);
+                }
+            }
+            Some("remove") => {
+                if let Some(i) = self.selected {
+                    self.items.remove(i);
+                    self.selected = (!self.items.is_empty()).then(|| i.min(self.items.len() - 1));
+                    self.load();
+                    self.holders = None;
+                }
+            }
+            Some("clear") => {
+                self.items.clear();
+                self.selected = None;
+                self.security = None;
+                self.holders = None;
+            }
+            Some("run") => match self.tab {
+                Tab::Encrypt => {
+                    self.lock.set_targets(&self.items);
+                    if let Err(e) = self.lock.request() {
+                        self.message = Some(Err(e));
+                    }
+                }
+                Tab::Shred => self.ask_shred(),
+                Tab::Unlock => {
+                    self.holders = Some(file_tools::holders(&self.items).map_err(|e| format!("{e:#}")));
+                }
+                Tab::Permissions => {}
+            },
+            Some("menu") => {
+                let r = if installed {
+                    VERB.uninstall(ctx.journal, "filesecurity")
+                } else {
+                    VERB.install(ctx.journal, "filesecurity")
+                };
+                self.message = Some(
+                    r.map(|()| {
+                        if installed {
+                            "Removed from Explorer's right-click menu.".into()
+                        } else {
+                            "Right-click files or folders in Explorer and choose \"Encrypt, shred or unlock with \
+                             Win Manager\" (on Windows 11 under \"Show more options\")."
+                                .into()
+                        }
+                    })
+                    .map_err(|e| format!("{e:#}")),
+                );
+                self.menu_installed = None;
+            }
+            _ => {}
+        }
+
         let dirs = self.items.iter().filter(|p| p.is_dir()).count();
         frame::status(
             ui,
-            &format!("{} files and {dirs} folders in the list", self.items.len() - dirs),
+            &format!("Total files: {}, folders: {dirs}", self.items.len() - dirs),
             |ui| {
                 ui.weak("You can also drop files and folders on this window.");
             },
         );
-        frame::left(ui, 260.0, |ui| self.list_ui(ui));
         frame::central(ui, |ui| {
             show_message(ui, &self.message);
+            self.list_ui(ui);
+            ui.add_space(8.0);
+            ui.separator();
             match self.tab {
                 Tab::Encrypt => {
                     self.lock.set_targets(&self.items);
                     self.lock.poll(ui, ctx);
-                    ui.horizontal(|ui| self.lock.mode_picker(ui));
-                    ui.add_space(6.0);
                     self.lock.body(ui, ctx);
                 }
                 Tab::Shred => self.shred_ui(ui, ctx),

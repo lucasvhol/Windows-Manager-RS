@@ -77,7 +77,7 @@ Tools reachable only from a dropdown: Windows Features (System Protection), App 
 | (hub) System Security | systemsecurity | | | | | ❌ |
 | (hub) Other Security | othersecurity | | | | | ❌ |
 | SettingsSecurity.exe | lockdown | Tabs Settings / Control Panel on top, Hide mode / Show only mode + search, tree of Settings sections with tick boxes and a Status column, bottom bar Open Settings | Hide, Show only, Restore, Execute, Shortcut, status line | Buttons and columns as the original | Restrictions (our account restrictions, hardening and system keys) is a third tab; Control Panel items are a flat list with the canonical name | | ✅ |
-| FileSecurity.exe | filesecurity, unlocker | | | | | ❌ |
+| FileSecurity.exe | filesecurity, unlocker | Tabs Encrypt File, Decrypt File, Shred File, File & Folder Permission, File & Folder Unlocker; file list in the middle with the tab's form below; action column on the right; status line | Right column Add File, Add Folder, Remove Selected, Remove All, the tab's action (Encrypt File / Decrypt File / Shred File / Find Programs), Add to Context Menu | No Result column or Expand All (folders are single entries); password and options sit under the list instead of in a dialog | | ✅ |
 | PrivacyProtector.exe | privacy | | | | | ❌ |
 | SecurityLock.exe | securitylock, applocker | | | | | ❌ |
 | (hub) Device Security | devicesecurity | | | | | ❌ |

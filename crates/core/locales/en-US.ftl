@@ -112,7 +112,7 @@ othersecurity-title = Other Security
 devicesecurity-title = Device Security
 systemprotection-title = System Protection
 lockdown-title = Settings Security
-filesecurity-title = Files and Folders
+filesecurity-title = File Security
 securitylock-title = Security Lock
 undelete-title = File Undelete
 
