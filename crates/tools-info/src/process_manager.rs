@@ -51,7 +51,6 @@ pub enum SortKey {
     Pid,
     Cpu,
     Memory,
-    User,
 }
 
 pub fn sort_rows(rows: &mut [ProcRow], key: SortKey, ascending: bool) {
@@ -61,7 +60,6 @@ pub fn sort_rows(rows: &mut [ProcRow], key: SortKey, ascending: bool) {
             SortKey::Pid => a.pid.cmp(&b.pid),
             SortKey::Cpu => a.cpu.total_cmp(&b.cpu),
             SortKey::Memory => a.memory.cmp(&b.memory),
-            SortKey::User => a.user.to_lowercase().cmp(&b.user.to_lowercase()),
         };
         let ord = ord.then(a.pid.cmp(&b.pid));
         if ascending { ord } else { ord.reverse() }
@@ -371,6 +369,13 @@ pub struct ProcessManager {
     modules: Option<(u32, Vec<Module>)>,
     cpu_limit: f32,
     memory_limit_mb: u64,
+    /// Parent/child tree (the original's default) instead of a flat list.
+    tree_view: bool,
+    collapsed: HashSet<u32>,
+    show_details: bool,
+    /// The Process Logger: processes that started or exited while the window was open.
+    logger: Vec<String>,
+    known: Option<HashMap<u32, String>>,
     confirm: Confirm<Ask>,
     message: Message,
 }
@@ -392,6 +397,11 @@ impl Default for ProcessManager {
             modules: None,
             cpu_limit: 50.0,
             memory_limit_mb: 2048,
+            tree_view: true,
+            collapsed: HashSet::new(),
+            show_details: false,
+            logger: Vec::new(),
+            known: None,
             confirm: Confirm::default(),
             message: None,
         }
@@ -413,7 +423,7 @@ impl ProcessManager {
                 self.ascending = !self.ascending;
             } else {
                 self.sort = key;
-                self.ascending = matches!(key, SortKey::Name | SortKey::Pid | SortKey::User);
+                self.ascending = matches!(key, SortKey::Name | SortKey::Pid);
             }
         }
     }
@@ -542,40 +552,167 @@ impl ProcessManager {
             .cloned();
         let has = selected_row.is_some();
         let crit = selected_row.as_ref().is_some_and(|r| is_critical(&r.name));
+        let view_label = if self.tree_view {
+            "View: Tree"
+        } else {
+            "View: List"
+        };
+        // The original's toolbar (Priority, Filter and End all… sit at its right end).
         let buttons = [
-            Some(ToolButton::new(icons::X, "End").enabled(has && !crit)),
-            Some(ToolButton::new(icons::TREE_STRUCTURE, "End tree").enabled(has && !crit)),
             Some(ToolButton::new(icons::PAUSE, "Suspend").enabled(has && !crit)),
             Some(ToolButton::new(icons::PLAY, "Resume").enabled(has)),
             Some(ToolButton::new(icons::ARROWS_CLOCKWISE, "Restart").enabled(has && !crit)),
+            Some(ToolButton::new(icons::X, "Terminate").enabled(has && !crit)),
+            Some(ToolButton::new(icons::TREE_STRUCTURE, "Terminate tree").enabled(has && !crit)),
             None,
             Some(ToolButton::new(icons::STOP_CIRCLE, "Block").enabled(has && !crit && ctx.elevated)),
-            Some(ToolButton::new(icons::FOLDER_OPEN, "Open folder").enabled(has)),
-            Some(ToolButton::new(icons::MAGNIFYING_GLASS, "Look up").enabled(has)),
+            Some(ToolButton::new(icons::LIST, "Blocklist")),
+            None,
+            Some(ToolButton::new(icons::INFO, "Details").enabled(has)),
+            Some(ToolButton::new(icons::FOLDER_OPEN, "Open Folder").enabled(has)),
+            Some(ToolButton::new(icons::GLOBE, "Query").enabled(has)),
+            None,
+            Some(ToolButton::new(icons::APP_WINDOW, "Window Finder")),
+            None,
+            Some(ToolButton::new(icons::GRID_FOUR, view_label)),
+            None,
+            Some(ToolButton::new(icons::SIGN_OUT, "Exit")),
         ];
+        let dry = ctx.config.dry_run;
+        let dry_text = ctx.i18n.tr("common-dry-run-skip");
+        let mut end_rule = None;
         let clicked = frame::toolbar(ui, &buttons, |_| {});
+        // The original's View / Filter / Priority drop-downs, in the strip below.
+        frame::options(ui, |ui| {
+            ui.menu_button(format!("End all {}", icons::CARET_DOWN), |ui| {
+                ui.set_min_width(260.0);
+                let labels = [
+                    "Unsigned programs".to_owned(),
+                    "Programs with untrusted signatures".to_owned(),
+                ];
+                for (i, l) in labels.iter().enumerate() {
+                    let n = self.rule_targets(i).len();
+                    if ui
+                        .add_enabled(n > 0, egui::Button::new(format!("{l} ({n})")))
+                        .clicked()
+                    {
+                        end_rule = Some((i, l.clone()));
+                        ui.close();
+                    }
+                }
+                ui.separator();
+                ui.horizontal(|ui| {
+                    ui.add(
+                        egui::DragValue::new(&mut self.cpu_limit)
+                            .range(5.0..=100.0)
+                            .suffix(" % CPU"),
+                    );
+                    let n = self.rule_targets(2).len();
+                    if ui
+                        .add_enabled(n > 0, egui::Button::new(format!("Using more ({n})")))
+                        .clicked()
+                    {
+                        end_rule = Some((2, format!("Programs using {} % CPU or more", self.cpu_limit)));
+                        ui.close();
+                    }
+                });
+                ui.horizontal(|ui| {
+                    ui.add(
+                        egui::DragValue::new(&mut self.memory_limit_mb)
+                            .range(64..=65536)
+                            .suffix(" MB"),
+                    );
+                    let n = self.rule_targets(3).len();
+                    if ui
+                        .add_enabled(n > 0, egui::Button::new(format!("Using more ({n})")))
+                        .clicked()
+                    {
+                        end_rule = Some((
+                            3,
+                            format!("Programs using {} MB of memory or more", self.memory_limit_mb),
+                        ));
+                        ui.close();
+                    }
+                });
+                ui.weak("Windows' own critical processes are never included.");
+            });
+            egui::ComboBox::from_id_salt("view")
+                .selected_text(match self.view {
+                    View::All => "All processes",
+                    View::NotMicrosoft => "Not from Microsoft",
+                    View::Unsigned => "Unsigned or untrusted",
+                    View::MyProcesses => "My processes",
+                })
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut self.view, View::All, "All processes");
+                    ui.selectable_value(&mut self.view, View::MyProcesses, "My processes");
+                    ui.selectable_value(&mut self.view, View::NotMicrosoft, "Not from Microsoft");
+                    ui.selectable_value(&mut self.view, View::Unsigned, "Unsigned or untrusted");
+                });
+            ui.add_enabled_ui(has, |ui| {
+                ui.menu_button(format!("Priority {}", icons::CARET_DOWN), |ui| {
+                    for (label, class) in PRIORITIES {
+                        if ui.button(label).clicked()
+                            && let Some(r) = &selected_row
+                        {
+                            self.message = Some(if dry {
+                                Ok(dry_text.clone())
+                            } else {
+                                set_priority(r.pid, class)
+                                    .map(|()| format!("{} priority set to {label}.", r.name))
+                                    .map_err(|e| format!("Could not change priority: {e}"))
+                            });
+                            ui.close();
+                        }
+                    }
+                });
+            });
+        });
+        if let Some((i, label)) = end_rule {
+            self.ask_rule(i, &label);
+        }
+        // Indices count the separators (None) too.
+        match clicked {
+            Some(7) => {
+                self.page = Page::Blocked;
+                return;
+            }
+            Some(13) => {
+                self.page = Page::Windows;
+                return;
+            }
+            Some(9) => self.show_details = !self.show_details,
+            Some(15) => self.tree_view = !self.tree_view,
+            Some(17) => ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close),
+            _ => {}
+        }
         if let Some(r) = &selected_row {
             match clicked {
-                Some(0) => self.confirm.ask(
+                Some(3) => self.confirm.ask(
                     format!("End \"{}\" (PID {})? Unsaved data in it will be lost.", r.name, r.pid),
                     Ask::End(vec![(r.pid, r.name.clone())]),
                 ),
-                Some(1) => {
+                Some(4) => {
                     let n = self.tree(r.pid).len();
                     self.confirm.ask(
-                        format!("End \"{}\" and the {} process{} it started?", r.name, n - 1, if n == 2 { "" } else { "es" }),
+                        format!(
+                            "End \"{}\" and the {} process{} it started?",
+                            r.name,
+                            n - 1,
+                            if n == 2 { "" } else { "es" }
+                        ),
                         Ask::EndTree(r.pid),
                     )
                 }
-                Some(2) | Some(3) => {
-                    let resume = clicked == Some(3);
+                Some(0) | Some(1) => {
+                    let resume = clicked == Some(1);
                     self.message = Some(
                         suspend(r.pid, resume)
                             .map(|_| format!("{} {}.", r.name, if resume { "resumed" } else { "suspended" }))
                             .map_err(|e| format!("{e:#}")),
                     );
                 }
-                Some(4) => {
+                Some(2) => {
                     self.message = Some(match &r.exe {
                         None => Err("The program's path is unknown.".into()),
                         Some(exe) => {
@@ -594,18 +731,24 @@ impl ProcessManager {
                 Some(6) => self.confirm.ask(
                     format!(
                         "Block \"{}\" from starting for every user? Windows will start a harmless placeholder instead. \
-                         Unblock it on the Blocked programs page or from the Change Journal.",
+                         Unblock it from the Blocklist or the Change Journal.",
                         r.name
                     ),
                     Ask::Block(r.name.clone()),
                 ),
-                Some(7) => {
+                Some(10) => {
                     if let Some(exe) = &r.exe {
-                        let _ = std::process::Command::new("explorer").arg(format!("/select,{}", exe.display())).spawn();
+                        let _ = std::process::Command::new("explorer")
+                            .arg(format!("/select,{}", exe.display()))
+                            .spawn();
                     }
                 }
-                Some(8) => {
-                    let q: String = r.name.chars().map(|c| if c.is_ascii_alphanumeric() || c == '.' { c } else { '+' }).collect();
+                Some(11) => {
+                    let q: String = r
+                        .name
+                        .chars()
+                        .map(|c| if c.is_ascii_alphanumeric() || c == '.' { c } else { '+' })
+                        .collect();
                     let _ = std::process::Command::new("explorer")
                         .arg(format!("https://www.bing.com/search?q={q}+process"))
                         .spawn();
@@ -614,108 +757,49 @@ impl ProcessManager {
             }
         }
 
-        let filter_hint = ctx.i18n.tr("common-filter");
-        frame::options(ui, |ui| {
-            ui.add(
-                egui::TextEdit::singleline(&mut self.filter)
-                    .hint_text(format!("{}  {filter_hint}", icons::MAGNIFYING_GLASS))
-                    .desired_width(200.0),
-            );
-            egui::ComboBox::from_id_salt("view")
-                .selected_text(match self.view {
-                    View::All => "All processes",
-                    View::NotMicrosoft => "Not from Microsoft",
-                    View::Unsigned => "Unsigned or untrusted",
-                    View::MyProcesses => "My processes",
-                })
-                .show_ui(ui, |ui| {
-                    ui.selectable_value(&mut self.view, View::All, "All processes");
-                    ui.selectable_value(&mut self.view, View::MyProcesses, "My processes");
-                    ui.selectable_value(&mut self.view, View::NotMicrosoft, "Not from Microsoft");
-                    ui.selectable_value(&mut self.view, View::Unsigned, "Unsigned or untrusted");
-                });
-            ui.add_enabled_ui(has, |ui| {
-                ui.menu_button("Priority", |ui| {
-                    for (label, class) in PRIORITIES {
-                        if ui.button(label).clicked()
-                            && let Some(r) = &selected_row
-                        {
-                            self.message = Some(if ctx.config.dry_run {
-                                Ok(ctx.i18n.tr("common-dry-run-skip"))
-                            } else {
-                                set_priority(r.pid, class)
-                                    .map(|()| format!("{} priority set to {label}.", r.name))
-                                    .map_err(|e| format!("Could not change priority: {e}"))
-                            });
-                            ui.close();
-                        }
-                    }
-                });
-            });
-            ui.menu_button("End all…", |ui| {
-                ui.set_min_width(260.0);
-                let labels = [
-                    "Unsigned programs".to_owned(),
-                    "Programs with untrusted signatures".to_owned(),
-                ];
-                for (i, l) in labels.iter().enumerate() {
-                    let n = self.rule_targets(i).len();
-                    if ui
-                        .add_enabled(n > 0, egui::Button::new(format!("{l} ({n})")))
-                        .clicked()
-                    {
-                        self.ask_rule(i, l);
-                        ui.close();
-                    }
-                }
-                ui.separator();
-                ui.horizontal(|ui| {
-                    ui.add(
-                        egui::DragValue::new(&mut self.cpu_limit)
-                            .range(5.0..=100.0)
-                            .suffix(" % CPU"),
-                    );
-                    let n = self.rule_targets(2).len();
-                    if ui
-                        .add_enabled(n > 0, egui::Button::new(format!("Using more ({n})")))
-                        .clicked()
-                    {
-                        self.ask_rule(2, &format!("Programs using {} % CPU or more", self.cpu_limit));
-                        ui.close();
-                    }
-                });
-                ui.horizontal(|ui| {
-                    ui.add(
-                        egui::DragValue::new(&mut self.memory_limit_mb)
-                            .range(64..=65536)
-                            .suffix(" MB"),
-                    );
-                    let n = self.rule_targets(3).len();
-                    if ui
-                        .add_enabled(n > 0, egui::Button::new(format!("Using more ({n})")))
-                        .clicked()
-                    {
-                        self.ask_rule(
-                            3,
-                            &format!("Programs using {} MB of memory or more", self.memory_limit_mb),
-                        );
-                        ui.close();
-                    }
-                });
-                ui.weak("Windows' own critical processes are never included.");
-            });
-        });
-
         let mut rows: Vec<ProcRow> = self.rows.iter().filter(|r| self.visible(r)).cloned().collect();
         sort_rows(&mut rows, self.sort, self.ascending);
         let checking = self.info_task.is_some();
-        frame::status(ui, &format!("{} processes", rows.len()), |ui| {
+        let total = self.rows.len();
+        let search_hint = format!("{}  {}", icons::MAGNIFYING_GLASS, ctx.i18n.tr("common-filter"));
+        frame::status(ui, &format!("Total Processes: {}/{total}", rows.len()), |ui| {
+            ui.add(
+                egui::TextEdit::singleline(&mut self.filter)
+                    .hint_text(search_hint)
+                    .desired_width(180.0),
+            );
             if checking {
                 ui.weak("checking signatures…");
                 ui.spinner();
             }
         });
-        if let Some(r) = &selected_row {
+
+        // The original's Process Logger, folded at the bottom.
+        let fill = ui.visuals().panel_fill;
+        egui::Panel::bottom("proc_logger")
+            .resizable(false)
+            .frame(egui::Frame::new().fill(fill).inner_margin(egui::Margin::symmetric(12, 4)))
+            .show(ui, |ui| {
+                egui::CollapsingHeader::new(format!("Process Logger (Count: {})", self.logger.len()))
+                    .id_salt("proc-logger")
+                    .show(ui, |ui| {
+                        egui::ScrollArea::vertical()
+                            .id_salt("proc-logger-scroll")
+                            .max_height(140.0)
+                            .stick_to_bottom(true)
+                            .show(ui, |ui| {
+                                if self.logger.is_empty() {
+                                    ui.weak("Processes that start or exit while this window is open are listed here.");
+                                }
+                                for line in &self.logger {
+                                    ui.label(line);
+                                }
+                            });
+                    });
+            });
+        if self.show_details
+            && let Some(r) = &selected_row
+        {
             egui::Panel::bottom("proc_details")
                 .resizable(true)
                 .default_size(180.0)
@@ -732,68 +816,104 @@ impl ProcessManager {
         }
     }
 
+    /// Records processes that started or exited since the last sample.
+    fn log_changes(&mut self) {
+        let now: HashMap<u32, String> = self.rows.iter().map(|r| (r.pid, r.name.clone())).collect();
+        if let Some(before) = &self.known {
+            let time = chrono::Local::now().format("%H:%M:%S");
+            for (pid, name) in &now {
+                if before.get(pid) != Some(name) {
+                    self.logger.push(format!("{time}  Started  {name} ({pid})"));
+                }
+            }
+            for (pid, name) in before {
+                if now.get(pid) != Some(name) {
+                    self.logger.push(format!("{time}  Exited   {name} ({pid})"));
+                }
+            }
+            let excess = self.logger.len().saturating_sub(1000);
+            self.logger.drain(..excess);
+        }
+        self.known = Some(now);
+    }
+
     fn proc_table(&mut self, ui: &mut egui::Ui, rows: &[ProcRow]) -> Option<u32> {
         let mut clicked_row = None;
+        let mut toggle = None;
+        // A tree while browsing; a flat list while searching or when chosen.
+        let tree = self.tree_view && self.filter.trim().is_empty();
+        let order: Vec<(usize, usize, bool)> = if tree {
+            tree_order(rows, &self.collapsed)
+        } else {
+            (0..rows.len()).map(|i| (i, 0, false)).collect()
+        };
+        ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
         TableBuilder::new(ui)
             .striped(true)
             .sense(egui::Sense::click())
-            .column(Column::initial(180.0).at_least(110.0).clip(true))
+            .column(Column::initial(230.0).at_least(120.0).clip(true))
             .column(Column::initial(60.0))
-            .column(Column::initial(60.0))
-            .column(Column::initial(80.0))
-            .column(Column::initial(100.0).clip(true))
+            .column(Column::initial(170.0).clip(true))
+            .column(Column::initial(55.0))
+            .column(Column::initial(95.0))
+            .column(Column::initial(200.0).clip(true))
             .column(Column::initial(150.0).clip(true))
-            .column(Column::initial(80.0))
             .column(Column::remainder().clip(true))
             .header(22.0, |mut h| {
                 h.col(|ui| self.header(ui, "Name", SortKey::Name));
                 h.col(|ui| self.header(ui, "PID", SortKey::Pid));
+                h.col(|ui| {
+                    ui.strong("Description");
+                });
                 h.col(|ui| self.header(ui, "CPU", SortKey::Cpu));
-                h.col(|ui| self.header(ui, "Memory", SortKey::Memory));
-                h.col(|ui| self.header(ui, "User", SortKey::User));
+                h.col(|ui| self.header(ui, "Memory (Private)", SortKey::Memory));
+                h.col(|ui| {
+                    ui.strong("Path");
+                });
                 h.col(|ui| {
                     ui.strong("Company");
                 });
                 h.col(|ui| {
-                    ui.strong("Signature");
-                });
-                h.col(|ui| {
-                    ui.strong("Path");
+                    ui.strong("Digital Signature");
                 });
             })
             .body(|body| {
-                body.rows(20.0, rows.len(), |mut row| {
-                    let r = &rows[row.index()];
+                body.rows(22.0, order.len(), |mut row| {
+                    let (i, depth, has_kids) = order[row.index()];
+                    let r = &rows[i];
                     let info = self.info_of(r);
                     row.set_selected(self.selected == Some(r.pid));
                     row.col(|ui| {
-                        ui.label(&r.name);
+                        ui.horizontal(|ui| {
+                            ui.add_space(depth as f32 * 16.0);
+                            if tree {
+                                if has_kids {
+                                    let caret = if self.collapsed.contains(&r.pid) {
+                                        "▸"
+                                    } else {
+                                        "▾"
+                                    };
+                                    if ui.add(egui::Button::new(caret).frame(false)).clicked() {
+                                        toggle = Some(r.pid);
+                                    }
+                                } else {
+                                    ui.add_space(16.0);
+                                }
+                            }
+                            ui.label(&r.name);
+                        });
                     });
                     row.col(|ui| {
-                        ui.label(r.pid.to_string());
+                        ui.weak(r.pid.to_string());
                     });
                     row.col(|ui| {
-                        ui.label(format!("{:.1}%", r.cpu));
+                        ui.label(info.map(|i| i.description.as_str()).unwrap_or(""));
+                    });
+                    row.col(|ui| {
+                        ui.label(format!("{:.0}%", r.cpu));
                     });
                     row.col(|ui| {
                         ui.label(format_bytes(r.memory));
-                    });
-                    row.col(|ui| {
-                        ui.label(&r.user);
-                    });
-                    row.col(|ui| {
-                        ui.label(info.map(|i| i.company.as_str()).unwrap_or(""));
-                    });
-                    row.col(|ui| {
-                        let s = info.map(|i| i.signature).unwrap_or_default();
-                        match s {
-                            Signature::Unsigned | Signature::Untrusted => {
-                                ui.colored_label(ui.visuals().warn_fg_color, s.label());
-                            }
-                            _ => {
-                                ui.weak(s.label());
-                            }
-                        }
                     });
                     row.col(|ui| {
                         ui.weak(
@@ -803,11 +923,36 @@ impl ProcessManager {
                                 .unwrap_or_default(),
                         );
                     });
+                    row.col(|ui| {
+                        ui.label(info.map(|i| i.company.as_str()).unwrap_or(""));
+                    });
+                    row.col(|ui| {
+                        let s = info.map(|i| i.signature).unwrap_or_default();
+                        let text = match (s, info) {
+                            (Signature::Valid, Some(i)) if !i.signer.is_empty() => {
+                                format!("{} (Trusted)", i.signer)
+                            }
+                            _ => s.label().to_owned(),
+                        };
+                        match s {
+                            Signature::Unsigned | Signature::Untrusted => {
+                                ui.colored_label(ui.visuals().warn_fg_color, text);
+                            }
+                            _ => {
+                                ui.weak(text);
+                            }
+                        }
+                    });
                     if row.response().clicked() {
                         clicked_row = Some(r.pid);
                     }
                 });
             });
+        if let Some(pid) = toggle
+            && !self.collapsed.remove(&pid)
+        {
+            self.collapsed.insert(pid);
+        }
         clicked_row
     }
 
@@ -853,6 +998,7 @@ impl ProcessManager {
                             .unwrap_or_default();
                         for (k, v) in [
                             ("Description", info.description.clone()),
+                            ("User", r.user.clone()),
                             ("Company", info.company.clone()),
                             ("Version", info.version.clone()),
                             ("Signed by", info.signer.clone()),
@@ -950,6 +1096,46 @@ impl ProcessManager {
     }
 }
 
+/// The original's process tree: each process right under its parent, siblings in
+/// the order of `rows` (already sorted). Returns (index into `rows`, depth, has
+/// children); children of `collapsed` pids are left out. Processes whose parent isn't
+/// listed (or that point at themselves) are roots.
+pub fn tree_order(rows: &[ProcRow], collapsed: &HashSet<u32>) -> Vec<(usize, usize, bool)> {
+    let pids: HashSet<u32> = rows.iter().map(|r| r.pid).collect();
+    let parent_of = |r: &ProcRow| r.parent.filter(|p| *p != r.pid && pids.contains(p));
+    let mut children: HashMap<u32, Vec<usize>> = HashMap::new();
+    let mut roots = Vec::new();
+    for (i, r) in rows.iter().enumerate() {
+        match parent_of(r) {
+            Some(p) => children.entry(p).or_default().push(i),
+            None => roots.push(i),
+        }
+    }
+    let mut out = Vec::with_capacity(rows.len());
+    let mut seen = HashSet::new();
+    // Depth-first, children after their parent; `seen` guards against pid reuse cycles.
+    let mut stack: Vec<(usize, usize)> = roots.into_iter().rev().map(|i| (i, 0)).collect();
+    while let Some((i, depth)) = stack.pop() {
+        if !seen.insert(i) {
+            continue;
+        }
+        let kids = children.get(&rows[i].pid).cloned().unwrap_or_default();
+        out.push((i, depth, !kids.is_empty()));
+        if !collapsed.contains(&rows[i].pid) {
+            stack.extend(kids.into_iter().rev().map(|k| (k, depth + 1)));
+        }
+    }
+    // A parent loop with no root (possible with reused pids) still shows its processes.
+    if collapsed.is_empty() {
+        for i in 0..rows.len() {
+            if !seen.contains(&i) {
+                out.push((i, 0, false));
+            }
+        }
+    }
+    out
+}
+
 /// Splits a command line into arguments, honouring double quotes.
 pub fn shell_words(cmd: &str) -> Vec<String> {
     let mut out = Vec::new();
@@ -995,6 +1181,7 @@ impl Tool for ProcessManager {
         });
         if let Some(rows) = sampler.latest() {
             self.rows = rows;
+            self.log_changes();
         }
         self.request_info(ui.ctx());
 
@@ -1016,30 +1203,31 @@ impl Tool for ProcessManager {
             None => {}
         }
 
-        let pages = [Page::Processes, Page::Windows, Page::Blocked];
-        let mut sel = pages.iter().position(|p| *p == self.page).unwrap_or(0);
-        frame::left(ui, 190.0, |ui| {
-            wm_core::ui::section_nav(
-                ui,
-                &[
-                    (icons::LIST_CHECKS, "Processes"),
-                    (icons::APP_WINDOW, "Windows"),
-                    (icons::STOP_CIRCLE, "Blocked programs"),
-                ],
-                &mut sel,
-            )
-        });
-        self.page = pages[sel];
+        // Blocklist and Window Finder open from the toolbar, like the original; each has
+        // its way back to the process list.
+        if self.page != Page::Processes {
+            let back = [Some(ToolButton::new(
+                icons::ARROW_COUNTER_CLOCKWISE,
+                "‹ Processes",
+            ))];
+            if frame::toolbar(ui, &back, |_| {}) == Some(0) {
+                self.page = Page::Processes;
+            }
+        }
         match self.page {
             Page::Processes => self.processes_page(ui, ctx),
             Page::Windows => {
-                frame::status(ui, "Every visible window and the process that owns it", |_| {});
+                frame::status(
+                    ui,
+                    "Window Finder: every visible window and the process that owns it",
+                    |_| {},
+                );
                 frame::central(ui, |ui| self.windows_page(ui));
             }
             Page::Blocked => {
                 frame::status(
                     ui,
-                    "Programs blocked from starting with this tool; Windows starts a harmless placeholder instead",
+                    "Blocklist: programs blocked from starting; Windows starts a harmless placeholder instead",
                     |_| {},
                 );
                 frame::central(ui, |ui| self.blocked_page(ui, ctx));
@@ -1068,6 +1256,38 @@ mod tests {
             cmd: String::new(),
             start_time: 0,
         }
+    }
+
+    #[test]
+    fn processes_form_a_tree() {
+        let child = |pid, parent, name: &str| ProcRow {
+            parent: Some(parent),
+            ..row(pid, name, 0.0, 0)
+        };
+        // wininit(10) > services(11) > svchost(12); explorer(20) whose parent is gone;
+        // a parent loop 30 <-> 31 with no root.
+        let rows = vec![
+            row(10, "wininit", 0.0, 0),
+            child(12, 11, "svchost"),
+            child(11, 10, "services"),
+            child(20, 999, "explorer"),
+            child(30, 31, "a"),
+            child(31, 30, "b"),
+        ];
+        let order = tree_order(&rows, &HashSet::new());
+        let named: Vec<(&str, usize)> = order
+            .iter()
+            .map(|(i, d, _)| (rows[*i].name.as_str(), *d))
+            .collect();
+        assert_eq!(
+            &named[..4],
+            &[("wininit", 0), ("services", 1), ("svchost", 2), ("explorer", 0)]
+        );
+        assert_eq!(order.len(), rows.len(), "the loop still shows");
+        assert!(order[0].2 && !order[2].2, "has-children flags");
+        // Folding services hides svchost.
+        let folded = tree_order(&rows, &[11].into_iter().collect());
+        assert!(!folded.iter().any(|(i, _, _)| rows[*i].name == "svchost"));
     }
 
     #[test]
