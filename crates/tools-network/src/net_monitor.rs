@@ -456,27 +456,40 @@ impl NetworkMonitor {
             ui.weak("Measuring…");
             return;
         };
-        let received = egui::Color32::from_rgb(64, 156, 255);
-        let sent = egui::Color32::from_rgb(255, 140, 50);
+        // The original's colours: received orange, sent blue.
+        let received = egui::Color32::from_rgb(255, 140, 50);
+        let sent = egui::Color32::from_rgb(64, 156, 255);
+        // The original's headings over the chart.
+        ui.vertical_centered(|ui| {
+            let busy = s.link > 0 && (s.current.0.max(s.current.1) * 8.0) / s.link as f64 > 0.8;
+            ui.label(
+                egui::RichText::new(format!(
+                    "Current Network Status: {}",
+                    if busy { "Busy" } else { "Normal" }
+                ))
+                .strong()
+                .size(15.0),
+            );
+        });
         rate_chart(ui, &s, received, sent);
         let avg = s.average();
         egui::Grid::new("netmon-stats")
             .num_columns(5)
             .spacing([24.0, 4.0])
             .show(ui, |ui| {
-                for h in ["", "Current", "Maximum", "Average", "Total"] {
+                for h in ["Name", "Current Rate", "Maximum Rate", "Total", "Average Rate"] {
                     ui.strong(h);
                 }
                 ui.end_row();
                 for (name, color, cur, max, avg, total) in [
-                    ("Received", received, s.current.0, s.max.0, avg.0, s.total.0),
-                    ("Sent", sent, s.current.1, s.max.1, avg.1, s.total.1),
+                    ("Received Data", received, s.current.0, s.max.0, avg.0, s.total.0),
+                    ("Sent Data", sent, s.current.1, s.max.1, avg.1, s.total.1),
                 ] {
-                    ui.colored_label(color, format!("━ {name}"));
+                    ui.colored_label(color, format!("■ {name}"));
                     ui.label(rate_text(cur));
                     ui.label(rate_text(max));
-                    ui.label(rate_text(avg));
                     ui.label(format_bytes(total as u64));
+                    ui.label(rate_text(avg));
                     ui.end_row();
                 }
             });
