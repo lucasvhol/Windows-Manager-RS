@@ -8,7 +8,7 @@ use wm_core::{
     AppCtx, Category, Layout, Tool, egui, icons,
     safety::UndoAction,
     task::BackgroundTask,
-    ui::{Confirm, frame, section_nav},
+    ui::{Confirm, ToolButton, frame},
     ui::{Message, format_bytes, format_duration, show_message},
 };
 
@@ -192,18 +192,167 @@ fn query_environment() -> Table {
     }
 }
 
-const PAGES: [(&str, &str); 10] = [
-    (icons::CPU, "Summary"),
-    (icons::KEY, "Licence and scores"),
-    (icons::USER, "User accounts"),
-    (icons::DOWNLOAD, "Installed updates"),
-    (icons::PRINTER, "Printers"),
-    (icons::FILE_TEXT, "Codecs"),
-    (icons::LIST_BULLETS, "Environment"),
-    (icons::HARD_DRIVES, "Disk health"),
-    (icons::GAUGE, "Disk speed test"),
-    (icons::CLIPBOARD_TEXT, "Reports"),
+/// The original's two-level tree: Hardware and Software, each with its pages.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Page {
+    Hardware,
+    Mainboard,
+    Bios,
+    Cpu,
+    Memory,
+    Drive,
+    HddReport,
+    DiskBenchmark,
+    Video,
+    Audio,
+    Network,
+    ExternalDevice,
+    Printers,
+    Software,
+    ComputerSystem,
+    OperatingSystem,
+    ProductKey,
+    UserAccount,
+    SystemFolder,
+    Environment,
+    Codecs,
+    EventLog,
+    Hotfix,
+    SystemReport,
+}
+
+/// (depth, icon, label, page)
+const NAV: [(usize, &str, &str, Page); 24] = [
+    (0, icons::CPU, "Hardware", Page::Hardware),
+    (1, icons::CPU, "Mainboard", Page::Mainboard),
+    (1, icons::CPU, "BIOS", Page::Bios),
+    (1, icons::CPU, "CPU", Page::Cpu),
+    (1, icons::STACK, "Memory", Page::Memory),
+    (1, icons::HARD_DRIVES, "Drive", Page::Drive),
+    (2, icons::FILE_TEXT, "HDD Report", Page::HddReport),
+    (2, icons::GAUGE, "Disk Benchmark", Page::DiskBenchmark),
+    (1, icons::MONITOR, "Video", Page::Video),
+    (1, icons::BELL, "Audio", Page::Audio),
+    (1, icons::NETWORK, "Network", Page::Network),
+    (1, icons::USB, "External Device", Page::ExternalDevice),
+    (1, icons::PRINTER, "Printers", Page::Printers),
+    (0, icons::WINDOWS_LOGO, "Software", Page::Software),
+    (1, icons::DESKTOP, "Computer System", Page::ComputerSystem),
+    (1, icons::WINDOWS_LOGO, "Operating System", Page::OperatingSystem),
+    (1, icons::KEY, "Microsoft Product Key", Page::ProductKey),
+    (1, icons::USER, "User Account", Page::UserAccount),
+    (1, icons::FOLDER_OPEN, "System folder", Page::SystemFolder),
+    (1, icons::LIST_BULLETS, "Environment", Page::Environment),
+    (1, icons::FILE_TEXT, "Installed Codecs", Page::Codecs),
+    (1, icons::LIST_CHECKS, "Event Log", Page::EventLog),
+    (1, icons::DOWNLOAD, "Hotfix", Page::Hotfix),
+    (1, icons::CLIPBOARD_TEXT, "System Report", Page::SystemReport),
 ];
+
+/// Which collected sections (and which of their rows) a page shows.
+fn section_filter(page: Page, s: &Section) -> Option<Section> {
+    let keep =
+        |rows: Vec<(String, String)>| Some(Section { title: s.title, rows }).filter(|x| !x.rows.is_empty());
+    let all = || keep(s.rows.clone());
+    let only = |pred: &dyn Fn(&str) -> bool| keep(s.rows.iter().filter(|(k, _)| pred(k)).cloned().collect());
+    const SYSTEM_ROWS: [&str; 6] = [
+        "System",
+        "System family",
+        "Computer name",
+        "Registered owner",
+        "Architecture",
+        "Uptime",
+    ];
+    match (page, s.title) {
+        (Page::Hardware, "Operating system") => None,
+        (Page::Hardware, _) => all(),
+        (Page::Mainboard, "Motherboard & BIOS") => only(&|k| !k.starts_with("BIOS")),
+        (Page::Bios, "Motherboard & BIOS") => only(&|k| k.starts_with("BIOS")),
+        (Page::Cpu, "Processor") => all(),
+        (Page::Memory, "Memory") => all(),
+        (Page::Drive, "Storage") => all(),
+        (Page::Video, "Graphics") => all(),
+        (Page::Network, "Network adapters") => all(),
+        (Page::Software | Page::OperatingSystem, "Operating system") => all(),
+        (Page::ComputerSystem, "Motherboard & BIOS" | "Operating system") => {
+            only(&|k| SYSTEM_ROWS.contains(&k))
+        }
+        _ => None,
+    }
+}
+
+fn query_audio() -> anyhow::Result<Table> {
+    ps_table(
+        r#"@(Get-CimInstance Win32_SoundDevice | Select-Object Name, Manufacturer, Status) | ConvertTo-Json -Compress"#,
+        &[
+            ("Device", "Name"),
+            ("Manufacturer", "Manufacturer"),
+            ("Status", "Status"),
+        ],
+    )
+}
+
+fn query_external() -> anyhow::Result<Table> {
+    ps_table(
+        r#"@(Get-PnpDevice -PresentOnly | Where-Object { $_.InstanceId -like 'USB*' -or $_.InstanceId -like 'HID*' -or $_.InstanceId -like 'BTHENUM*' -or $_.InstanceId -like 'SWD\PRINTENUM*' } | Sort-Object Class, FriendlyName | Select-Object FriendlyName, Class, Status) | ConvertTo-Json -Compress"#,
+        &[
+            ("Device", "FriendlyName"),
+            ("Class", "Class"),
+            ("Status", "Status"),
+        ],
+    )
+}
+
+/// Where Windows keeps this account's and the system's folders.
+fn query_folders() -> Table {
+    let env = |v: &str| std::env::var(v).unwrap_or_default();
+    let profile = env("USERPROFILE");
+    let appdata = env("APPDATA");
+    let windir = env("WINDIR");
+    let rows: Vec<Vec<String>> = [
+        ("Desktop", format!(r"{profile}\Desktop")),
+        ("Documents", format!(r"{profile}\Documents")),
+        ("Downloads", format!(r"{profile}\Downloads")),
+        ("Music", format!(r"{profile}\Music")),
+        ("Pictures", format!(r"{profile}\Pictures")),
+        ("Videos", format!(r"{profile}\Videos")),
+        ("User profile", profile.clone()),
+        ("AppData (Roaming)", appdata.clone()),
+        ("AppData (Local)", env("LOCALAPPDATA")),
+        ("Temporary files", env("TEMP")),
+        ("Start menu", format!(r"{appdata}\Microsoft\Windows\Start Menu")),
+        (
+            "Startup",
+            format!(r"{appdata}\Microsoft\Windows\Start Menu\Programs\Startup"),
+        ),
+        ("Program Files", env("ProgramFiles")),
+        ("Program Files (x86)", env("ProgramFiles(x86)")),
+        ("Program data", env("ProgramData")),
+        ("Windows", windir.clone()),
+        ("System", format!(r"{windir}\System32")),
+        ("Fonts", format!(r"{windir}\Fonts")),
+    ]
+    .into_iter()
+    .map(|(k, v)| vec![k.to_owned(), v])
+    .collect();
+    Table {
+        columns: vec!["Folder", "Location"],
+        rows,
+    }
+}
+
+fn uptime_text() -> String {
+    let Ok(s) = System::uptime() else {
+        return "unknown".into();
+    };
+    format!(
+        "{}d:{:02}h:{:02}m:{:02}s",
+        s / 86_400,
+        (s % 86_400) / 3600,
+        (s % 3600) / 60,
+        s % 60
+    )
+}
 
 #[derive(Default)]
 struct Loaded {
@@ -230,57 +379,17 @@ pub struct SystemInfo {
 }
 
 impl SystemInfo {
-    fn summary(&mut self, ui: &mut egui::Ui, ctx: &mut AppCtx<'_>) {
-        if self.task.is_none() && self.sections.is_none() {
-            self.task = Some(BackgroundTask::spawn(ui.ctx(), |_| Ok(collect())));
-        }
-        if let Some(task) = &mut self.task {
-            task.poll();
-            if let Some(result) = task.take_result() {
-                self.sections = Some(result);
-                self.task = None;
-            }
-        }
-        ui.horizontal(|ui| {
-            if ui
-                .add_enabled(
-                    self.task.is_none(),
-                    egui::Button::new(ctx.i18n.tr("common-refresh")),
-                )
-                .clicked()
-            {
-                self.sections = None;
-                self.message = None;
-            }
-            if let Some(Ok(sections)) = &self.sections {
-                if ui.button(ctx.i18n.tr("common-copy")).clicked() {
-                    ui.ctx().copy_text(to_text(sections));
-                    self.message = Some(Ok(ctx.i18n.tr("common-copied")));
-                }
-                if ui.button("Save as text…").clicked()
-                    && let Some(path) = rfd::FileDialog::new()
-                        .add_filter("Text", &["txt"])
-                        .set_file_name("system-information.txt")
-                        .save_file()
-                {
-                    self.message = Some(
-                        std::fs::write(&path, to_text(sections))
-                            .map(|()| format!("Saved {}.", path.display()))
-                            .map_err(|e| e.to_string()),
-                    );
-                }
-            }
-            if self.task.is_some() {
-                ui.spinner();
-                ui.label(ctx.i18n.tr("common-loading"));
-            }
-        });
-        show_message(ui, &self.message);
-        ui.add_space(6.0);
+    /// The original's property tree: the collected sections this page shows, each a
+    /// foldable group of name / value rows.
+    fn sections_view(&mut self, ui: &mut egui::Ui, page: Page) {
         match &self.sections {
             Some(Ok(sections)) => {
-                for section in sections {
-                    egui::CollapsingHeader::new(section.title)
+                let shown: Vec<Section> = sections.iter().filter_map(|s| section_filter(page, s)).collect();
+                if shown.is_empty() {
+                    ui.weak("Nothing to show for this item on this PC.");
+                }
+                for section in &shown {
+                    egui::CollapsingHeader::new(egui::RichText::new(section.title).strong())
                         .default_open(true)
                         .show(ui, |ui| {
                             egui::Grid::new(section.title)
@@ -290,37 +399,41 @@ impl SystemInfo {
                                 .show(ui, |ui| {
                                     for (k, v) in &section.rows {
                                         ui.weak(k);
-                                        ui.label(v);
+                                        ui.add(egui::Label::new(v).selectable(true));
                                         ui.end_row();
                                     }
                                 });
                         });
                 }
-                ui.horizontal(|ui| {
-                    ui.weak("Public IP address");
-                    match &self.external_ip {
-                        Some(ip) => {
-                            ui.label(ip);
-                        }
-                        None => {
-                            if ui
-                                .small_button("Look up")
-                                .on_hover_text("Asks api.ipify.org which address your connection uses.")
-                                .clicked()
-                            {
-                                self.external_ip = Some(match wm_core::net::external_ip() {
-                                    Ok(ip) => ip,
-                                    Err(e) => format!("not available ({e:#})"),
-                                });
+                if page == Page::Network {
+                    ui.horizontal(|ui| {
+                        ui.weak("Public IP address");
+                        match &self.external_ip {
+                            Some(ip) => {
+                                ui.label(ip);
+                            }
+                            None => {
+                                if ui
+                                    .small_button("Look up")
+                                    .on_hover_text("Asks api.ipify.org which address your connection uses.")
+                                    .clicked()
+                                {
+                                    self.external_ip = Some(match wm_core::net::external_ip() {
+                                        Ok(ip) => ip,
+                                        Err(e) => format!("not available ({e:#})"),
+                                    });
+                                }
                             }
                         }
-                    }
-                });
+                    });
+                }
             }
             Some(Err(e)) => {
                 ui.colored_label(ui.visuals().error_fg_color, e);
             }
-            None => {}
+            None => {
+                ui.spinner();
+            }
         }
     }
 
@@ -677,64 +790,162 @@ impl Tool for SystemInfo {
                 self.tables.remove(&self.page);
             }
         }
-        if frame::left(ui, 200.0, |ui| section_nav(ui, &PAGES, &mut self.page)) {
+        if self.task.is_none() && self.sections.is_none() {
+            self.task = Some(BackgroundTask::spawn(ui.ctx(), |_| Ok(collect())));
+        }
+        if let Some(task) = &mut self.task {
+            task.poll();
+            if let Some(result) = task.take_result() {
+                self.sections = Some(result);
+                self.task = None;
+            }
+        }
+
+        let loading = self.task.is_some();
+        let have = matches!(self.sections, Some(Ok(_)));
+        match frame::toolbar(
+            ui,
+            &[
+                Some(ToolButton::new(icons::ARROWS_CLOCKWISE, "Refresh").enabled(!loading)),
+                None,
+                Some(ToolButton::new(icons::COPY, "Copy").enabled(have)),
+                Some(ToolButton::new(icons::ARROW_SQUARE_OUT, "Export").enabled(have)),
+            ],
+            |_| {},
+        ) {
+            Some(0) => {
+                self.sections = None;
+                self.tables.clear();
+                self.message = None;
+            }
+            Some(2) => {
+                if let Some(Ok(sections)) = &self.sections {
+                    ui.ctx().copy_text(to_text(sections));
+                    self.message = Some(Ok(ctx.i18n.tr("common-copied")));
+                }
+            }
+            Some(3) => {
+                if let Some(Ok(sections)) = &self.sections
+                    && let Some(path) = rfd::FileDialog::new()
+                        .add_filter("Text", &["txt"])
+                        .set_file_name("system-information.txt")
+                        .save_file()
+                {
+                    self.message = Some(
+                        std::fs::write(&path, to_text(sections))
+                            .map(|()| format!("Saved {}.", path.display()))
+                            .map_err(|e| e.to_string()),
+                    );
+                }
+            }
+            _ => {}
+        }
+        // Like the original: the current date and how long Windows has been running.
+        let now = chrono::Local::now().format("%A, %B %-d, %Y %-I:%M:%S %p");
+        frame::status(
+            ui,
+            &format!("Current Date: {now} | System Uptime: {}", uptime_text()),
+            |ui| {
+                if loading || self.side_task.is_some() {
+                    ui.spinner();
+                }
+            },
+        );
+        ui.ctx().request_repaint_after(std::time::Duration::from_secs(1));
+
+        // The Hardware / Software tree.
+        let mut picked = None;
+        frame::left(ui, 210.0, |ui| {
+            ui.spacing_mut().item_spacing.y = 2.0;
+            for (i, (depth, icon, label, _)) in NAV.iter().enumerate() {
+                ui.horizontal(|ui| {
+                    ui.add_space(*depth as f32 * 16.0);
+                    let text = if *depth == 0 {
+                        egui::RichText::new(format!("{icon}  {label}")).strong()
+                    } else {
+                        egui::RichText::new(format!("{icon}  {label}"))
+                    };
+                    if ui.selectable_label(self.page == i, text).clicked() {
+                        picked = Some(i);
+                    }
+                });
+            }
+        });
+        if let Some(i) = picked
+            && i != self.page
+        {
+            self.page = i;
             self.selected_row = None;
             self.message = None;
         }
-        {
-            frame::central(ui, |ui| {
-                ui.heading(PAGES[self.page].1);
-                ui.add_space(4.0);
-                if self.page != 0 {
-                    show_message(ui, &self.message);
-                }
-                if self.side_task.is_some() {
-                    ui.horizontal(|ui| {
-                        ui.spinner();
-                        ui.weak("Working…");
-                    });
-                }
-                match self.page {
-                    0 => self.summary(ui, ctx),
-                    1 => self.licence(ui, ctx),
-                    2 => {
-                        if let Some(t) = self.table_page(ui, ctx, query_users) {
-                            self.draw_table(ui, &t, false);
-                        }
+
+        let page = NAV[self.page].3;
+        frame::central(ui, |ui| {
+            show_message(ui, &self.message);
+            match page {
+                Page::HddReport => {
+                    if !ctx.elevated {
+                        ui.weak("Temperature, wear and error counters need administrator rights.");
                     }
-                    3 => self.updates(ui, ctx),
-                    4 => {
-                        if let Some(t) = self.table_page(ui, ctx, query_printers) {
-                            self.draw_table(ui, &t, false);
-                        }
-                        if ui.button("Printers & scanners…").clicked() {
-                            let _ = std::process::Command::new("explorer.exe")
-                                .arg("ms-settings:printers")
-                                .spawn();
-                        }
-                    }
-                    5 => {
-                        if let Some(t) = self.table_page(ui, ctx, query_codecs) {
-                            self.draw_table(ui, &t, false);
-                        }
-                    }
-                    6 => {
-                        let t = query_environment();
+                    if let Some(t) = self.table_page(ui, ctx, query_disks) {
                         self.draw_table(ui, &t, false);
                     }
-                    7 => {
-                        if !ctx.elevated {
-                            ui.weak("Temperature, wear and error counters need administrator rights.");
-                        }
-                        if let Some(t) = self.table_page(ui, ctx, query_disks) {
-                            self.draw_table(ui, &t, false);
-                        }
-                    }
-                    8 => self.speed_test(ui, ctx),
-                    _ => self.reports(ui, ctx),
                 }
-            });
-        }
+                Page::DiskBenchmark => self.speed_test(ui, ctx),
+                Page::Audio => {
+                    if let Some(t) = self.table_page(ui, ctx, query_audio) {
+                        self.draw_table(ui, &t, false);
+                    }
+                }
+                Page::ExternalDevice => {
+                    if let Some(t) = self.table_page(ui, ctx, query_external) {
+                        self.draw_table(ui, &t, false);
+                    }
+                }
+                Page::Printers => {
+                    if let Some(t) = self.table_page(ui, ctx, query_printers) {
+                        self.draw_table(ui, &t, false);
+                    }
+                    if ui.button("Printers & scanners…").clicked() {
+                        let _ = std::process::Command::new("explorer.exe")
+                            .arg("ms-settings:printers")
+                            .spawn();
+                    }
+                }
+                Page::ProductKey => self.licence(ui, ctx),
+                Page::UserAccount => {
+                    if let Some(t) = self.table_page(ui, ctx, query_users) {
+                        self.draw_table(ui, &t, false);
+                    }
+                }
+                Page::SystemFolder => {
+                    let t = query_folders();
+                    self.draw_table(ui, &t, false);
+                }
+                Page::Environment => {
+                    let t = query_environment();
+                    self.draw_table(ui, &t, false);
+                }
+                Page::Codecs => {
+                    if let Some(t) = self.table_page(ui, ctx, query_codecs) {
+                        self.draw_table(ui, &t, false);
+                    }
+                }
+                Page::EventLog => {
+                    ui.label("Windows' logs of errors, warnings and events.");
+                    ui.add_space(6.0);
+                    if ui
+                        .button(format!("{}  Open Event Viewer", icons::LIST_CHECKS))
+                        .clicked()
+                    {
+                        wm_core::ui::request_open_tool(ui.ctx(), "events");
+                    }
+                }
+                Page::Hotfix => self.updates(ui, ctx),
+                Page::SystemReport => self.reports(ui, ctx),
+                other => self.sections_view(ui, other),
+            }
+        });
     }
 }
 
@@ -1004,6 +1215,41 @@ fn collect() -> Vec<Section> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pages_pick_their_sections() {
+        let rows = |pairs: &[(&str, &str)]| -> Vec<(String, String)> {
+            pairs.iter().map(|(k, v)| ((*k).into(), (*v).into())).collect()
+        };
+        let board = Section {
+            title: "Motherboard & BIOS",
+            rows: rows(&[("System", "X"), ("Motherboard", "Y"), ("BIOS version", "1.0")]),
+        };
+        let os = Section {
+            title: "Operating system",
+            rows: rows(&[("Edition", "Pro"), ("Computer name", "PC")]),
+        };
+        let keys = |s: Option<Section>| -> Vec<String> {
+            s.map(|s| s.rows.into_iter().map(|r| r.0).collect())
+                .unwrap_or_default()
+        };
+        assert_eq!(
+            keys(section_filter(Page::Mainboard, &board)),
+            ["System", "Motherboard"]
+        );
+        assert_eq!(keys(section_filter(Page::Bios, &board)), ["BIOS version"]);
+        assert!(section_filter(Page::Hardware, &os).is_none());
+        assert_eq!(keys(section_filter(Page::ComputerSystem, &os)), ["Computer name"]);
+        assert_eq!(keys(section_filter(Page::ComputerSystem, &board)), ["System"]);
+        assert!(section_filter(Page::Cpu, &board).is_none());
+        assert_eq!(
+            NAV.iter().filter(|n| n.0 == 0).count(),
+            2,
+            "Hardware and Software"
+        );
+        assert!(uptime_text().contains("d:"));
+        assert!(query_folders().rows.len() > 10);
+    }
 
     #[test]
     fn oem_placeholders() {
