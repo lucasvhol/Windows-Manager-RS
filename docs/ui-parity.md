@@ -37,12 +37,12 @@ Tools reachable only from a dropdown: Windows Features (System Protection), App 
 
 | Original exe | Our id | Layout | Labels | Missing controls / columns | Missing features | Status |
 |---|---|---|---|---|---|---|
-| 1-ClickCleaner.exe | oneclickclean | | | | | ❌ |
-| 1-ClickFixer.exe | fixer | | | | | ❌ |
-| 1-ClickKillProcesses.exe | killprocs | | | | | ❌ |
-| OptimizationWizard.exe | wizard | | | | | ❌ |
-| RepairCenter.exe | repair | | | | | ❌ |
-| (hub) System Protection | systemprotection | | | | | ❌ |
+| 1-ClickCleaner.exe | oneclickclean | Run list with Result column, Select All + last clean date, Other Options, Task / Start (n) / Exit bar | Item names as the original | Pause (runs aren't pausable); "no toast" option (we show no toasts) | Invalid services, invalid devices, component store and superseded components: admin-only, left for later | 🟡 |
+| 1-ClickFixer.exe | fixer | Run list with Result column, collapsible Repair Logs, Select All / Repair Center / Start (n) / Exit | The ten repairs carry the original's names and order; our quick fixes follow | — | — | ✅ |
+| 1-ClickKillProcesses.exe | killprocs | Not captured: the original may end processes as soon as it starts | | | | ➖ |
+| OptimizationWizard.exe | wizard | "Step (n/N): name" band, icon + explanation, Create Task / Back / Next > / Cancel / Skip; Next opens the step's tool | Only the first step was captured (stepping further was blocked as unsafe) | — | Our wizard keeps extra steps (updates, tweaks, drives, finish) and Back | 🟡 |
+| RepairCenter.exe | repair | Left categories, "n Section" tabs, three full-width boxes per tab with the button at the bottom right, section name in the status bar | Section names as the original | — | — | ✅ |
+| (hub) System Protection | systemprotection | Not captured: the hub's tiles ignore posted clicks | | | | ➖ |
 | SystemInfo.exe | sysinfo | | | | | ❌ |
 | ProcessManager.exe | procman | | | | | ❌ |
 | EventViewer.exe | events | | | | | ❌ |
