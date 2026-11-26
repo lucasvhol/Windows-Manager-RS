@@ -8,10 +8,10 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use egui_extras::{Column, TableBuilder};
 use wm_core::{
-    AppCtx, Category, Tool, egui,
+    AppCtx, Category, Layout, Tool, egui, icons,
     safety::UndoAction,
     task::BackgroundTask,
-    ui::{Message, format_bytes, show_message},
+    ui::{Message, ToolButton, empty_state, format_bytes, frame, section_nav, show_message},
 };
 
 use crate::carve::{self, RawVolume};
@@ -257,30 +257,88 @@ impl Default for FileUndelete {
     }
 }
 
-impl Tool for FileUndelete {
-    fn id(&self) -> &'static str {
-        "undelete"
+impl FileUndelete {
+    fn start_scan(&mut self, ui: &egui::Ui, deep: bool) {
+        let drive = self.drive;
+        self.message = None;
+        self.scan = Some(if deep {
+            BackgroundTask::spawn(ui.ctx(), move |p| {
+                let v = RawVolume::open(drive)?;
+                let found = carve::scan(&v, |f, n| {
+                    p.report(
+                        f,
+                        format!("Reading the drive… {:.0}%, {n} files found", f * 100.0),
+                    );
+                    !p.is_cancelled()
+                });
+                Ok(carved_rows(&found))
+            })
+        } else {
+            BackgroundTask::spawn(ui.ctx(), move |p| {
+                let v = Volume::open(drive)?;
+                p.report(0.0, format!("Reading {} MFT records…", v.record_count()));
+                Ok(v.scan(|f| {
+                    p.report(f, format!("Scanning… {:.0}%", f * 100.0));
+                    !p.is_cancelled()
+                }))
+            })
+        });
     }
 
-    fn category(&self) -> Category {
-        Category::Security
-    }
-
-    fn requires_admin(&self) -> bool {
-        true
-    }
-
-    fn ui(&mut self, ui: &mut egui::Ui, ctx: &mut AppCtx<'_>) {
-        ui.label(
-            "Finds recently deleted files (Scan, NTFS drives) or the files of a formatted drive \
-             (Deep scan). Stop using the drive as soon as possible: \
-             every new write can overwrite deleted data. Files are recovered to another drive.",
-        );
-        if !ctx.elevated {
-            ui.weak("Reading a drive directly requires administrator rights.");
+    fn start_recover(&mut self, ui: &egui::Ui) {
+        let Some((source, files)) = &self.found else {
+            return;
+        };
+        let source = *source;
+        let Some(dest) = rfd::FileDialog::new().pick_folder() else {
+            return;
+        };
+        if let Err(e) = check_destination(source, &dest) {
+            self.message = Some(Err(format!("{e:#}")));
             return;
         }
+        let chosen: Vec<DeletedFile> = files
+            .iter()
+            .filter(|x| self.marked.contains(&x.record))
+            .cloned()
+            .collect();
+        let keep = self.keep_folders;
+        self.recover = Some(BackgroundTask::spawn(ui.ctx(), move |p| {
+            let carved = chosen.iter().all(|f| matches!(f.data, Data::Raw { .. }));
+            let (v, raw) = if carved {
+                (None, Some(RawVolume::open(source)?))
+            } else {
+                (Some(Volume::open(source)?), None)
+            };
+            let (mut ok, mut created, mut errors) = (0, Vec::new(), Vec::new());
+            for (i, file) in chosen.iter().enumerate() {
+                p.report(i as f32 / chosen.len() as f32, file.name.clone());
+                let out = output_path(&dest, file, keep);
+                if let Some(parent) = out.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                let r = File::create(&out).context("creating output").and_then(|fh| {
+                    let mut w = BufWriter::new(fh);
+                    match (&file.data, &v, &raw) {
+                        (Data::Raw { offset, len }, _, Some(raw)) => carve::copy(raw, *offset, *len, &mut w),
+                        (data, Some(v), _) => v.copy_data(data, &mut w),
+                        _ => bail!("mixed scan results"),
+                    }
+                    .and_then(|()| std::io::Write::flush(&mut w).map_err(Into::into))
+                });
+                match r {
+                    Ok(()) => {
+                        ok += 1;
+                        created.push(out);
+                    }
+                    Err(e) => errors.push(format!("{}: {e:#}", file.name)),
+                }
+            }
+            Ok((ok, created, errors))
+        }));
+    }
 
+    fn poll(&mut self, ctx: &mut AppCtx<'_>) {
         if let Some(t) = &mut self.scan {
             t.poll();
             if let Some(r) = t.take_result() {
@@ -312,89 +370,81 @@ impl Tool for FileUndelete {
                 }));
             }
         }
+    }
+}
 
-        ui.horizontal(|ui| {
-            ui.label("Drive:");
-            let drives = drives();
-            for (d, fs) in &drives {
-                let label = if fs.is_empty() {
-                    format!("{d}: (unreadable)")
+impl Tool for FileUndelete {
+    fn id(&self) -> &'static str {
+        "undelete"
+    }
+
+    fn category(&self) -> Category {
+        Category::Security
+    }
+
+    fn requires_admin(&self) -> bool {
+        true
+    }
+
+    fn layout(&self) -> Layout {
+        Layout::Fill
+    }
+
+    fn ui(&mut self, ui: &mut egui::Ui, ctx: &mut AppCtx<'_>) {
+        self.poll(ctx);
+        let drives = if ctx.elevated { drives() } else { Vec::new() };
+        let labels: Vec<String> = drives
+            .iter()
+            .map(|(d, fs)| {
+                if fs.is_empty() {
+                    format!("{d}:  (unreadable)")
                 } else {
-                    format!("{d}: {fs}")
-                };
-                ui.selectable_value(&mut self.drive, *d, label);
-            }
-            let is_ntfs = drives.iter().any(|(d, fs)| *d == self.drive && fs == "NTFS");
-            let busy = self.scan.is_some() || self.recover.is_some();
-            if ui
-                .add_enabled(!busy, egui::Button::new("Deep scan"))
-                .on_hover_text(
-                    "For a formatted or damaged drive: reads every sector and finds pictures, \
-                     documents, archives, videos and sound files by their content. Names and \
-                     folders are lost. Slow on big drives.",
-                )
-                .clicked()
-            {
-                let drive = self.drive;
-                self.message = None;
-                self.scan = Some(BackgroundTask::spawn(ui.ctx(), move |p| {
-                    let v = RawVolume::open(drive)?;
-                    let found = carve::scan(&v, |f, n| {
-                        p.report(
-                            f,
-                            format!("Reading the drive… {:.0}%, {n} files found", f * 100.0),
-                        );
-                        !p.is_cancelled()
-                    });
-                    Ok(carved_rows(&found))
-                }));
-            }
-            if ui
-                .add_enabled(!busy && is_ntfs, egui::Button::new("Scan"))
-                .on_disabled_hover_text(
-                    "The quick scan reads the NTFS file table; use Deep scan on other drives.",
-                )
-                .clicked()
-            {
-                let drive = self.drive;
-                self.message = None;
-                self.scan = Some(BackgroundTask::spawn(ui.ctx(), move |p| {
-                    let v = Volume::open(drive)?;
-                    p.report(0.0, format!("Reading {} MFT records…", v.record_count()));
-                    Ok(v.scan(|f| {
-                        p.report(f, format!("Scanning… {:.0}%", f * 100.0));
-                        !p.is_cancelled()
-                    }))
-                }));
-            }
-            if let Some(t) = &self.scan {
-                ui.add(
-                    egui::ProgressBar::new(t.progress)
-                        .desired_width(200.0)
-                        .text(t.status.clone()),
-                );
-                if ui.button(ctx.i18n.tr("common-cancel")).clicked() {
+                    format!("{d}:  {fs}")
+                }
+            })
+            .collect();
+        let nav: Vec<(&str, &str)> = labels.iter().map(|l| (icons::HARD_DRIVES, l.as_str())).collect();
+        let mut sel = drives.iter().position(|(d, _)| *d == self.drive).unwrap_or(0);
+        frame::left(ui, 170.0, |ui| {
+            ui.weak("Drive");
+            ui.add_space(4.0);
+            section_nav(ui, &nav, &mut sel)
+        });
+        if let Some((d, _)) = drives.get(sel) {
+            self.drive = *d;
+        }
+        let is_ntfs = drives.iter().any(|(d, fs)| *d == self.drive && fs == "NTFS");
+        let busy = self.scan.is_some() || self.recover.is_some();
+        let n = self.marked.len();
+        let recover_label = format!("Recover {n}…");
+        let ok = ctx.elevated && !busy;
+        match frame::toolbar(
+            ui,
+            &[
+                Some(ToolButton::new(icons::MAGNIFYING_GLASS, "Scan").enabled(ok && is_ntfs)),
+                Some(ToolButton::new(icons::FILE_SEARCH, "Deep scan").enabled(ok)),
+                Some(ToolButton::new(icons::STOP, "Cancel").enabled(self.scan.is_some())),
+                None,
+                Some(ToolButton::new(icons::DOWNLOAD, &recover_label).enabled(ok && n > 0)),
+            ],
+            |_| {},
+        ) {
+            Some(0) => self.start_scan(ui, false),
+            Some(1) => self.start_scan(ui, true),
+            Some(2) => {
+                if let Some(t) = &self.scan {
                     t.cancel();
                 }
             }
-        });
-        show_message(ui, &self.message);
-
-        let Some((source, files)) = &self.found else {
-            return;
-        };
-        let source = *source;
-        let f = self.filter.to_lowercase();
-        let visible: Vec<&DeletedFile> = files
-            .iter()
-            .filter(|x| !self.good_only || condition(x).1)
-            .filter(|x| self.file_type.matches(&x.name))
-            .filter(|x| {
-                f.is_empty() || x.name.to_lowercase().contains(&f) || x.path.to_lowercase().contains(&f)
-            })
-            .collect();
-        ui.horizontal(|ui| {
-            ui.add(egui::TextEdit::singleline(&mut self.filter).hint_text("Filter by name or folder…"));
+            Some(4) => self.start_recover(ui),
+            _ => {}
+        }
+        frame::options(ui, |ui| {
+            ui.add(
+                egui::TextEdit::singleline(&mut self.filter)
+                    .hint_text(format!("{}  Filter by name or folder", icons::MAGNIFYING_GLASS))
+                    .desired_width(200.0),
+            );
             egui::ComboBox::from_id_salt("undelete-type")
                 .selected_text(self.file_type.label())
                 .show_ui(ui, |ui| {
@@ -405,116 +455,121 @@ impl Tool for FileUndelete {
             ui.checkbox(&mut self.good_only, "Only files in good condition");
             ui.checkbox(&mut self.keep_folders, "Recover with folders")
                 .on_hover_text("Rebuilds the folders the files were in, inside the destination.");
-            ui.weak(format!("{} of {} deleted files", visible.len(), files.len()));
-            ui.separator();
-            let n = self.marked.len();
-            if ui
-                .add_enabled(
-                    n > 0 && self.recover.is_none(),
-                    egui::Button::new(format!("Recover {n} files…")),
-                )
-                .clicked()
-                && let Some(dest) = rfd::FileDialog::new().pick_folder()
-            {
-                match check_destination(source, &dest) {
-                    Err(e) => self.message = Some(Err(format!("{e:#}"))),
-                    Ok(()) => {
-                        let chosen: Vec<DeletedFile> = files
-                            .iter()
-                            .filter(|x| self.marked.contains(&x.record))
-                            .cloned()
-                            .collect();
-                        let keep = self.keep_folders;
-                        self.recover = Some(BackgroundTask::spawn(ui.ctx(), move |p| {
-                            let carved = chosen.iter().all(|f| matches!(f.data, Data::Raw { .. }));
-                            let (v, raw) = if carved {
-                                (None, Some(RawVolume::open(source)?))
-                            } else {
-                                (Some(Volume::open(source)?), None)
-                            };
-                            let (mut ok, mut created, mut errors) = (0, Vec::new(), Vec::new());
-                            for (i, file) in chosen.iter().enumerate() {
-                                p.report(i as f32 / chosen.len() as f32, file.name.clone());
-                                let out = output_path(&dest, file, keep);
-                                if let Some(parent) = out.parent() {
-                                    let _ = std::fs::create_dir_all(parent);
-                                }
-                                let r = File::create(&out).context("creating output").and_then(|fh| {
-                                    let mut w = BufWriter::new(fh);
-                                    match (&file.data, &v, &raw) {
-                                        (Data::Raw { offset, len }, _, Some(raw)) => {
-                                            carve::copy(raw, *offset, *len, &mut w)
-                                        }
-                                        (data, Some(v), _) => v.copy_data(data, &mut w),
-                                        _ => bail!("mixed scan results"),
-                                    }
-                                    .and_then(|()| std::io::Write::flush(&mut w).map_err(Into::into))
-                                });
-                                match r {
-                                    Ok(()) => {
-                                        ok += 1;
-                                        created.push(out);
-                                    }
-                                    Err(e) => errors.push(format!("{}: {e:#}", file.name)),
-                                }
-                            }
-                            Ok((ok, created, errors))
-                        }));
-                    }
-                }
-            }
         });
 
-        TableBuilder::new(ui)
-            .striped(true)
-            .column(Column::exact(28.0))
-            .column(Column::initial(220.0).clip(true))
-            .column(Column::initial(280.0).clip(true))
-            .column(Column::initial(80.0))
-            .column(Column::initial(120.0))
-            .column(Column::remainder())
-            .header(22.0, |mut h| {
-                for t in ["", "Name", "Folder", "Size", "Modified", "Condition"] {
-                    h.col(|ui| {
-                        ui.strong(t);
-                    });
-                }
+        let f = self.filter.to_lowercase();
+        let visible: Vec<usize> = self
+            .found
+            .as_ref()
+            .map(|(_, files)| {
+                files
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, x)| !self.good_only || condition(x).1)
+                    .filter(|(_, x)| self.file_type.matches(&x.name))
+                    .filter(|(_, x)| {
+                        f.is_empty()
+                            || x.name.to_lowercase().contains(&f)
+                            || x.path.to_lowercase().contains(&f)
+                    })
+                    .map(|(i, _)| i)
+                    .collect()
             })
-            .body(|body| {
-                body.rows(20.0, visible.len(), |mut row| {
-                    let x = visible[row.index()];
-                    row.col(|ui| {
-                        let mut on = self.marked.contains(&x.record);
-                        if ui.checkbox(&mut on, "").changed() {
-                            if on {
-                                self.marked.insert(x.record);
-                            } else {
-                                self.marked.remove(&x.record);
+            .unwrap_or_default();
+        let status = match &self.found {
+            Some((d, files)) => format!(
+                "{} of {} deleted files on {d}:, {n} marked",
+                visible.len(),
+                files.len()
+            ),
+            None => "Stop using the drive as soon as possible: every new write can overwrite deleted data."
+                .to_owned(),
+        };
+        let progress = self
+            .scan
+            .as_ref()
+            .map(|t| (t.progress, t.status.clone()))
+            .or_else(|| self.recover.as_ref().map(|t| (t.progress, t.status.clone())));
+        frame::status(ui, &status, |ui| {
+            if let Some((p, text)) = progress {
+                ui.add(egui::ProgressBar::new(p).desired_width(260.0).text(text));
+            }
+        });
+        frame::central_fixed(ui, |ui| {
+            show_message(ui, &self.message);
+            if !ctx.elevated {
+                empty_state(
+                    ui,
+                    icons::SHIELD,
+                    "Administrator rights needed",
+                    "Reading a drive directly requires administrator rights. Restart the app as administrator.",
+                );
+                return;
+            }
+            let Some((_, files)) = &self.found else {
+                empty_state(
+                    ui,
+                    icons::ARROW_COUNTER_CLOCKWISE,
+                    "Pick a drive and scan it",
+                    "Scan reads the NTFS file table and finds recently deleted files. Deep scan finds the files \
+                     of a formatted or damaged drive by their content (names and folders are lost). \
+                     Files are recovered to another drive.",
+                );
+                return;
+            };
+            let marked = &mut self.marked;
+            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
+            TableBuilder::new(ui)
+                .striped(true)
+                .column(Column::exact(28.0))
+                .column(Column::initial(220.0).clip(true))
+                .column(Column::initial(280.0).clip(true))
+                .column(Column::initial(80.0))
+                .column(Column::initial(120.0))
+                .column(Column::remainder())
+                .header(22.0, |mut h| {
+                    for t in ["", "Name", "Folder", "Size", "Modified", "Condition"] {
+                        h.col(|ui| {
+                            ui.strong(t);
+                        });
+                    }
+                })
+                .body(|body| {
+                    body.rows(22.0, visible.len(), |mut row| {
+                        let x = &files[visible[row.index()]];
+                        row.col(|ui| {
+                            let mut on = marked.contains(&x.record);
+                            if ui.checkbox(&mut on, "").changed() {
+                                if on {
+                                    marked.insert(x.record);
+                                } else {
+                                    marked.remove(&x.record);
+                                }
                             }
-                        }
-                    });
-                    row.col(|ui| {
-                        ui.label(&x.name);
-                    });
-                    row.col(|ui| {
-                        ui.weak(&x.path);
-                    });
-                    row.col(|ui| {
-                        ui.label(format_bytes(x.size));
-                    });
-                    row.col(|ui| {
-                        ui.weak(&x.modified);
-                    });
-                    row.col(|ui| {
-                        let (text, good) = condition(x);
-                        if good {
-                            ui.label(text);
-                        } else {
-                            ui.colored_label(ui.visuals().warn_fg_color, text);
-                        }
+                        });
+                        row.col(|ui| {
+                            ui.label(&x.name);
+                        });
+                        row.col(|ui| {
+                            ui.weak(&x.path);
+                        });
+                        row.col(|ui| {
+                            ui.label(format_bytes(x.size));
+                        });
+                        row.col(|ui| {
+                            ui.weak(&x.modified);
+                        });
+                        row.col(|ui| {
+                            let (text, good) = condition(x);
+                            if good {
+                                ui.label(text);
+                            } else {
+                                ui.colored_label(ui.visuals().warn_fg_color, text);
+                            }
+                        });
                     });
                 });
-            });
+        });
     }
 }
 

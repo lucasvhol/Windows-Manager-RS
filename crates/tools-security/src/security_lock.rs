@@ -11,10 +11,10 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use walkdir::WalkDir;
 use wm_core::{
-    AppCtx, Category, Tool, egui,
+    AppCtx, Category, Layout, Tool, egui, icons,
     safety::UndoAction,
     task::BackgroundTask,
-    ui::{Confirm, Message, show_message},
+    ui::{Confirm, Message, ToolButton, frame, section, show_message},
 };
 use zeroize::Zeroize;
 
@@ -212,8 +212,69 @@ impl Tool for SecurityLock {
         Category::Security
     }
 
+    fn layout(&self) -> Layout {
+        Layout::Fill
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, ctx: &mut AppCtx<'_>) {
-        self.panel(ui, ctx, true);
+        self.poll(ui, ctx);
+        let idle = self.task.is_none();
+        match frame::toolbar(
+            ui,
+            &[
+                Some(ToolButton::new(icons::PLUS, "Add files").enabled(idle)),
+                Some(ToolButton::new(icons::FOLDERS, "Add folder").enabled(idle)),
+                Some(ToolButton::new(icons::TRASH, "Clear list").enabled(idle && !self.targets.is_empty())),
+            ],
+            |_| {},
+        ) {
+            Some(0) => {
+                if let Some(files) = rfd::FileDialog::new().pick_files() {
+                    self.targets.extend(files);
+                }
+            }
+            Some(1) => {
+                if let Some(d) = rfd::FileDialog::new().pick_folder() {
+                    self.targets.push(d);
+                }
+            }
+            Some(2) => self.targets.clear(),
+            _ => {}
+        }
+        frame::options(ui, |ui| self.mode_picker(ui));
+        let dropped: Vec<PathBuf> = ui.ctx().input(|i| {
+            i.raw
+                .dropped_files
+                .iter()
+                .map(|f| f.path().to_path_buf())
+                .collect()
+        });
+        if idle && !dropped.is_empty() {
+            self.targets.extend(dropped);
+        }
+        self.status(ui);
+        frame::central(ui, |ui| {
+            section(
+                ui,
+                "Files and folders",
+                |_| {},
+                |ui| {
+                    if self.targets.is_empty() {
+                        ui.weak("Add files or folders, or drop them on this window.");
+                    }
+                    for t in &self.targets {
+                        let icon = if t.is_dir() {
+                            icons::FOLDERS
+                        } else {
+                            icons::FILE_LOCK
+                        };
+                        ui.label(format!("{icon}  {}", t.display()));
+                    }
+                },
+            );
+            ui.add_space(8.0);
+            self.body(ui, ctx);
+        });
     }
 }
 
@@ -225,8 +286,8 @@ impl SecurityLock {
         }
     }
 
-    /// The tool's page; `own_list` false hides its own Add / Clear buttons and list.
-    pub fn panel(&mut self, ui: &mut egui::Ui, ctx: &AppCtx<'_>, own_list: bool) {
+    /// Finishes a job that ended and runs one the user confirmed. Call every frame.
+    pub fn poll(&mut self, ui: &egui::Ui, ctx: &AppCtx<'_>) {
         if let Some((mode, t)) = &mut self.task {
             t.poll();
             if let Some(r) = t.take_result() {
@@ -259,115 +320,124 @@ impl SecurityLock {
                 self.start(ui);
             }
         }
+    }
 
-        ui.horizontal(|ui| {
-            ui.selectable_value(&mut self.mode, Mode::Encrypt, "Encrypt");
-            ui.selectable_value(&mut self.mode, Mode::Decrypt, "Decrypt");
-        });
-        ui.separator();
+    /// Encrypt / Decrypt switch.
+    pub fn mode_picker(&mut self, ui: &mut egui::Ui) {
+        ui.selectable_value(&mut self.mode, Mode::Encrypt, format!("{}  Encrypt", icons::LOCK));
+        ui.selectable_value(&mut self.mode, Mode::Decrypt, format!("{}  Decrypt", icons::KEY));
+    }
+
+    /// The window's status bar: what the job covers, and its progress.
+    fn status(&mut self, ui: &mut egui::Ui) {
         let encrypting = self.mode == Mode::Encrypt;
-        if own_list {
-            ui.horizontal(|ui| {
-                if ui.button("Add files…").clicked()
-                    && let Some(files) = rfd::FileDialog::new().pick_files()
-                {
-                    self.targets.extend(files);
-                }
-                if ui.button("Add folder…").clicked()
-                    && let Some(d) = rfd::FileDialog::new().pick_folder()
-                {
-                    self.targets.push(d);
-                }
-                if ui
-                    .add_enabled(!self.targets.is_empty(), egui::Button::new("Clear list"))
-                    .clicked()
-                {
-                    self.targets.clear();
-                }
-            });
-            for t in &self.targets {
-                ui.weak(t.display().to_string());
-            }
-        }
-        let files = collect(&self.targets, encrypting);
-        ui.label(format!(
-            "{} files to {}",
-            files.len(),
-            if encrypting {
-                "encrypt"
-            } else {
-                "decrypt (.wmlock files)"
-            }
-        ));
-        ui.add_space(6.0);
-
-        egui::Grid::new("lock_pw")
-            .num_columns(2)
-            .spacing([12.0, 6.0])
-            .show(ui, |ui| {
-                ui.label("Password");
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.password)
-                        .password(true)
-                        .desired_width(240.0),
-                );
-                ui.end_row();
-                if encrypting {
-                    ui.label("Repeat password");
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.confirm_password)
-                            .password(true)
-                            .desired_width(240.0),
-                    );
-                    ui.end_row();
-                }
-            });
-        if encrypting && !self.password.is_empty() && self.password.chars().count() < 10 {
-            ui.colored_label(
-                ui.visuals().warn_fg_color,
-                "Use at least 10 characters; a passphrase of several words is best.",
-            );
-        }
-        ui.checkbox(
-            &mut self.delete_source,
-            if encrypting {
-                "Delete the originals after successful, verified encryption"
-            } else {
-                "Delete the .wmlock files after successful decryption"
-            },
-        );
-        if encrypting && self.delete_source {
-            ui.weak(
-                "Originals are deleted, not sent to the Recycle Bin. On SSDs and some file systems, \
-                 deleted data may still be recoverable with special tools.",
-            );
-        }
-
-        let mismatch = encrypting && self.password != self.confirm_password;
-        let ready = !files.is_empty() && !self.password.is_empty() && !mismatch && self.task.is_none();
-        ui.horizontal(|ui| {
-            if ui.add_enabled(ready, egui::Button::new(if encrypting { "Encrypt" } else { "Decrypt" })).clicked() {
-                let text = if encrypting {
-                    format!(
-                        "Encrypt {} files? Without the password they cannot be recovered by anyone, including you.",
-                        files.len()
-                    )
-                } else {
-                    format!("Decrypt {} files?", files.len())
-                };
-                self.confirm.ask(text, ());
-            }
-            if mismatch && !self.confirm_password.is_empty() {
-                ui.colored_label(ui.visuals().error_fg_color, "The passwords do not match.");
-            }
+        let n = collect(&self.targets, encrypting).len();
+        let text = if encrypting {
+            format!("{n} files to encrypt")
+        } else {
+            format!("{n} .wmlock files to decrypt")
+        };
+        frame::status(ui, &text, |ui| {
             if let Some((_, t)) = &self.task {
-                ui.add(egui::ProgressBar::new(t.progress).desired_width(200.0));
-                if ui.button(ctx.i18n.tr("common-cancel")).clicked() {
+                if ui.button("Cancel").clicked() {
                     t.cancel();
                 }
+                ui.add(egui::ProgressBar::new(t.progress).desired_width(220.0));
+            } else {
+                ui.weak("There is no password recovery.");
             }
         });
+    }
+
+    /// Password, options and the Encrypt / Decrypt button.
+    pub fn body(&mut self, ui: &mut egui::Ui, ctx: &AppCtx<'_>) {
+        let encrypting = self.mode == Mode::Encrypt;
+        let files = collect(&self.targets, encrypting);
         show_message(ui, &self.message);
+        let title = if encrypting {
+            format!("Encrypt {} files", files.len())
+        } else {
+            format!("Decrypt {} files (.wmlock)", files.len())
+        };
+        section(
+            ui,
+            &title,
+            |_| {},
+            |ui| {
+                egui::Grid::new("lock_pw")
+                    .num_columns(2)
+                    .spacing([12.0, 6.0])
+                    .show(ui, |ui| {
+                        ui.label("Password");
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.password)
+                                .password(true)
+                                .desired_width(240.0),
+                        );
+                        ui.end_row();
+                        if encrypting {
+                            ui.label("Repeat password");
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.confirm_password)
+                                    .password(true)
+                                    .desired_width(240.0),
+                            );
+                            ui.end_row();
+                        }
+                    });
+                if encrypting && !self.password.is_empty() && self.password.chars().count() < 10 {
+                    ui.colored_label(
+                        ui.visuals().warn_fg_color,
+                        "Use at least 10 characters; a passphrase of several words is best.",
+                    );
+                }
+                ui.checkbox(
+                    &mut self.delete_source,
+                    if encrypting {
+                        "Delete the originals after successful, verified encryption"
+                    } else {
+                        "Delete the .wmlock files after successful decryption"
+                    },
+                );
+                if encrypting && self.delete_source {
+                    ui.weak(
+                        "Originals are deleted, not sent to the Recycle Bin. On SSDs and some file systems, \
+                     deleted data may still be recoverable with special tools.",
+                    );
+                }
+                ui.add_space(6.0);
+                let mismatch = encrypting && self.password != self.confirm_password;
+                let ready =
+                    !files.is_empty() && !self.password.is_empty() && !mismatch && self.task.is_none();
+                ui.horizontal(|ui| {
+                let label = if encrypting {
+                    format!("{}  Encrypt", icons::LOCK)
+                } else {
+                    format!("{}  Decrypt", icons::KEY)
+                };
+                if ui.add_enabled(ready, egui::Button::new(label)).clicked() {
+                    let text = if encrypting {
+                        format!(
+                            "Encrypt {} files? Without the password they cannot be recovered by anyone, including you.",
+                            files.len()
+                        )
+                    } else {
+                        format!("Decrypt {} files?", files.len())
+                    };
+                    self.confirm.ask(text, ());
+                }
+                if mismatch && !self.confirm_password.is_empty() {
+                    ui.colored_label(ui.visuals().error_fg_color, "The passwords do not match.");
+                }
+                if let Some((_, t)) = &self.task {
+                    ui.add(egui::ProgressBar::new(t.progress).desired_width(200.0));
+                    if ui.button(ctx.i18n.tr("common-cancel")).clicked() {
+                        t.cancel();
+                    }
+                }
+            });
+            },
+        );
     }
 }
 

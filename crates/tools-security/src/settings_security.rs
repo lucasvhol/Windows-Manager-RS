@@ -13,11 +13,11 @@ use egui_extras::{Column, TableBuilder};
 use windows::Win32::UI::Shell::SHLoadIndirectString;
 use windows::core::HSTRING;
 use wm_core::{
-    AppCtx, Category, Tool, egui, paths, registry,
+    AppCtx, Category, Layout, Tool, egui, icons, paths, registry,
     safety::UndoAction,
     shell::{KnownFolder, ShortcutSpec, create_shortcut, known_folder, shell_open},
     tweaks::TweakPanel,
-    ui::{Message, show_message},
+    ui::{Message, ToolButton, frame, section_nav, show_message},
 };
 
 const TOOL: &str = "lockdown";
@@ -415,10 +415,28 @@ impl Default for SettingsSecurity {
 }
 
 fn mode_picker(ui: &mut egui::Ui, mode: &mut Mode, what: &str) {
-    ui.horizontal(|ui| {
-        ui.radio_value(mode, Mode::Hide, format!("Hide the ticked {what}"));
-        ui.radio_value(mode, Mode::ShowOnly, format!("Show only the ticked {what}"));
-    });
+    ui.radio_value(mode, Mode::Hide, format!("Hide the ticked {what}"));
+    ui.radio_value(mode, Mode::ShowOnly, format!("Show only the ticked {what}"));
+}
+
+/// Apply / Allow all toolbar of the two list pages; returns the list to write.
+fn apply_toolbar(ui: &mut egui::Ui, enabled: bool, ticked: &[String]) -> Option<Vec<String>> {
+    match frame::toolbar(
+        ui,
+        &[
+            Some(ToolButton::new(icons::CHECK, "Apply").enabled(enabled)),
+            Some(ToolButton::new(icons::ARROW_COUNTER_CLOCKWISE, "Allow all").enabled(enabled)),
+        ],
+        |_| {},
+    ) {
+        Some(0) => Some(ticked.to_vec()),
+        Some(1) => Some(Vec::new()),
+        _ => None,
+    }
+}
+
+fn filter_hint(ctx: &AppCtx<'_>) -> String {
+    format!("{}  {}", icons::MAGNIFYING_GLASS, ctx.i18n.tr("common-filter"))
 }
 
 fn toggle(list: &mut Vec<String>, item: &str, on: bool) {
@@ -443,39 +461,36 @@ impl SettingsSecurity {
             .pages
             .take()
             .unwrap_or_else(|| read_pages().unwrap_or((Mode::Hide, Vec::new())));
-        ui.label("Choose which Settings pages people on this PC can open. Applies to all users.");
-        if !ctx.elevated {
-            ui.colored_label(
-                ui.visuals().warn_fg_color,
-                "Changing this needs administrator rights (restart the app as administrator).",
-            );
-        }
-        mode_picker(ui, &mut mode, "pages");
-        let mut apply = None;
-        ui.horizontal(|ui| {
+        let apply = apply_toolbar(ui, ctx.elevated, &ticked);
+        let filter_hint = filter_hint(ctx);
+        frame::options(ui, |ui| {
+            mode_picker(ui, &mut mode, "pages");
+            ui.separator();
             ui.add(
                 egui::TextEdit::singleline(&mut self.filter)
-                    .hint_text("Filter")
+                    .hint_text(filter_hint)
                     .desired_width(180.0),
             );
-            ui.label(format!("{} ticked", ticked.len()));
-            if ui.add_enabled(ctx.elevated, egui::Button::new("Apply")).clicked() {
-                apply = Some(ticked.clone());
-            }
-            if ui
-                .add_enabled(ctx.elevated, egui::Button::new("Allow all"))
-                .clicked()
-            {
-                apply = Some(Vec::new());
-            }
             ui.separator();
             ui.label("Shortcuts go on");
             ui.radio_value(&mut self.place, Place::Desktop, "the desktop");
             ui.radio_value(&mut self.place, Place::Start, "Start");
         });
-        if mode == Mode::ShowOnly && ticked.is_empty() {
-            ui.weak("Tick at least one page to show; with none, Apply allows every page.");
-        }
+        let status = if mode == Mode::ShowOnly && ticked.is_empty() {
+            "No page ticked: with none, Apply allows every page.".to_owned()
+        } else {
+            format!("{} of {} pages ticked", ticked.len(), PAGES.len())
+        };
+        frame::status(ui, &status, |ui| {
+            if ctx.elevated {
+                ui.weak("Applies to all users.");
+            } else {
+                ui.colored_label(
+                    ui.visuals().warn_fg_color,
+                    "Changing this needs the app to run as administrator.",
+                );
+            }
+        });
         let filter = self.filter.to_lowercase();
         let rows: Vec<_> = PAGES
             .iter()
@@ -488,53 +503,55 @@ impl SettingsSecurity {
             .collect();
         let mut open = None;
         let mut shortcut = None;
-        let row_h = ui.text_style_height(&egui::TextStyle::Body) + 8.0;
-        let table_h = ui.available_height() - 30.0;
-        TableBuilder::new(ui)
-            .striped(true)
-            .max_scroll_height(table_h)
-            .column(Column::exact(28.0))
-            .column(Column::initial(220.0).at_least(140.0))
-            .column(Column::initial(150.0))
-            .column(Column::initial(210.0))
-            .column(Column::remainder().at_least(150.0))
-            .header(row_h, |mut h| {
-                for t in ["", "Page", "Section", "Name", ""] {
-                    h.col(|ui| {
-                        ui.strong(t);
-                    });
-                }
-            })
-            .body(|body| {
-                body.rows(row_h, rows.len(), |mut row| {
-                    let (id, title, section) = rows[row.index()];
-                    row.col(|ui| {
-                        let mut on = ticked.iter().any(|p| p.eq_ignore_ascii_case(id));
-                        if ui.checkbox(&mut on, "").changed() {
-                            toggle(&mut ticked, id, on);
-                        }
-                    });
-                    row.col(|ui| {
-                        ui.label(*title);
-                    });
-                    row.col(|ui| {
-                        ui.label(*section);
-                    });
-                    row.col(|ui| {
-                        ui.monospace(*id);
-                    });
-                    row.col(|ui| {
-                        ui.horizontal(|ui| {
-                            if ui.small_button("Open").clicked() {
-                                open = Some(*id);
+        frame::central_fixed(ui, |ui| {
+            show_message(ui, &self.message);
+            ui.weak("Choose which Settings pages people on this PC can open.");
+            let row_h = ui.text_style_height(&egui::TextStyle::Body) + 8.0;
+            TableBuilder::new(ui)
+                .striped(true)
+                .column(Column::exact(28.0))
+                .column(Column::initial(220.0).at_least(140.0))
+                .column(Column::initial(150.0))
+                .column(Column::initial(210.0))
+                .column(Column::remainder().at_least(150.0))
+                .header(row_h, |mut h| {
+                    for t in ["", "Page", "Section", "Name", ""] {
+                        h.col(|ui| {
+                            ui.strong(t);
+                        });
+                    }
+                })
+                .body(|body| {
+                    body.rows(row_h, rows.len(), |mut row| {
+                        let (id, title, section) = rows[row.index()];
+                        row.col(|ui| {
+                            let mut on = ticked.iter().any(|p| p.eq_ignore_ascii_case(id));
+                            if ui.checkbox(&mut on, "").changed() {
+                                toggle(&mut ticked, id, on);
                             }
-                            if ui.small_button("Create shortcut").clicked() {
-                                shortcut = Some((*id, *title));
-                            }
+                        });
+                        row.col(|ui| {
+                            ui.label(*title);
+                        });
+                        row.col(|ui| {
+                            ui.label(*section);
+                        });
+                        row.col(|ui| {
+                            ui.monospace(*id);
+                        });
+                        row.col(|ui| {
+                            ui.horizontal(|ui| {
+                                if ui.small_button("Open").clicked() {
+                                    open = Some(*id);
+                                }
+                                if ui.small_button("Create shortcut").clicked() {
+                                    shortcut = Some((*id, *title));
+                                }
+                            });
                         });
                     });
                 });
-            });
+        });
         if let Some(id) = open
             && let Err(e) = shell_open(&format!("ms-settings:{id}"), "")
         {
@@ -570,31 +587,32 @@ impl SettingsSecurity {
             .cpl
             .take()
             .unwrap_or_else(|| read_cpl().unwrap_or((Mode::Hide, Vec::new())));
-        ui.label("Choose which Control Panel items this account can open.");
         let writable = ctx.elevated || user_policy_writable();
-        if !writable {
-            ui.colored_label(
-                ui.visuals().warn_fg_color,
-                "Windows lets only administrators create this account's policies: restart the app \
-                 as administrator to change them.",
-            );
-        }
-        mode_picker(ui, &mut mode, "items");
-        let mut apply = None;
-        ui.horizontal(|ui| {
+        let apply = apply_toolbar(ui, writable, &ticked);
+        let filter_hint = filter_hint(ctx);
+        frame::options(ui, |ui| {
+            mode_picker(ui, &mut mode, "items");
+            ui.separator();
             ui.add(
                 egui::TextEdit::singleline(&mut self.filter)
-                    .hint_text("Filter")
+                    .hint_text(filter_hint)
                     .desired_width(180.0),
             );
-            ui.label(format!("{} ticked", ticked.len()));
-            if ui.add_enabled(writable, egui::Button::new("Apply")).clicked() {
-                apply = Some(ticked.clone());
-            }
-            if ui.add_enabled(writable, egui::Button::new("Allow all")).clicked() {
-                apply = Some(Vec::new());
-            }
         });
+        frame::status(
+            ui,
+            &format!("{} of {} items ticked", ticked.len(), items.len()),
+            |ui| {
+                if writable {
+                    ui.weak("Applies to this account.");
+                } else {
+                    ui.colored_label(
+                        ui.visuals().warn_fg_color,
+                        "Windows lets only administrators create this account's policies.",
+                    );
+                }
+            },
+        );
         let filter = self.filter.to_lowercase();
         let rows: Vec<_> = items
             .iter()
@@ -605,44 +623,46 @@ impl SettingsSecurity {
             })
             .collect();
         let mut open = None;
-        let row_h = ui.text_style_height(&egui::TextStyle::Body) + 8.0;
-        let table_h = ui.available_height() - 30.0;
-        TableBuilder::new(ui)
-            .striped(true)
-            .max_scroll_height(table_h)
-            .column(Column::exact(28.0))
-            .column(Column::initial(240.0).at_least(140.0))
-            .column(Column::initial(280.0))
-            .column(Column::remainder().at_least(60.0))
-            .header(row_h, |mut h| {
-                for t in ["", "Item", "Canonical name", ""] {
-                    h.col(|ui| {
-                        ui.strong(t);
-                    });
-                }
-            })
-            .body(|body| {
-                body.rows(row_h, rows.len(), |mut row| {
-                    let item = rows[row.index()];
-                    row.col(|ui| {
-                        let mut on = ticked.iter().any(|p| p.eq_ignore_ascii_case(&item.canonical));
-                        if ui.checkbox(&mut on, "").changed() {
-                            toggle(&mut ticked, &item.canonical, on);
-                        }
-                    });
-                    row.col(|ui| {
-                        ui.label(&item.name);
-                    });
-                    row.col(|ui| {
-                        ui.monospace(&item.canonical);
-                    });
-                    row.col(|ui| {
-                        if ui.small_button("Open").clicked() {
-                            open = Some(item.canonical.clone());
-                        }
+        frame::central_fixed(ui, |ui| {
+            show_message(ui, &self.message);
+            ui.weak("Choose which Control Panel items this account can open.");
+            let row_h = ui.text_style_height(&egui::TextStyle::Body) + 8.0;
+            TableBuilder::new(ui)
+                .striped(true)
+                .column(Column::exact(28.0))
+                .column(Column::initial(240.0).at_least(140.0))
+                .column(Column::initial(280.0))
+                .column(Column::remainder().at_least(60.0))
+                .header(row_h, |mut h| {
+                    for t in ["", "Item", "Canonical name", ""] {
+                        h.col(|ui| {
+                            ui.strong(t);
+                        });
+                    }
+                })
+                .body(|body| {
+                    body.rows(row_h, rows.len(), |mut row| {
+                        let item = rows[row.index()];
+                        row.col(|ui| {
+                            let mut on = ticked.iter().any(|p| p.eq_ignore_ascii_case(&item.canonical));
+                            if ui.checkbox(&mut on, "").changed() {
+                                toggle(&mut ticked, &item.canonical, on);
+                            }
+                        });
+                        row.col(|ui| {
+                            ui.label(&item.name);
+                        });
+                        row.col(|ui| {
+                            ui.monospace(&item.canonical);
+                        });
+                        row.col(|ui| {
+                            if ui.small_button("Open").clicked() {
+                                open = Some(item.canonical.clone());
+                            }
+                        });
                     });
                 });
-            });
+        });
         if let Some(c) = open
             && let Err(e) = shell_open(
                 &paths::expand_env(r"%WINDIR%\System32\control.exe"),
@@ -677,31 +697,46 @@ impl Tool for SettingsSecurity {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, ctx: &mut AppCtx<'_>) {
-        ui.horizontal(|ui| {
-            ui.selectable_value(&mut self.tab, Tab::Restrictions, "Restrictions");
-            ui.selectable_value(&mut self.tab, Tab::Pages, "Settings pages");
-            ui.selectable_value(&mut self.tab, Tab::ControlPanel, "Control Panel items");
-        });
-        ui.separator();
-        show_message(ui, &self.message);
+        const TABS: [Tab; 3] = [Tab::Restrictions, Tab::Pages, Tab::ControlPanel];
+        let mut sel = TABS.iter().position(|t| *t == self.tab).unwrap_or(0);
+        if frame::left(ui, 200.0, |ui| {
+            section_nav(
+                ui,
+                &[
+                    (icons::SHIELD, "Restrictions"),
+                    (icons::GEAR, "Settings pages"),
+                    (icons::SLIDERS, "Control Panel items"),
+                ],
+                &mut sel,
+            )
+        }) {
+            self.message = None;
+        }
+        self.tab = TABS[sel];
         match self.tab {
-            Tab::Restrictions => {
-                ui.label(
-                    "Restrictions apply to the account running this app. To restrict another \
-                     account (for example a child's), sign in as that user and run Win Manager \
-                     RS there.",
-                );
-                ui.colored_label(
-                    ui.visuals().warn_fg_color,
-                    "This app can always switch these off again, even when Control Panel, Task \
-                     Manager or the Registry Editor are blocked.",
-                );
-                ui.add_space(8.0);
-                self.panel.ui(ui, ctx);
-            }
+            Tab::Restrictions => frame::nested(ui, |ui| {
+                frame::options(ui, |ui| {
+                    ui.vertical(|ui| {
+                        ui.weak(
+                            "Restrictions apply to the account running this app. To restrict another \
+                             account (for example a child's), sign in as that user and run Win Manager RS there.",
+                        );
+                        ui.colored_label(
+                            ui.visuals().warn_fg_color,
+                            "This app can always switch these off again, even when Control Panel, Task \
+                             Manager or the Registry Editor are blocked.",
+                        );
+                    });
+                });
+                self.panel.ui_framed(ui, ctx);
+            }),
             Tab::Pages => self.pages_tab(ui, ctx),
             Tab::ControlPanel => self.cpl_tab(ui, ctx),
         }
+    }
+
+    fn layout(&self) -> Layout {
+        Layout::Fill
     }
 }
 

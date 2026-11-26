@@ -2,12 +2,13 @@
 //! and shortcuts to Windows' recovery tools.
 
 use anyhow::{Context, Result, bail};
+use egui_extras::{Column, TableBuilder};
 use serde::Deserialize;
 use wm_core::{
-    AppCtx, Category, Tool, egui, icons, registry,
+    AppCtx, Category, Layout, Tool, egui, icons, registry,
     safety::{UndoAction, restore_point},
     task::BackgroundTask,
-    ui::{Confirm, Message, section_nav, show_message},
+    ui::{Confirm, Message, ToolButton, empty_state, frame, section, section_nav, show_message},
 };
 
 /// SPP client entry that lists the volumes with System Protection turned on.
@@ -150,11 +151,7 @@ pub struct SystemProtection {
 
 impl SystemProtection {
     fn restore_points(&mut self, ui: &mut egui::Ui, ctx: &mut AppCtx<'_>) {
-        if !ctx.elevated {
-            ui.colored_label(ui.visuals().warn_fg_color, ctx.i18n.tr("shell-needs-admin"));
-            return;
-        }
-        if self.points.is_none() && self.loading.is_none() {
+        if ctx.elevated && self.points.is_none() && self.loading.is_none() {
             self.loading = Some(BackgroundTask::spawn(ui.ctx(), |_| list_restore_points()));
         }
         if let Some(t) = &mut self.loading {
@@ -177,33 +174,31 @@ impl SystemProtection {
                 self.points = None;
             }
         }
-        ui.horizontal(|ui| {
-            let busy = self.loading.is_some() || self.creating.is_some();
-            if ui
-                .add_enabled(!busy, egui::Button::new(ctx.i18n.tr("common-refresh")))
-                .clicked()
-            {
-                self.points = None;
-            }
-            if ui
-                .add_enabled(
-                    !busy,
-                    egui::Button::new(format!("{}  Create restore point", icons::PLUS)),
-                )
-                .clicked()
-            {
+        let busy = self.loading.is_some() || self.creating.is_some();
+        let ok = ctx.elevated && !busy;
+        let n = self.selected.len();
+        let delete_label = format!("Delete ({n})");
+        match frame::toolbar(
+            ui,
+            &[
+                Some(ToolButton::new(icons::PLUS, "Create").enabled(ok)),
+                Some(ToolButton::new(icons::TRASH, &delete_label).enabled(ok && n > 0)),
+                None,
+                Some(ToolButton::new(icons::CLOCK_COUNTER_CLOCKWISE, "System Restore")),
+                Some(ToolButton::new(icons::ARROWS_CLOCKWISE, "Refresh").enabled(ok)),
+            ],
+            |ui| {
+                if busy {
+                    ui.spinner();
+                }
+            },
+        ) {
+            Some(0) => {
                 self.creating = Some(BackgroundTask::spawn(ui.ctx(), |_| {
                     restore_point::create("Win Manager RS manual checkpoint")
                 }));
             }
-            let n = self.selected.len();
-            if ui
-                .add_enabled(
-                    n > 0 && !busy,
-                    egui::Button::new(format!("{}  Delete selected ({n})", icons::TRASH)),
-                )
-                .clicked()
-            {
+            Some(1) => {
                 self.confirm.ask(
                     format!(
                         "Delete {n} restore point{}? This can't be undone.",
@@ -212,79 +207,153 @@ impl SystemProtection {
                     Ask::Delete(self.selected.iter().copied().collect()),
                 );
             }
-            if busy {
-                ui.spinner();
+            Some(3) => {
+                self.message = std::process::Command::new("rstrui.exe")
+                    .spawn()
+                    .err()
+                    .map(|e| Err(format!("rstrui.exe: {e}")));
+            }
+            Some(4) => self.points = None,
+            _ => {}
+        }
+        let status = match &self.points {
+            Some(Ok(p)) => format!("{} restore points, {n} selected", p.len()),
+            _ if busy => "Reading restore points…".to_owned(),
+            _ => String::new(),
+        };
+        frame::status(ui, &status, |ui| {
+            ui.weak("Windows also creates restore points before updates and installs.");
+        });
+        frame::central_fixed(ui, |ui| {
+            show_message(ui, &self.message);
+            if !ctx.elevated {
+                empty_state(
+                    ui,
+                    icons::SHIELD,
+                    "Administrator rights needed",
+                    &ctx.i18n.tr("shell-needs-admin"),
+                );
+                return;
+            }
+            match &self.points {
+                None => {}
+                Some(Err(e)) => {
+                    ui.colored_label(ui.visuals().error_fg_color, e);
+                }
+                Some(Ok(points)) if points.is_empty() => empty_state(
+                    ui,
+                    icons::CLOCK_COUNTER_CLOCKWISE,
+                    "No restore points",
+                    "Turn on protection for the Windows drive to have Windows create them.",
+                ),
+                Some(Ok(points)) => {
+                    let selected = &mut self.selected;
+                    TableBuilder::new(ui)
+                        .striped(true)
+                        .column(Column::exact(28.0))
+                        .column(Column::initial(150.0))
+                        .column(Column::initial(380.0).clip(true))
+                        .column(Column::remainder())
+                        .header(22.0, |mut h| {
+                            for t in ["", "Created", "Description", "Type"] {
+                                h.col(|ui| {
+                                    ui.strong(t);
+                                });
+                            }
+                        })
+                        .body(|body| {
+                            body.rows(24.0, points.len(), |mut row| {
+                                let p = &points[row.index()];
+                                row.col(|ui| {
+                                    let mut on = selected.contains(&p.sequence_number);
+                                    if ui.checkbox(&mut on, "").changed() {
+                                        if on {
+                                            selected.insert(p.sequence_number);
+                                        } else {
+                                            selected.remove(&p.sequence_number);
+                                        }
+                                    }
+                                });
+                                row.col(|ui| {
+                                    ui.label(p.created());
+                                });
+                                row.col(|ui| {
+                                    ui.label(&p.description);
+                                });
+                                row.col(|ui| {
+                                    ui.weak(p.kind());
+                                });
+                            });
+                        });
+                }
             }
         });
-        ui.add_space(6.0);
-        match &self.points {
-            None => {}
-            Some(Err(e)) => {
-                ui.colored_label(ui.visuals().error_fg_color, e);
-            }
-            Some(Ok(points)) if points.is_empty() => {
-                ui.weak("There are no restore points. Turn on protection for the Windows drive to have Windows create them.");
-            }
-            Some(Ok(points)) => {
-                egui::Grid::new("points")
-                    .striped(true)
-                    .spacing([14.0, 6.0])
-                    .show(ui, |ui| {
-                        for h in ["", "Created", "Description", "Type"] {
-                            ui.strong(h);
-                        }
-                        ui.end_row();
-                        for p in points {
-                            let mut on = self.selected.contains(&p.sequence_number);
-                            if ui.checkbox(&mut on, "").changed() {
-                                if on {
-                                    self.selected.insert(p.sequence_number);
-                                } else {
-                                    self.selected.remove(&p.sequence_number);
-                                }
-                            }
-                            ui.label(p.created());
-                            ui.label(&p.description);
-                            ui.weak(p.kind());
-                            ui.end_row();
-                        }
-                    });
-            }
-        }
     }
 
     fn protection(&mut self, ui: &mut egui::Ui, ctx: &mut AppCtx<'_>) {
-        ui.label(
-            "With protection on, Windows keeps restore points of system files and settings for that drive.",
-        );
-        ui.add_space(6.0);
+        match frame::toolbar(
+            ui,
+            &[
+                Some(ToolButton::new(icons::GEAR, "Windows settings")),
+                Some(ToolButton::new(icons::ARROWS_CLOCKWISE, "Refresh")),
+            ],
+            |_| {},
+        ) {
+            Some(0) => {
+                let _ = std::process::Command::new("SystemPropertiesProtection.exe").spawn();
+            }
+            Some(1) => self.protected = None,
+            _ => {}
+        }
         let protected = self.protected.get_or_insert_with(read_protected).clone();
-        for c in fixed_ntfs_letters() {
-            let on = protected.contains(&c);
-            ui.horizontal(|ui| {
-                ui.label(format!("{}  {c}:", icons::HARD_DRIVES));
-                ui.label(if on { "On" } else { "Off" });
-                let (label, want) = if on { ("Turn off", false) } else { ("Turn on", true) };
-                if ui
-                    .add_enabled(ctx.elevated, egui::Button::new(label).small())
-                    .on_disabled_hover_text(ctx.i18n.tr("shell-needs-admin"))
-                    .clicked()
-                {
-                    if want {
-                        self.apply_protection(c, true, ctx);
-                    } else {
-                        self.confirm.ask(
-                            format!("Turn off System Protection for {c}:? Windows deletes every restore point on that drive."),
-                            Ask::Protection(c, false),
-                        );
-                    }
-                }
-            });
-        }
-        ui.add_space(6.0);
-        if ui.button("System Protection settings…").clicked() {
-            let _ = std::process::Command::new("SystemPropertiesProtection.exe").spawn();
-        }
+        let letters = fixed_ntfs_letters();
+        frame::status(
+            ui,
+            &format!("{} of {} drives protected", protected.len(), letters.len()),
+            |_| {},
+        );
+        frame::central(ui, |ui| {
+            show_message(ui, &self.message);
+            ui.weak("With protection on, Windows keeps restore points of system files and settings for that drive.");
+            ui.add_space(8.0);
+            for c in letters {
+                let on = protected.contains(&c);
+                section(
+                    ui,
+                    "",
+                    |_| {},
+                    |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new(icons::HARD_DRIVES).size(20.0));
+                            ui.strong(format!("Drive {c}:"));
+                            if on {
+                                ui.colored_label(ui.visuals().selection.bg_fill, "Protected");
+                            } else {
+                                ui.weak("Not protected");
+                            }
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                let (label, want) = if on { ("Turn off", false) } else { ("Turn on", true) };
+                                if ui
+                                    .add_enabled(ctx.elevated, egui::Button::new(label))
+                                    .on_disabled_hover_text(ctx.i18n.tr("shell-needs-admin"))
+                                    .clicked()
+                                {
+                                    if want {
+                                        self.apply_protection(c, true, ctx);
+                                    } else {
+                                        self.confirm.ask(
+                                            format!("Turn off System Protection for {c}:? Windows deletes every restore point on that drive."),
+                                            Ask::Protection(c, false),
+                                        );
+                                    }
+                                }
+                            });
+                        });
+                    },
+                );
+                ui.add_space(6.0);
+            }
+        });
     }
 
     fn apply_protection(&mut self, letter: char, on: bool, ctx: &mut AppCtx<'_>) {
@@ -328,34 +397,69 @@ impl SystemProtection {
                 .err()
                 .map(|e| Err(format!("{program}: {e}")))
         };
-        egui::Grid::new("recovery").num_columns(2).spacing([14.0, 8.0]).show(ui, |ui| {
-            if ui.button("System Restore…").clicked() {
-                self.message = open("rstrui.exe", &[]);
-            }
-            ui.weak("Return Windows to an earlier restore point.");
-            ui.end_row();
-            if ui.button("Recovery options…").clicked() {
-                self.message = open("explorer.exe", &["ms-settings:recovery"]);
-            }
-            ui.weak("Reset this PC, go back to the previous Windows version, or start from a USB drive.");
-            ui.end_row();
-            if ui.button("Create a recovery drive…").clicked() {
-                self.message = open("RecoveryDrive.exe", &[]);
-            }
-            ui.weak("Copy Windows' recovery tools to a USB drive.");
-            ui.end_row();
-            if ui
-                .add_enabled(ctx.elevated, egui::Button::new("Restart to advanced startup…"))
-                .on_disabled_hover_text(ctx.i18n.tr("shell-needs-admin"))
-                .clicked()
-            {
-                self.confirm.ask(
-                    "Restart now into Windows' advanced startup options (Safe Mode, Startup Repair, firmware settings)? Save your work first.",
-                    Ask::AdvancedStartup,
+        frame::central(ui, |ui| {
+            show_message(ui, &self.message);
+            let items: [(&str, &str, &str, bool); 4] = [
+                (
+                    icons::CLOCK_COUNTER_CLOCKWISE,
+                    "System Restore",
+                    "Return Windows to an earlier restore point.",
+                    true,
+                ),
+                (
+                    icons::FIRST_AID_KIT,
+                    "Recovery options",
+                    "Reset this PC, go back to the previous Windows version, or start from a USB drive.",
+                    true,
+                ),
+                (
+                    icons::USB,
+                    "Create a recovery drive",
+                    "Copy Windows' recovery tools to a USB drive.",
+                    true,
+                ),
+                (
+                    icons::POWER,
+                    "Restart to advanced startup",
+                    "Restarts into the blue recovery menu (Safe Mode, Startup Repair, firmware settings).",
+                    ctx.elevated,
+                ),
+            ];
+            for (i, (icon, title, hint, enabled)) in items.into_iter().enumerate() {
+                let clicked = section(
+                    ui,
+                    "",
+                    |_| {},
+                    |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new(icon).size(22.0));
+                            ui.vertical(|ui| {
+                                ui.strong(title);
+                                ui.weak(hint);
+                            });
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                ui.add_enabled(enabled, egui::Button::new("Open…"))
+                                    .on_disabled_hover_text(ctx.i18n.tr("shell-needs-admin"))
+                                    .clicked()
+                            })
+                            .inner
+                        })
+                        .inner
+                    },
                 );
+                ui.add_space(6.0);
+                if clicked {
+                    match i {
+                        0 => self.message = open("rstrui.exe", &[]),
+                        1 => self.message = open("explorer.exe", &["ms-settings:recovery"]),
+                        2 => self.message = open("RecoveryDrive.exe", &[]),
+                        _ => self.confirm.ask(
+                            "Restart now into Windows' advanced startup options (Safe Mode, Startup Repair, firmware settings)? Save your work first.",
+                            Ask::AdvancedStartup,
+                        ),
+                    }
+                }
             }
-            ui.weak("Restarts into the blue recovery menu.");
-            ui.end_row();
         });
     }
 }
@@ -406,25 +510,18 @@ impl Tool for SystemProtection {
             }
             None => {}
         }
-        ui.horizontal_top(|ui| {
-            ui.vertical(|ui| {
-                ui.set_width(210.0);
-                if section_nav(ui, &SECTIONS, &mut self.section) {
-                    self.message = None;
-                }
-            });
-            ui.add_space(14.0);
-            ui.vertical(|ui| {
-                ui.heading(SECTIONS[self.section].1);
-                ui.add_space(4.0);
-                show_message(ui, &self.message);
-                match self.section {
-                    0 => self.restore_points(ui, ctx),
-                    1 => self.protection(ui, ctx),
-                    _ => self.recovery(ui, ctx),
-                }
-            });
-        });
+        if frame::left(ui, 190.0, |ui| section_nav(ui, &SECTIONS, &mut self.section)) {
+            self.message = None;
+        }
+        match self.section {
+            0 => self.restore_points(ui, ctx),
+            1 => self.protection(ui, ctx),
+            _ => self.recovery(ui, ctx),
+        }
+    }
+
+    fn layout(&self) -> Layout {
+        Layout::Fill
     }
 }
 

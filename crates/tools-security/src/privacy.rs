@@ -6,12 +6,12 @@ use crate::privacy_traces::{self, Item, Section};
 use anyhow::Result;
 use windows::Win32::System::DataExchange::{CloseClipboard, EmptyClipboard, OpenClipboard};
 use wm_core::{
-    AppCtx, Category, Tool, egui, paths, registry,
+    AppCtx, Category, Layout, Tool, egui, icons, paths, registry,
     safety::UndoAction,
     task::BackgroundTask,
     tool_settings,
     tweaks::TweakPanel,
-    ui::{Confirm, Message, show_message},
+    ui::{Confirm, Message, ToolButton, frame, section_nav, show_message},
 };
 
 const EXPLORER: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer";
@@ -248,66 +248,77 @@ impl PrivacyProtector {
             .collect();
         let lasting = chosen.iter().filter(|i| !i.undoable()).count();
         let n_chosen = chosen.len();
-        ui.horizontal(|ui| {
-            let label = format!("Clear selected ({n_chosen})");
-            if ui
-                .add_enabled(n_chosen > 0 && self.scan.is_none(), egui::Button::new(label))
-                .clicked()
-            {
+        let clear_label = format!("Clear ({n_chosen})");
+        let scanning = self.scan.is_some();
+        match frame::toolbar(
+            ui,
+            &[
+                Some(ToolButton::new(icons::BROOM, &clear_label).enabled(n_chosen > 0 && !scanning)),
+                None,
+                Some(ToolButton::new(icons::LIST_CHECKS, "Default selection")),
+                Some(ToolButton::new(icons::ARROWS_CLOCKWISE, "Refresh").enabled(!scanning)),
+            ],
+            |ui| {
+                if scanning {
+                    ui.weak("Counting…");
+                    ui.spinner();
+                }
+            },
+        ) {
+            Some(0) => {
                 let mut q = format!("Clear the {n_chosen} selected item(s)?");
                 if lasting > 0 {
                     q += &format!(" {lasting} of them can't be undone.");
                 }
                 self.confirm.ask(q, ());
             }
-            if ui.button(ctx.i18n.tr("common-refresh")).clicked() && self.scan.is_none() {
-                self.rescan(ui.ctx());
-            }
-            if ui.button("Default selection").clicked() {
+            Some(2) => {
                 self.selection.clear();
                 let _ = tool_settings::save(SELECTION_ID, &self.selection);
             }
-            if self.scan.is_some() {
-                ui.spinner();
-                ui.weak("Counting…");
-            }
-        });
-        show_message(ui, &self.message);
-        ui.add_space(4.0);
+            Some(3) => self.rescan(ui.ctx()),
+            _ => {}
+        }
+        frame::status(
+            ui,
+            &format!(
+                "{n_chosen} of {} items selected, {lasting} can't be undone",
+                self.items.len()
+            ),
+            |ui| {
+                ui.weak("Firefox isn't covered: its history and bookmarks share one file.");
+            },
+        );
 
         let mut toggles: Vec<(String, bool)> = Vec::new();
-        egui::ScrollArea::vertical()
-            .auto_shrink([false, false])
-            .show(ui, |ui| {
-                for section in Section::ALL {
-                    let rows: Vec<&(Item, usize)> =
-                        self.items.iter().filter(|(i, _)| i.section == section).collect();
-                    if rows.is_empty() {
-                        continue;
-                    }
-                    let on = rows.iter().filter(|(i, _)| self.selected(i)).count();
-                    egui::CollapsingHeader::new(format!(
-                        "{}  ({on} of {} selected)",
-                        section.label(),
-                        rows.len()
-                    ))
-                    .id_salt(section)
-                    .default_open(true)
-                    .show(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            if ui.small_button("All").clicked() {
-                                toggles.extend(rows.iter().map(|(i, _)| (i.id.clone(), true)));
-                            }
-                            if ui.small_button("None").clicked() {
-                                toggles.extend(rows.iter().map(|(i, _)| (i.id.clone(), false)));
-                            }
-                        });
-                        for (item, n) in rows {
+        frame::central(ui, |ui| {
+            show_message(ui, &self.message);
+            for section in Section::ALL {
+                let rows: Vec<&(Item, usize)> =
+                    self.items.iter().filter(|(i, _)| i.section == section).collect();
+                if rows.is_empty() {
+                    continue;
+                }
+                let on = rows.iter().filter(|(i, _)| self.selected(i)).count();
+                let mut all = None;
+                wm_core::ui::section(
+                    ui,
+                    &format!("{}  ·  {on} of {}", section.label(), rows.len()),
+                    |ui| {
+                        if ui.small_button("None").clicked() {
+                            all = Some(false);
+                        }
+                        if ui.small_button("All").clicked() {
+                            all = Some(true);
+                        }
+                    },
+                    |ui| {
+                        for (item, n) in &rows {
                             ui.horizontal(|ui| {
                                 let mut sel = self.selected(item);
                                 let enabled = !item.admin || ctx.elevated;
-                                let resp =
-                                    ui.add_enabled(enabled, egui::Checkbox::new(&mut sel, item.label.as_str()));
+                                let resp = ui
+                                    .add_enabled(enabled, egui::Checkbox::new(&mut sel, item.label.as_str()));
                                 if resp.changed() {
                                     toggles.push((item.id.clone(), sel));
                                 }
@@ -337,13 +348,17 @@ impl PrivacyProtector {
                                 }
                             });
                         }
-                    });
+                    },
+                );
+                if let Some(v) = all {
+                    toggles.extend(rows.iter().map(|(i, _)| (i.id.clone(), v)));
                 }
-                if !self.items.is_empty() {
-                    ui.add_space(6.0);
-                    ui.weak("Program history lists only programs that have left some behind. Firefox isn't covered: its history and bookmarks share one file.");
-                }
-            });
+                ui.add_space(8.0);
+            }
+            if !self.items.is_empty() {
+                ui.weak("Program history lists only programs that have left some behind.");
+            }
+        });
         for (id, on) in toggles {
             self.set_selected(&id, on);
         }
@@ -360,15 +375,26 @@ impl Tool for PrivacyProtector {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, ctx: &mut AppCtx<'_>) {
-        ui.horizontal(|ui| {
-            ui.selectable_value(&mut self.tab, Tab::Settings, "Privacy settings");
-            ui.selectable_value(&mut self.tab, Tab::Traces, "Clear activity traces");
+        let mut sel = usize::from(self.tab == Tab::Traces);
+        frame::left(ui, 200.0, |ui| {
+            section_nav(
+                ui,
+                &[
+                    (icons::SLIDERS, "Privacy settings"),
+                    (icons::BROOM, "Clear activity traces"),
+                ],
+                &mut sel,
+            )
         });
-        ui.separator();
+        self.tab = if sel == 1 { Tab::Traces } else { Tab::Settings };
         match self.tab {
-            Tab::Settings => self.panel.ui(ui, ctx),
+            Tab::Settings => frame::nested(ui, |ui| self.panel.ui_framed(ui, ctx)),
             Tab::Traces => self.traces_ui(ui, ctx),
         }
+    }
+
+    fn layout(&self) -> Layout {
+        Layout::Fill
     }
 }
 

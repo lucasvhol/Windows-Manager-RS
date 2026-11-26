@@ -4,12 +4,13 @@
 //! the opposite DISM command as its undo.
 
 use anyhow::{Result, bail};
+use egui_extras::{Column, TableBuilder};
 use wm_core::{
-    AppCtx, Category, Tool, egui,
+    AppCtx, Category, Layout, Tool, egui, icons,
     process::{hidden_command, json_list, powershell_json},
     safety::UndoAction,
     task::BackgroundTask,
-    ui::{Confirm, Message, show_message},
+    ui::{Confirm, Message, ToolButton, empty_state, frame, show_message},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -251,36 +252,35 @@ impl Tool for WindowsFeatures {
             }
         }
 
-        ui.label("Optional parts of Windows. Tick the ones you want, untick the ones you don't, then Apply. Some need a restart.");
-        if !ctx.elevated {
-            ui.colored_label(
-                ui.visuals().warn_fg_color,
-                "Changing features needs administrator rights (restart the app as administrator).",
-            );
-        }
         let changes = self.changes();
         let busy = self.running.is_some() || self.load.is_some();
-        ui.horizontal(|ui| {
-            ui.add(
-                egui::TextEdit::singleline(&mut self.filter)
-                    .hint_text("Filter")
-                    .desired_width(200.0),
-            );
-            ui.checkbox(&mut self.only_on, "Only features that are on");
-            if ui
-                .add_enabled(!busy, egui::Button::new(ctx.i18n.tr("common-refresh")))
-                .clicked()
-            {
-                self.features = None;
-                self.wanted.clear();
-            }
-            if ui
-                .add_enabled(
-                    ctx.elevated && !busy && !changes.is_empty(),
-                    egui::Button::new(format!("Apply {} change(s)", changes.len())),
-                )
-                .clicked()
-            {
+        let apply_label = format!("Apply {}", changes.len());
+        match frame::toolbar(
+            ui,
+            &[
+                Some(
+                    ToolButton::new(icons::CHECK, &apply_label)
+                        .enabled(ctx.elevated && !busy && !changes.is_empty()),
+                ),
+                Some(
+                    ToolButton::new(icons::ARROW_COUNTER_CLOCKWISE, "Revert")
+                        .enabled(!busy && !self.wanted.is_empty()),
+                ),
+                None,
+                Some(ToolButton::new(icons::ARROWS_CLOCKWISE, "Refresh").enabled(!busy)),
+            ],
+            |ui| {
+                if busy {
+                    ui.weak(if self.running.is_some() {
+                        "Applying… (DISM)"
+                    } else {
+                        "Loading…"
+                    });
+                    ui.spinner();
+                }
+            },
+        ) {
+            Some(0) => {
                 let list = changes
                     .iter()
                     .map(|(_, c, on)| format!("{} {c}", if *on { "Turn on" } else { "Turn off" }))
@@ -291,59 +291,91 @@ impl Tool for WindowsFeatures {
                     changes.clone(),
                 );
             }
-            if ui
-                .add_enabled(!busy && !self.wanted.is_empty(), egui::Button::new("Revert"))
-                .clicked()
-            {
+            Some(1) => self.wanted.clear(),
+            Some(3) => {
+                self.features = None;
                 self.wanted.clear();
             }
-            if busy {
-                ui.spinner();
-                ui.weak(if self.running.is_some() {
-                    "Applying… (DISM)"
-                } else {
-                    "Loading…"
-                });
+            _ => {}
+        }
+        let filter_hint = format!("{}  {}", icons::MAGNIFYING_GLASS, ctx.i18n.tr("common-filter"));
+        frame::options(ui, |ui| {
+            ui.add(
+                egui::TextEdit::singleline(&mut self.filter)
+                    .hint_text(filter_hint)
+                    .desired_width(200.0),
+            );
+            ui.checkbox(&mut self.only_on, "Only features that are on");
+        });
+        let status = self.features.as_ref().map_or_else(
+            || "Reading the features…".to_owned(),
+            |f| {
+                format!(
+                    "{} features, {} on, {} change(s) to apply",
+                    f.len(),
+                    f.iter().filter(|f| f.state == FeatureState::On).count(),
+                    changes.len()
+                )
+            },
+        );
+        frame::status(ui, &status, |ui| {
+            if ctx.elevated {
+                ui.weak("Tick what you want, untick what you don't, then Apply. Some need a restart.");
+            } else {
+                ui.colored_label(
+                    ui.visuals().warn_fg_color,
+                    "Changing features needs the app to run as administrator.",
+                );
             }
         });
-        show_message(ui, &self.message);
-        for l in &self.log {
-            ui.label(l);
-        }
-        ui.separator();
-        let Some(features) = &self.features else {
-            return;
-        };
-        let filter = self.filter.trim().to_lowercase();
-        let rows: Vec<&Feature> = features
-            .iter()
-            .filter(|f| {
-                filter.is_empty()
-                    || f.caption.to_lowercase().contains(&filter)
-                    || f.name.to_lowercase().contains(&filter)
-            })
-            .filter(|f| !self.only_on || f.state == FeatureState::On)
-            .collect();
-        ui.weak(format!(
-            "{} features, {} on",
-            features.len(),
-            features.iter().filter(|f| f.state == FeatureState::On).count()
-        ));
-        egui::ScrollArea::vertical()
-            .auto_shrink([false, false])
-            .show(ui, |ui| {
-                egui::Grid::new("features-grid")
-                    .striped(true)
-                    .num_columns(3)
-                    .show(ui, |ui| {
-                        for h in ["Feature", "Name", "Now"] {
-                            ui.strong(h);
-                        }
-                        ui.end_row();
-                        for f in rows {
-                            let is_on = f.state == FeatureState::On;
-                            let mut want = self.wanted.get(&f.name).copied().unwrap_or(is_on);
-                            let changed = want != is_on;
+        frame::central_fixed(ui, |ui| {
+            show_message(ui, &self.message);
+            for l in &self.log {
+                ui.label(l);
+            }
+            let Some(features) = &self.features else {
+                return;
+            };
+            let filter = self.filter.trim().to_lowercase();
+            let rows: Vec<&Feature> = features
+                .iter()
+                .filter(|f| {
+                    filter.is_empty()
+                        || f.caption.to_lowercase().contains(&filter)
+                        || f.name.to_lowercase().contains(&filter)
+                })
+                .filter(|f| !self.only_on || f.state == FeatureState::On)
+                .collect();
+            if rows.is_empty() {
+                empty_state(
+                    ui,
+                    icons::FUNNEL,
+                    "No features match",
+                    "Clear the filter to see them all.",
+                );
+                return;
+            }
+            let mut toggled = None;
+            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
+            TableBuilder::new(ui)
+                .striped(true)
+                .column(Column::initial(380.0).clip(true))
+                .column(Column::initial(270.0).clip(true))
+                .column(Column::remainder().clip(true))
+                .header(22.0, |mut h| {
+                    for t in ["Feature", "Name", "Now"] {
+                        h.col(|ui| {
+                            ui.strong(t);
+                        });
+                    }
+                })
+                .body(|body| {
+                    body.rows(22.0, rows.len(), |mut row| {
+                        let f = rows[row.index()];
+                        let is_on = f.state == FeatureState::On;
+                        let mut want = self.wanted.get(&f.name).copied().unwrap_or(is_on);
+                        let changed = want != is_on;
+                        row.col(|ui| {
                             let text = if changed {
                                 egui::RichText::new(&f.caption).strong()
                             } else {
@@ -353,13 +385,13 @@ impl Tool for WindowsFeatures {
                                 .add_enabled(!busy, egui::Checkbox::new(&mut want, text))
                                 .changed()
                             {
-                                if want == is_on {
-                                    self.wanted.remove(&f.name);
-                                } else {
-                                    self.wanted.insert(f.name.clone(), want);
-                                }
+                                toggled = Some((f.name.clone(), is_on, want));
                             }
+                        });
+                        row.col(|ui| {
                             ui.weak(&f.name);
+                        });
+                        row.col(|ui| {
                             if changed {
                                 ui.label(format!(
                                     "{} → {}",
@@ -369,10 +401,21 @@ impl Tool for WindowsFeatures {
                             } else {
                                 ui.weak(f.state.label());
                             }
-                            ui.end_row();
-                        }
+                        });
                     });
-            });
+                });
+            if let Some((name, is_on, want)) = toggled {
+                if want == is_on {
+                    self.wanted.remove(&name);
+                } else {
+                    self.wanted.insert(name, want);
+                }
+            }
+        });
+    }
+
+    fn layout(&self) -> Layout {
+        Layout::Fill
     }
 }
 

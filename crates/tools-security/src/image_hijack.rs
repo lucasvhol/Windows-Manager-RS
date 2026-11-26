@@ -7,10 +7,11 @@
 use std::path::Path;
 
 use anyhow::Result;
+use egui_extras::{Column, TableBuilder};
 use wm_core::{
-    AppCtx, Category, Tool, egui, registry,
+    AppCtx, Category, Layout, Tool, egui, icons, registry,
     safety::UndoAction,
-    ui::{Confirm, Message, show_message},
+    ui::{Confirm, Message, ToolButton, empty_state, frame, show_message},
 };
 
 const IFEO: &str = r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options";
@@ -132,6 +133,7 @@ pub fn remove(ctx: &AppCtx<'_>, h: &Hijack) -> Result<()> {
 #[derive(Default)]
 pub struct ImageHijack {
     list: Option<Vec<Hijack>>,
+    selected: Option<String>,
     confirm: Confirm<Hijack>,
     message: Message,
 }
@@ -162,76 +164,129 @@ impl Tool for ImageHijack {
             self.list = None;
         }
         let list = self.list.get_or_insert_with(list).clone();
-        ui.label("Programs Windows starts something else in place of. Tools such as Process Explorer do this on purpose; viruses do it to stop security tools from starting.");
-        ui.horizontal(|ui| {
-            if ui.button(ctx.i18n.tr("common-refresh")).clicked() {
-                self.list = None;
-            }
-            if !ctx.elevated {
-                ui.weak("Removing an entry needs the app to run as administrator.");
-            }
-        });
-        show_message(ui, &self.message);
-        ui.separator();
-        if list.is_empty() {
-            ui.label("No program is redirected. 👍");
-            return;
-        }
-        let mut ask = None;
-        egui::Grid::new("ifeo-grid")
-            .striped(true)
-            .num_columns(4)
-            .show(ui, |ui| {
-                for h in ["Program", "Runs instead", "Verdict", ""] {
-                    ui.strong(h);
+        let selected = self
+            .selected
+            .as_ref()
+            .and_then(|k| list.iter().find(|h| row_key(h) == *k))
+            .cloned();
+        match frame::toolbar(
+            ui,
+            &[
+                Some(ToolButton::new(icons::TRASH, "Remove").enabled(selected.is_some() && ctx.elevated)),
+                Some(ToolButton::new(icons::TREE_STRUCTURE, "Open key").enabled(selected.is_some())),
+                None,
+                Some(ToolButton::new(icons::ARROWS_CLOCKWISE, "Refresh")),
+            ],
+            |_| {},
+        ) {
+            Some(0) => {
+                if let Some(h) = &selected {
+                    self.confirm.ask(
+                        format!(
+                            "Remove the redirect, so {} starts normally? It can be undone.",
+                            h.program
+                        ),
+                        h.clone(),
+                    );
                 }
-                ui.end_row();
-                for h in &list {
-                    ui.label(&h.program);
-                    ui.label(format!(
-                        "{}{}",
-                        h.command,
-                        if h.value == "MonitorProcess" {
-                            "  (when it exits)"
-                        } else {
-                            ""
-                        }
-                    ));
-                    let v = verdict(h);
-                    match v {
-                        Verdict::Unknown | Verdict::Missing => {
-                            ui.colored_label(ui.visuals().warn_fg_color, v.label());
-                        }
-                        _ => {
-                            ui.weak(v.label());
-                        }
+            }
+            Some(1) => {
+                if let Some(h) = &selected {
+                    self.message = registry::open_in_regedit(&h.key)
+                        .err()
+                        .map(|e| Err(format!("{e:#}")));
+                }
+            }
+            Some(3) => {
+                self.list = None;
+                self.message = None;
+            }
+            _ => {}
+        }
+        let to_check = list
+            .iter()
+            .filter(|h| matches!(verdict(h), Verdict::Unknown | Verdict::Missing))
+            .count();
+        frame::status(
+            ui,
+            &format!("{} redirected programs, {to_check} to check", list.len()),
+            |ui| {
+                if !ctx.elevated {
+                    ui.weak("Removing an entry needs the app to run as administrator.");
+                }
+            },
+        );
+        frame::central_fixed(ui, |ui| {
+            show_message(ui, &self.message);
+            if list.is_empty() {
+                empty_state(
+                    ui,
+                    icons::SHIELD_CHECK,
+                    "No program is redirected",
+                    "Tools such as Process Explorer redirect programs on purpose; viruses do it to stop security tools from starting.",
+                );
+                return;
+            }
+            let mut clicked = None;
+            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
+            TableBuilder::new(ui)
+                .striped(true)
+                .sense(egui::Sense::click())
+                .column(Column::initial(170.0).clip(true))
+                .column(Column::initial(380.0).clip(true))
+                .column(Column::remainder().clip(true))
+                .header(22.0, |mut h| {
+                    for t in ["Program", "Runs instead", "Verdict"] {
+                        h.col(|ui| {
+                            ui.strong(t);
+                        });
                     }
-                    ui.horizontal(|ui| {
-                        if ui.small_button("Open key").clicked() {
-                            self.message = wm_core::registry::open_in_regedit(&h.key)
-                                .err()
-                                .map(|e| Err(format!("{e:#}")));
-                        }
-                        if ui
-                            .add_enabled(ctx.elevated, egui::Button::new("Remove").small())
-                            .clicked()
-                        {
-                            ask = Some(h.clone());
+                })
+                .body(|body| {
+                    body.rows(22.0, list.len(), |mut row| {
+                        let h = &list[row.index()];
+                        let key = row_key(h);
+                        row.set_selected(self.selected.as_ref() == Some(&key));
+                        row.col(|ui| {
+                            ui.label(&h.program);
+                        });
+                        row.col(|ui| {
+                            let when = if h.value == "MonitorProcess" {
+                                "  (when it exits)"
+                            } else {
+                                ""
+                            };
+                            ui.label(format!("{}{when}", h.command)).on_hover_text(&h.key);
+                        });
+                        row.col(|ui| {
+                            let v = verdict(h);
+                            match v {
+                                Verdict::Unknown | Verdict::Missing => {
+                                    ui.colored_label(ui.visuals().warn_fg_color, v.label());
+                                }
+                                _ => {
+                                    ui.weak(v.label());
+                                }
+                            }
+                        });
+                        if row.response().clicked() {
+                            clicked = Some(key);
                         }
                     });
-                    ui.end_row();
-                }
-            });
-        if let Some(h) = ask {
-            self.confirm.ask(
-                format!(
-                    "Remove the redirect, so {} starts normally? It can be undone.",
-                    h.program
-                ),
-                h,
-            );
-        }
+                });
+            if clicked.is_some() {
+                self.selected = clicked;
+            }
+        });
     }
+
+    fn layout(&self) -> Layout {
+        Layout::Fill
+    }
+}
+
+fn row_key(h: &Hijack) -> String {
+    format!(r"{}\{}", h.key, h.value)
 }
 
 #[cfg(test)]

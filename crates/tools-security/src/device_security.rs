@@ -13,10 +13,12 @@ use windows::{
     core::PCWSTR,
 };
 use wm_core::{
-    AppCtx, Category, Tool, egui, icons, registry,
+    AppCtx, Category, Layout, Tool, egui, icons, registry,
     safety::{ChangeJournal, UndoAction},
     tweaks::TweakPanel,
-    ui::{Confirm, Message, format_bytes, section_nav, show_message},
+    ui::{
+        Confirm, Message, ToolButton, empty_state, format_bytes, frame, section, section_nav, show_message,
+    },
 };
 
 const POLICIES: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer";
@@ -327,40 +329,19 @@ impl DeviceSecurity {
             *self.hide.get_or_insert_with(|| read_mask("NoDrives")),
             *self.block.get_or_insert_with(|| read_mask("NoViewOnDrive")),
         );
-        ui.label("Hidden drives don't appear in This PC or File Explorer. Blocked drives can't be opened from File Explorer for this account.");
-        ui.weak("Programs can still reach hidden drives by path; use Removable storage policies to really block devices.");
-        ui.add_space(6.0);
-        let present = present_letters();
-        let letters: Vec<char> = ('A'..='Z')
-            .filter(|&c| present & letter_bit(c) != 0 || (hide | block) & letter_bit(c) != 0)
-            .collect();
-        let (mut new_hide, mut new_block) = (hide, block);
-        egui::Grid::new("drive_masks")
-            .spacing([10.0, 6.0])
-            .show(ui, |ui| {
-                ui.label("");
-                for c in &letters {
-                    ui.strong(format!("{c}:"));
-                }
-                ui.end_row();
-                for (label, mask) in [("Hide", &mut new_hide), ("Block access", &mut new_block)] {
-                    ui.label(label);
-                    for &c in &letters {
-                        let mut on = *mask & letter_bit(c) != 0;
-                        if ui.checkbox(&mut on, "").changed() {
-                            *mask ^= letter_bit(c);
-                        }
-                    }
-                    ui.end_row();
-                }
-            });
-        self.hide = Some(new_hide);
-        self.block = Some(new_block);
-        let changed = new_hide != read_mask("NoDrives") || new_block != read_mask("NoViewOnDrive");
-        ui.add_space(6.0);
-        ui.horizontal(|ui| {
-            if ui.add_enabled(changed, egui::Button::new(format!("{}  Save", icons::FLOPPY_DISK))).clicked() {
-                if new_block & letter_bit(system_letter()) != 0 {
+        let changed = hide != read_mask("NoDrives") || block != read_mask("NoViewOnDrive");
+        match frame::toolbar(
+            ui,
+            &[
+                Some(ToolButton::new(icons::FLOPPY_DISK, "Save").enabled(changed)),
+                Some(ToolButton::new(icons::ARROW_COUNTER_CLOCKWISE, "Undo edits").enabled(changed)),
+                None,
+                Some(ToolButton::new(icons::ARROWS_CLOCKWISE, "Restart Explorer")),
+            ],
+            |_| {},
+        ) {
+            Some(0) => {
+                if block & letter_bit(system_letter()) != 0 {
                     self.confirm.ask(
                         format!("Blocking {}: also blocks the Windows drive in File Explorer for this account. Continue?", system_letter()),
                         Ask::SaveDrives,
@@ -369,15 +350,64 @@ impl DeviceSecurity {
                     self.save_drives(ctx);
                 }
             }
-            if changed && ui.button(ctx.i18n.tr("common-cancel")).clicked() {
+            Some(1) => {
                 self.hide = None;
                 self.block = None;
             }
-            if ui.button("Restart Explorer").clicked() {
+            Some(3) => {
                 self.message = Some(
-                    wm_core::process::restart_explorer().map(|()| "Explorer restarted.".into()).map_err(|e| format!("{e:#}")),
+                    wm_core::process::restart_explorer()
+                        .map(|()| "Explorer restarted.".into())
+                        .map_err(|e| format!("{e:#}")),
                 );
             }
+            _ => {}
+        }
+        frame::status(
+            ui,
+            &format!("{} hidden, {} blocked", hide.count_ones(), block.count_ones()),
+            |ui| {
+                ui.weak("Applies to this account after Explorer restarts.");
+            },
+        );
+        frame::central(ui, |ui| {
+            show_message(ui, &self.message);
+            ui.label("Hidden drives don't appear in This PC or File Explorer. Blocked drives can't be opened from File Explorer for this account.");
+            ui.weak("Programs can still reach hidden drives by path; use Removable storage policies to really block devices.");
+            ui.add_space(8.0);
+            let present = present_letters();
+            let letters: Vec<char> = ('A'..='Z')
+                .filter(|&c| present & letter_bit(c) != 0 || (hide | block) & letter_bit(c) != 0)
+                .collect();
+            let (mut new_hide, mut new_block) = (hide, block);
+            section(
+                ui,
+                "Drives",
+                |_| {},
+                |ui| {
+                    egui::Grid::new("drive_masks")
+                        .spacing([18.0, 8.0])
+                        .show(ui, |ui| {
+                            ui.label("");
+                            for c in &letters {
+                                ui.strong(format!("{}  {c}:", icons::HARD_DRIVES));
+                            }
+                            ui.end_row();
+                            for (label, mask) in [("Hide", &mut new_hide), ("Block access", &mut new_block)] {
+                                ui.label(label);
+                                for &c in &letters {
+                                    let mut on = *mask & letter_bit(c) != 0;
+                                    if ui.checkbox(&mut on, "").changed() {
+                                        *mask ^= letter_bit(c);
+                                    }
+                                }
+                                ui.end_row();
+                            }
+                        });
+                },
+            );
+            self.hide = Some(new_hide);
+            self.block = Some(new_block);
         });
     }
 
@@ -395,139 +425,208 @@ impl DeviceSecurity {
     }
 
     fn programs(&mut self, ui: &mut egui::Ui, ctx: &mut AppCtx<'_>) {
-        ui.label("Programs on this list can't be started from File Explorer, Start or the taskbar by this account.");
-        ui.weak(
-            "Windows matches the file name only, and programs started by other programs are not blocked.",
-        );
-        ui.horizontal(|ui| {
-            ui.weak("To block for every account, by content (hash) or by publisher (signature), use");
-            if ui.link("App Locker").clicked() {
-                wm_core::ui::request_open_tool(ui.ctx(), "applocker");
+        let changed = *self.blocked.get_or_insert_with(read_blocked) != read_blocked();
+        match frame::toolbar(
+            ui,
+            &[
+                Some(ToolButton::new(icons::FLOPPY_DISK, "Save").enabled(changed)),
+                Some(ToolButton::new(icons::ARROW_COUNTER_CLOCKWISE, "Undo edits").enabled(changed)),
+                None,
+                Some(ToolButton::new(icons::SHIELD_CHECK, "App Locker")),
+            ],
+            |_| {},
+        ) {
+            Some(0) => {
+                let list = self.blocked.clone().unwrap_or_default();
+                self.message = Some(if ctx.config.dry_run {
+                    Ok(ctx.i18n.tr("common-dry-run-skip"))
+                } else {
+                    save_blocked(&list, ctx.journal)
+                        .map(|()| {
+                            "Saved. Takes effect for newly started programs; restart Explorer if needed."
+                                .into()
+                        })
+                        .map_err(|e| format!("{e:#}"))
+                });
+                self.blocked = None;
             }
+            Some(1) => self.blocked = None,
+            Some(3) => wm_core::ui::request_open_tool(ui.ctx(), "applocker"),
+            _ => {}
+        }
+        let count = self.blocked.as_ref().map_or(0, Vec::len);
+        frame::status(ui, &format!("{count} programs blocked for this account"), |ui| {
+            ui.weak("For every account, or by hash or publisher, use App Locker.");
         });
-        ui.add_space(6.0);
-        let list = self.blocked.get_or_insert_with(read_blocked);
-        let mut remove = None;
-        if list.is_empty() {
-            ui.weak("No programs are blocked.");
-        }
-        for (i, name) in list.iter().enumerate() {
-            ui.horizontal(|ui| {
-                ui.label(format!("{}  {name}", icons::STOP_CIRCLE));
-                if ui
-                    .small_button(icons::X)
-                    .on_hover_text("Remove from the list")
-                    .clicked()
-                {
-                    remove = Some(i);
-                }
-            });
-        }
-        if let Some(i) = remove {
-            list.remove(i);
-        }
-        ui.horizontal(|ui| {
-            ui.add(
-                egui::TextEdit::singleline(&mut self.new_program)
-                    .hint_text("program.exe")
-                    .desired_width(200.0),
+        frame::central(ui, |ui| {
+            show_message(ui, &self.message);
+            ui.label("Programs on this list can't be started from File Explorer, Start or the taskbar by this account.");
+            ui.weak(
+                "Windows matches the file name only, and programs started by other programs are not blocked.",
             );
-            if ui.button("Browse…").clicked()
-                && let Some(p) = rfd::FileDialog::new()
-                    .add_filter("Programs", &["exe"])
-                    .pick_file()
-                && let Some(n) = p.file_name()
-            {
-                self.new_program = n.to_string_lossy().into_owned();
-            }
-            let ok = valid_program_name(&self.new_program);
-            if ui
-                .add_enabled(ok, egui::Button::new(format!("{}  Add", icons::PLUS)))
-                .clicked()
-            {
-                let n = self.new_program.trim().to_owned();
-                if !list.iter().any(|x| x.eq_ignore_ascii_case(&n)) {
-                    list.push(n);
-                }
-                self.new_program.clear();
-            }
+            ui.add_space(8.0);
+            let list = self.blocked.get_or_insert_with(read_blocked);
+            let new_program = &mut self.new_program;
+            section(
+                ui,
+                "Blocked programs",
+                |_| {},
+                |ui| {
+                    let mut remove = None;
+                    if list.is_empty() {
+                        ui.weak("No programs are blocked.");
+                    }
+                    for (i, name) in list.iter().enumerate() {
+                        ui.horizontal(|ui| {
+                            ui.label(format!("{}  {name}", icons::STOP_CIRCLE));
+                            if ui
+                                .small_button(icons::X)
+                                .on_hover_text("Remove from the list")
+                                .clicked()
+                            {
+                                remove = Some(i);
+                            }
+                        });
+                    }
+                    if let Some(i) = remove {
+                        list.remove(i);
+                    }
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        ui.add(
+                            egui::TextEdit::singleline(new_program)
+                                .hint_text("program.exe")
+                                .desired_width(200.0),
+                        );
+                        if ui.button("Browse…").clicked()
+                            && let Some(p) = rfd::FileDialog::new()
+                                .add_filter("Programs", &["exe"])
+                                .pick_file()
+                            && let Some(n) = p.file_name()
+                        {
+                            *new_program = n.to_string_lossy().into_owned();
+                        }
+                        if ui
+                            .add_enabled(
+                                valid_program_name(new_program),
+                                egui::Button::new(format!("{}  Add", icons::PLUS)),
+                            )
+                            .clicked()
+                        {
+                            let n = new_program.trim().to_owned();
+                            if !list.iter().any(|x| x.eq_ignore_ascii_case(&n)) {
+                                list.push(n);
+                            }
+                            new_program.clear();
+                        }
+                    });
+                },
+            );
         });
-        let changed = *list != read_blocked();
-        ui.add_space(6.0);
-        if ui
-            .add_enabled(
-                changed,
-                egui::Button::new(format!("{}  Save", icons::FLOPPY_DISK)),
-            )
-            .clicked()
-        {
-            let list = list.clone();
-            self.message = Some(if ctx.config.dry_run {
-                Ok(ctx.i18n.tr("common-dry-run-skip"))
-            } else {
-                save_blocked(&list, ctx.journal)
-                    .map(|()| {
-                        "Saved. Takes effect for newly started programs; restart Explorer if needed.".into()
-                    })
-                    .map_err(|e| format!("{e:#}"))
-            });
-            self.blocked = None;
-        }
     }
 
     fn usb_protection(&mut self, ui: &mut egui::Ui, ctx: &mut AppCtx<'_>) {
-        ui.label(
-            "Creates a protected autorun.inf folder on a USB drive, so malware can't place an autorun file there. \
-             Your files are not touched.",
+        // Repainting the toolbar is enough to re-read the drives; the button just
+        // makes that explicit after plugging a drive in.
+        let _ = frame::toolbar(
+            ui,
+            &[Some(ToolButton::new(icons::ARROWS_CLOCKWISE, "Refresh"))],
+            |_| {},
         );
-        ui.add_space(6.0);
         let present = present_letters();
         let drives: Vec<char> = ('A'..='Z')
             .filter(|&c| present & letter_bit(c) != 0 && drive_type(&format!(r"{c}:\")) == DRIVE_REMOVABLE)
             .collect();
-        if drives.is_empty() {
-            ui.weak("No USB drives or memory cards are connected.");
-        }
-        for c in drives {
-            let protected = autorun_path(c).is_dir();
-            ui.horizontal(|ui| {
-                ui.label(format!("{}  {c}:", icons::USB));
-                ui.weak(if protected { "protected" } else { "not protected" });
-                if !protected && ui.button("Protect").clicked() {
-                    self.message = Some(if ctx.config.dry_run {
-                        Ok(ctx.i18n.tr("common-dry-run-skip"))
-                    } else {
-                        protect_drive(c, ctx.journal)
-                            .map(|()| format!("{c}: is protected."))
-                            .map_err(|e| format!("{e:#}"))
-                    });
-                }
-                if protected && ui.button("Remove protection").clicked() {
-                    self.message = Some(
-                        unprotect_drive(c)
-                            .map(|()| format!("Removed the protection from {c}:."))
-                            .map_err(|e| format!("{e:#}")),
-                    );
-                }
-            });
-        }
+        frame::status(
+            ui,
+            &format!("{} removable drives connected", drives.len()),
+            |ui| {
+                ui.weak("Your files are not touched.");
+            },
+        );
+        frame::central(ui, |ui| {
+            show_message(ui, &self.message);
+            ui.label(
+                "Creates a protected autorun.inf folder on a USB drive, so malware can't place an autorun file there.",
+            );
+            ui.add_space(8.0);
+            if drives.is_empty() {
+                empty_state(
+                    ui,
+                    icons::USB,
+                    "No USB drives connected",
+                    "Plug in a USB drive or memory card, then press Refresh.",
+                );
+            }
+            for c in drives {
+                let protected = autorun_path(c).is_dir();
+                section(
+                    ui,
+                    "",
+                    |_| {},
+                    |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new(icons::USB).size(20.0));
+                            ui.strong(format!("Drive {c}:"));
+                            ui.weak(if protected { "Protected" } else { "Not protected" });
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                if !protected && ui.button("Protect").clicked() {
+                                    self.message = Some(if ctx.config.dry_run {
+                                        Ok(ctx.i18n.tr("common-dry-run-skip"))
+                                    } else {
+                                        protect_drive(c, ctx.journal)
+                                            .map(|()| format!("{c}: is protected."))
+                                            .map_err(|e| format!("{e:#}"))
+                                    });
+                                }
+                                if protected && ui.button("Remove protection").clicked() {
+                                    self.message = Some(
+                                        unprotect_drive(c)
+                                            .map(|()| format!("Removed the protection from {c}:."))
+                                            .map_err(|e| format!("{e:#}")),
+                                    );
+                                }
+                            });
+                        });
+                    },
+                );
+                ui.add_space(6.0);
+            }
+        });
     }
 
     fn letters(&mut self, ui: &mut egui::Ui, ctx: &mut AppCtx<'_>) {
-        ui.label("Remove a drive letter to hide a partition from every program, or give a partition without a letter one.");
-        ui.weak(format!(
-            "The Windows drive ({}:) is never changed.",
-            system_letter()
-        ));
-        ui.add_space(6.0);
-        if ui.button(ctx.i18n.tr("common-refresh")).clicked() {
+        if frame::toolbar(
+            ui,
+            &[Some(ToolButton::new(icons::ARROWS_CLOCKWISE, "Refresh"))],
+            |_| {},
+        ) == Some(0)
+        {
             self.volumes = None;
         }
         let volumes = self.volumes.get_or_insert_with(list_volumes).clone();
-        let used = present_letters();
-        let free: Vec<char> = ('D'..='Z').filter(|&c| used & letter_bit(c) == 0).collect();
-        let locked = !ctx.elevated;
-        egui::Grid::new("volumes").striped(true).spacing([14.0, 6.0]).show(ui, |ui| {
+        frame::status(
+            ui,
+            &format!(
+                "{} partitions, {} without a letter",
+                volumes.len(),
+                volumes.iter().filter(|v| v.mounts.is_empty()).count()
+            ),
+            |ui| {
+                ui.weak(format!(
+                    "The Windows drive ({}:) is never changed.",
+                    system_letter()
+                ));
+            },
+        );
+        frame::central(ui, |ui| {
+            show_message(ui, &self.message);
+            ui.label("Remove a drive letter to hide a partition from every program, or give a partition without a letter one.");
+            ui.add_space(8.0);
+            let used = present_letters();
+            let free: Vec<char> = ('D'..='Z').filter(|&c| used & letter_bit(c) == 0).collect();
+            let locked = !ctx.elevated;
+            egui::Grid::new("volumes").striped(true).spacing([14.0, 6.0]).show(ui, |ui| {
             for h in ["Mounted at", "Label", "File system", "Size", ""] {
                 ui.strong(h);
             }
@@ -582,6 +681,7 @@ impl DeviceSecurity {
                 ui.end_row();
             }
         });
+        });
     }
 }
 
@@ -609,27 +709,20 @@ impl Tool for DeviceSecurity {
             Some(Ask::SaveDrives) => self.save_drives(ctx),
             None => {}
         }
-        ui.horizontal_top(|ui| {
-            ui.vertical(|ui| {
-                ui.set_width(210.0);
-                if section_nav(ui, &SECTIONS, &mut self.section) {
-                    self.message = None;
-                }
-            });
-            ui.add_space(14.0);
-            ui.vertical(|ui| {
-                ui.heading(SECTIONS[self.section].1);
-                ui.add_space(4.0);
-                show_message(ui, &self.message);
-                match self.section {
-                    0 => self.drives(ui, ctx),
-                    1 => self.programs(ui, ctx),
-                    2 => self.policies.ui(ui, ctx),
-                    3 => self.usb_protection(ui, ctx),
-                    _ => self.letters(ui, ctx),
-                }
-            });
-        });
+        if frame::left(ui, 200.0, |ui| section_nav(ui, &SECTIONS, &mut self.section)) {
+            self.message = None;
+        }
+        match self.section {
+            0 => self.drives(ui, ctx),
+            1 => self.programs(ui, ctx),
+            2 => frame::nested(ui, |ui| self.policies.ui_framed(ui, ctx)),
+            3 => self.usb_protection(ui, ctx),
+            _ => self.letters(ui, ctx),
+        }
+    }
+
+    fn layout(&self) -> Layout {
+        Layout::Fill
     }
 }
 

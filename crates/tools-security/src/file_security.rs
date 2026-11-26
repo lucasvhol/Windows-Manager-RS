@@ -22,13 +22,13 @@ use windows::Win32::Security::{
 };
 use windows::core::{HSTRING, PCWSTR, PWSTR};
 use wm_core::{
-    AppCtx, Category, Tool, egui,
+    AppCtx, Category, Layout, Tool, egui,
     explorer_verb::{self, Target, Verb},
-    paths,
+    icons, paths,
     process::{hidden_command, run_checked},
     safety::UndoAction,
     task::BackgroundTask,
-    ui::{Confirm, Message, show_message},
+    ui::{Confirm, Message, ToolButton, frame, show_message},
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -454,57 +454,75 @@ impl FileSecurity {
         self.holders = None;
     }
 
-    fn list_ui(&mut self, ui: &mut egui::Ui, ctx: &AppCtx<'_>) {
-        ui.horizontal(|ui| {
-            if ui.button("Add files…").clicked()
-                && let Some(files) = rfd::FileDialog::new().pick_files()
-            {
-                self.add(files);
+    fn list_toolbar(&mut self, ui: &mut egui::Ui, ctx: &AppCtx<'_>) {
+        let (has_sel, has_items) = (self.selected.is_some(), !self.items.is_empty());
+        let mut menu_change = None;
+        let installed = *self.menu_installed.get_or_insert_with(|| VERB.is_installed());
+        let clicked = frame::toolbar(
+            ui,
+            &[
+                Some(ToolButton::new(icons::PLUS, "Add files")),
+                Some(ToolButton::new(icons::FOLDERS, "Add folder")),
+                Some(ToolButton::new(icons::MINUS, "Remove").enabled(has_sel)),
+                Some(ToolButton::new(icons::TRASH, "Clear list").enabled(has_items)),
+            ],
+            |ui| {
+                let mut on = installed;
+                if ui
+                    .checkbox(&mut on, "In Explorer's right-click menu")
+                    .on_hover_text(
+                        "Adds \"Encrypt, shred or unlock with Win Manager\" for files and folders.",
+                    )
+                    .changed()
+                {
+                    menu_change = Some(on);
+                }
+            },
+        );
+        match clicked {
+            Some(0) => {
+                if let Some(files) = rfd::FileDialog::new().pick_files() {
+                    self.add(files);
+                }
             }
-            if ui.button("Add folder…").clicked()
-                && let Some(d) = rfd::FileDialog::new().pick_folder()
-            {
-                self.add([d]);
+            Some(1) => {
+                if let Some(d) = rfd::FileDialog::new().pick_folder() {
+                    self.add([d]);
+                }
             }
-            if ui
-                .add_enabled(self.selected.is_some(), egui::Button::new("Remove"))
-                .clicked()
-                && let Some(i) = self.selected
-            {
-                self.items.remove(i);
-                self.selected = (!self.items.is_empty()).then(|| i.min(self.items.len() - 1));
-                self.load();
-                self.holders = None;
+            Some(2) => {
+                if let Some(i) = self.selected {
+                    self.items.remove(i);
+                    self.selected = (!self.items.is_empty()).then(|| i.min(self.items.len() - 1));
+                    self.load();
+                    self.holders = None;
+                }
             }
-            if ui
-                .add_enabled(!self.items.is_empty(), egui::Button::new("Clear list"))
-                .clicked()
-            {
+            Some(3) => {
                 self.items.clear();
                 self.selected = None;
                 self.security = None;
                 self.holders = None;
             }
-            let installed = *self.menu_installed.get_or_insert_with(|| VERB.is_installed());
-            let mut on = installed;
-            if ui
-                .checkbox(&mut on, "In Explorer's right-click menu")
-                .on_hover_text("Adds \"Encrypt, shred or unlock with Win Manager\" for files and folders.")
-                .changed()
-            {
-                let r = if on {
-                    VERB.install(ctx.journal, "filesecurity")
-                } else {
-                    VERB.uninstall(ctx.journal, "filesecurity")
-                };
-                self.message = Some(
-                    r.map(|()| "Explorer menu updated.".into())
-                        .map_err(|e| format!("{e:#}")),
-                );
-                self.menu_installed = None;
-            }
-        });
-        ui.weak("You can also drop files and folders on this window.");
+            _ => {}
+        }
+        if let Some(on) = menu_change {
+            let r = if on {
+                VERB.install(ctx.journal, "filesecurity")
+            } else {
+                VERB.uninstall(ctx.journal, "filesecurity")
+            };
+            self.message = Some(
+                r.map(|()| "Explorer menu updated.".into())
+                    .map_err(|e| format!("{e:#}")),
+            );
+            self.menu_installed = None;
+        }
+    }
+
+    fn list_ui(&mut self, ui: &mut egui::Ui) {
+        ui.weak("Files and folders");
+        ui.add_space(4.0);
         let dropped: Vec<PathBuf> = ui.ctx().input(|i| {
             i.raw
                 .dropped_files
@@ -516,24 +534,27 @@ impl FileSecurity {
             self.add(dropped);
         }
         let mut clicked = None;
-        egui::ScrollArea::vertical()
-            .id_salt("fs-items")
-            .max_height(140.0)
-            .auto_shrink([false, true])
-            .show(ui, |ui| {
-                if self.items.is_empty() {
-                    ui.weak("No files or folders yet.");
-                }
-                for (i, p) in self.items.iter().enumerate() {
-                    let kind = if p.is_dir() { "folder" } else { "file" };
-                    if ui
-                        .selectable_label(self.selected == Some(i), format!("{}   ({kind})", p.display()))
-                        .clicked()
-                    {
-                        clicked = Some(i);
-                    }
-                }
-            });
+        if self.items.is_empty() {
+            ui.weak("Add files or folders, or drop them on this window.");
+        }
+        for (i, p) in self.items.iter().enumerate() {
+            let icon = if p.is_dir() {
+                icons::FOLDERS
+            } else {
+                icons::FILE_TEXT
+            };
+            let name = p
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| p.display().to_string());
+            if ui
+                .selectable_label(self.selected == Some(i), format!("{icon}  {name}"))
+                .on_hover_text(p.display().to_string())
+                .clicked()
+            {
+                clicked = Some(i);
+            }
+        }
         if let Some(i) = clicked {
             self.selected = Some(i);
             self.load();
@@ -874,6 +895,10 @@ impl Tool for Unlocker {
     fn ui(&mut self, ui: &mut egui::Ui, ctx: &mut AppCtx<'_>) {
         self.0.ui(ui, ctx);
     }
+
+    fn layout(&self) -> Layout {
+        Layout::Fill
+    }
 }
 
 impl Tool for FileSecurity {
@@ -892,25 +917,53 @@ impl Tool for FileSecurity {
                 self.add([p]);
             }
         }
-        self.list_ui(ui, ctx);
-        show_message(ui, &self.message);
-        ui.add_space(4.0);
-        ui.horizontal(|ui| {
-            ui.selectable_value(&mut self.tab, Tab::Encrypt, "Encrypt and decrypt");
-            ui.selectable_value(&mut self.tab, Tab::Shred, "Shred");
-            ui.selectable_value(&mut self.tab, Tab::Permissions, "Permissions");
-            ui.selectable_value(&mut self.tab, Tab::Unlock, "Unlock");
+        self.list_toolbar(ui, ctx);
+        frame::options(ui, |ui| {
+            ui.selectable_value(
+                &mut self.tab,
+                Tab::Encrypt,
+                format!("{}  Encrypt and decrypt", icons::LOCK),
+            );
+            ui.selectable_value(&mut self.tab, Tab::Shred, format!("{}  Shred", icons::SCISSORS));
+            ui.selectable_value(
+                &mut self.tab,
+                Tab::Permissions,
+                format!("{}  Permissions", icons::KEY),
+            );
+            ui.selectable_value(
+                &mut self.tab,
+                Tab::Unlock,
+                format!("{}  Unlock", icons::FILE_LOCK),
+            );
         });
-        ui.separator();
-        match self.tab {
-            Tab::Encrypt => {
-                self.lock.set_targets(&self.items);
-                self.lock.panel(ui, ctx, false);
+        let dirs = self.items.iter().filter(|p| p.is_dir()).count();
+        frame::status(
+            ui,
+            &format!("{} files and {dirs} folders in the list", self.items.len() - dirs),
+            |ui| {
+                ui.weak("You can also drop files and folders on this window.");
+            },
+        );
+        frame::left(ui, 260.0, |ui| self.list_ui(ui));
+        frame::central(ui, |ui| {
+            show_message(ui, &self.message);
+            match self.tab {
+                Tab::Encrypt => {
+                    self.lock.set_targets(&self.items);
+                    self.lock.poll(ui, ctx);
+                    ui.horizontal(|ui| self.lock.mode_picker(ui));
+                    ui.add_space(6.0);
+                    self.lock.body(ui, ctx);
+                }
+                Tab::Shred => self.shred_ui(ui, ctx),
+                Tab::Permissions => self.permissions_ui(ui, ctx),
+                Tab::Unlock => self.unlock_ui(ui, ctx),
             }
-            Tab::Shred => self.shred_ui(ui, ctx),
-            Tab::Permissions => self.permissions_ui(ui, ctx),
-            Tab::Unlock => self.unlock_ui(ui, ctx),
-        }
+        });
+    }
+
+    fn layout(&self) -> Layout {
+        Layout::Fill
     }
 }
 

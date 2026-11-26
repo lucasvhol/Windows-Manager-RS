@@ -12,12 +12,13 @@
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
+use egui_extras::{Column, TableBuilder};
 use md5::{Digest, Md5};
 use wm_core::{
-    AppCtx, Category, Tool, acl, egui, registry,
+    AppCtx, Category, Layout, Tool, acl, egui, icons, registry,
     registry::RawValue,
     safety::UndoAction,
-    ui::{Confirm, Message, show_message},
+    ui::{Confirm, Message, ToolButton, empty_state, frame, section, show_message},
 };
 
 pub const SRP: &str = r"HKLM\SOFTWARE\Policies\Microsoft\Windows\Safer\CodeIdentifiers";
@@ -797,6 +798,8 @@ enum Pending {
 
 pub struct AppLocker {
     rules: Option<Vec<Rule>>,
+    /// Registry key of the selected rule.
+    selected: Option<String>,
     how: AddHow,
     level: Level,
     typed: String,
@@ -808,6 +811,7 @@ impl Default for AppLocker {
     fn default() -> Self {
         Self {
             rules: None,
+            selected: None,
             how: AddHow::Path,
             level: Level::Blocked,
             typed: String::new(),
@@ -892,6 +896,7 @@ impl Tool for AppLocker {
                             delete_key(&rule.key)?;
                             Ok(undo)
                         });
+                        self.selected = None;
                         self.done(ctx, format!("Removed the rule for {}", rule.target), r);
                     }
                     Pending::Mode(policy) => {
@@ -906,59 +911,282 @@ impl Tool for AppLocker {
             }
         }
 
-        ui.label("Decide which programs may run on this PC, for every account. Windows enforces it each time a program starts.");
-        if !ctx.elevated {
-            ui.colored_label(
-                ui.visuals().warn_fg_color,
-                "App Locker needs administrator rights (restart the app as administrator).",
-            );
-            return;
-        }
-        if locked(&root()) {
-            ui.group(|ui| {
-                ui.colored_label(
-                    ui.visuals().warn_fg_color,
-                    "Another program left the policy key read-only, even for administrators.",
-                );
-                if ui
-                    .button("Unlock it")
-                    .on_hover_text(
-                        "Gives Administrators full control of the key. Undo restores the old permissions.",
+        let usable = ctx.elevated && !locked(&root());
+        let rules = if usable {
+            self.rules
+                .get_or_insert_with(|| {
+                    let mut r = list_rules(&root());
+                    r.extend(list_publishers());
+                    r
+                })
+                .clone()
+        } else {
+            Vec::new()
+        };
+        let selected = self
+            .selected
+            .as_ref()
+            .and_then(|k| rules.iter().find(|r| &r.key == k))
+            .cloned();
+        match frame::toolbar(
+            ui,
+            &[
+                Some(ToolButton::new(icons::PLUS, "Add program").enabled(usable)),
+                Some(
+                    ToolButton::new(icons::FOLDERS, "Add folder").enabled(usable && self.how == AddHow::Path),
+                ),
+                Some(ToolButton::new(icons::TRASH, "Remove").enabled(selected.is_some())),
+                None,
+                Some(ToolButton::new(icons::FLOPPY_DISK, "Back up").enabled(usable)),
+                Some(ToolButton::new(icons::CLOCK_COUNTER_CLOCKWISE, "Restore").enabled(usable)),
+                Some(ToolButton::new(icons::ARROWS_CLOCKWISE, "Refresh").enabled(usable)),
+            ],
+            |_| {},
+        ) {
+            Some(0) => {
+                if let Some(f) = rfd::FileDialog::new()
+                    .add_filter(
+                        "Programs",
+                        &["exe", "com", "bat", "cmd", "msi", "ps1", "vbs", "js"],
                     )
-                    .clicked()
+                    .pick_file()
                 {
-                    let r = unlock(&root());
-                    self.done(ctx, "Unlocked the program-restriction policy key".into(), r);
+                    self.add(ctx, Some(&f));
+                }
+            }
+            Some(1) => {
+                if let Some(d) = rfd::FileDialog::new().pick_folder() {
+                    self.add(ctx, Some(&d));
+                }
+            }
+            Some(2) => {
+                if let Some(r) = selected.clone() {
+                    let extra = if r.ours {
+                        ""
+                    } else {
+                        " It wasn't made by Win Manager RS."
+                    };
+                    self.confirm.ask(
+                        format!("Remove the rule for {}?{extra} It can be undone.", r.target),
+                        Pending::Remove(r),
+                    );
+                }
+            }
+            Some(4) => {
+                if let Some(f) = rfd::FileDialog::new()
+                    .add_filter("Registry file", &["reg"])
+                    .set_file_name("App Locker backup.reg")
+                    .save_file()
+                {
+                    self.message = Some(
+                        back_up(&root(), &f)
+                            .map(|()| format!("Saved to {}. Publisher rules aren't included.", f.display()))
+                            .map_err(|e| format!("{e:#}")),
+                    );
+                }
+            }
+            Some(5) => {
+                if let Some(f) = rfd::FileDialog::new()
+                    .add_filter("Registry file", &["reg"])
+                    .pick_file()
+                {
+                    self.confirm.ask(
+                        format!(
+                            "Replace the current App Locker rules with the ones in {}? It can be undone.",
+                            f.display()
+                        ),
+                        Pending::Restore(f),
+                    );
+                }
+            }
+            Some(6) => {
+                self.rules = None;
+                self.message = None;
+            }
+            _ => {}
+        }
+        if usable {
+            frame::options(ui, |ui| {
+                ui.label("New rule:");
+                egui::ComboBox::from_id_salt("al-level")
+                    .selected_text(self.level.label())
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut self.level, Level::Blocked, "Block");
+                        ui.selectable_value(&mut self.level, Level::Allowed, "Allow");
+                    });
+                egui::ComboBox::from_id_salt("al-how")
+                    .selected_text(self.how.label())
+                    .width(280.0)
+                    .show_ui(ui, |ui| {
+                        for h in AddHow::ALL {
+                            ui.selectable_value(&mut self.how, h, h.label());
+                        }
+                    });
+                if self.how == AddHow::Name {
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.typed)
+                            .hint_text("game.exe")
+                            .desired_width(160.0),
+                    );
+                    if ui
+                        .add_enabled(!self.typed.trim().is_empty(), egui::Button::new("Add"))
+                        .clicked()
+                    {
+                        self.add(ctx, None);
+                        self.typed.clear();
+                    }
+                } else {
+                    ui.weak("then Add program or Add folder");
                 }
             });
-            show_message(ui, &self.message);
+        }
+        let inactive = if usable { inactive_count(&root()) } else { 0 };
+        let status = format!(
+            "{} rules, {} blocking",
+            rules.len(),
+            rules.iter().filter(|r| r.level == Level::Blocked).count()
+        );
+        frame::status(ui, &status, |ui| {
+            if inactive > 0 {
+                ui.weak(format!(
+                    "{inactive} inactive templates from another program are left alone"
+                ));
+            } else {
+                ui.weak("Windows enforces the rules each time a program starts, for every account.");
+            }
+        });
+        if !usable {
+            frame::central(ui, |ui| {
+                show_message(ui, &self.message);
+                if !ctx.elevated {
+                    empty_state(
+                        ui,
+                        icons::SHIELD,
+                        "Administrator rights needed",
+                        "App Locker decides which programs may run, for every account. Restart the app as administrator.",
+                    );
+                    return;
+                }
+                section(
+                    ui,
+                    "The policy key is read-only",
+                    |_| {},
+                    |ui| {
+                        ui.colored_label(
+                            ui.visuals().warn_fg_color,
+                            "Another program left the policy key read-only, even for administrators.",
+                        );
+                        ui.add_space(4.0);
+                        if ui
+                        .button("Unlock it")
+                        .on_hover_text(
+                            "Gives Administrators full control of the key. Undo restores the old permissions.",
+                        )
+                        .clicked()
+                    {
+                        let r = unlock(&root());
+                        self.done(ctx, "Unlocked the program-restriction policy key".into(), r);
+                    }
+                    },
+                );
+            });
             return;
         }
-        show_message(ui, &self.message);
-        let rules = self.rules.get_or_insert_with(|| {
-            let mut r = list_rules(&root());
-            r.extend(list_publishers());
-            r
-        });
-        let rules = rules.clone();
 
-        // Mode
+        frame::left(ui, 300.0, |ui| self.settings_pane(ui, ctx, &rules));
+        frame::central_fixed(ui, |ui| {
+            show_message(ui, &self.message);
+            if rules.is_empty() {
+                empty_state(
+                    ui,
+                    icons::SHIELD_CHECK,
+                    "No rules yet",
+                    "Choose Block or Allow and how to match above, then Add program or Add folder.",
+                );
+                return;
+            }
+            let mut clicked = None;
+            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
+            TableBuilder::new(ui)
+                .striped(true)
+                .sense(egui::Sense::click())
+                .column(Column::initial(70.0))
+                .column(Column::initial(90.0))
+                .column(Column::initial(330.0).clip(true))
+                .column(Column::remainder().clip(true))
+                .header(22.0, |mut h| {
+                    for t in ["", "Type", "Matches", "Note"] {
+                        h.col(|ui| {
+                            ui.strong(t);
+                        });
+                    }
+                })
+                .body(|body| {
+                    body.rows(22.0, rules.len(), |mut row| {
+                        let r = &rules[row.index()];
+                        row.set_selected(self.selected.as_ref() == Some(&r.key));
+                        row.col(|ui| {
+                            if r.level == Level::Blocked {
+                                ui.colored_label(ui.visuals().warn_fg_color, r.level.label());
+                            } else {
+                                ui.label(r.level.label());
+                            }
+                        });
+                        row.col(|ui| {
+                            ui.weak(r.kind.label());
+                        });
+                        row.col(|ui| {
+                            ui.label(&r.target).on_hover_text(&r.target);
+                        });
+                        row.col(|ui| {
+                            ui.weak(
+                                r.description
+                                    .strip_prefix(&format!("{MARK}: "))
+                                    .unwrap_or(&r.description),
+                            );
+                        });
+                        if row.response().clicked() {
+                            clicked = Some(r.key.clone());
+                        }
+                    });
+                });
+            if clicked.is_some() {
+                self.selected = clicked;
+            }
+        });
+    }
+
+    fn layout(&self) -> Layout {
+        Layout::Fill
+    }
+}
+
+impl AppLocker {
+    /// Mode, quick blocks and templates, in the left pane.
+    fn settings_pane(&mut self, ui: &mut egui::Ui, ctx: &AppCtx<'_>, rules: &[Rule]) {
         let policy = read_policy(&root());
-        ui.add_space(4.0);
-        ui.strong("Mode");
         let mut want = policy;
-        ui.radio_value(
-            &mut want.default_allowed,
-            true,
-            "Block only the programs I list (everything else runs)",
+        section(
+            ui,
+            "Mode",
+            |_| {},
+            |ui| {
+                ui.radio_value(
+                    &mut want.default_allowed,
+                    true,
+                    "Block only the programs I list (everything else runs)",
+                );
+                ui.radio_value(
+                    &mut want.default_allowed,
+                    false,
+                    "Allow only the programs I list, plus Windows and Program Files",
+                );
+                ui.checkbox(&mut want.skip_admins, "Don't restrict administrators")
+                    .on_hover_text(
+                        "Administrators (including this app when run as administrator) can run anything.",
+                    );
+            },
         );
-        ui.radio_value(
-            &mut want.default_allowed,
-            false,
-            "Allow only the programs I list, plus Windows and Program Files",
-        );
-        ui.checkbox(&mut want.skip_admins, "Don't restrict administrators")
-            .on_hover_text("Administrators (including this app when run as administrator) can run anything.");
         if want != policy {
             let text = if !want.default_allowed && policy.default_allowed {
                 "Switch to allow-only? Programs outside Windows, Program Files and the allowed list will refuse to start, \
@@ -968,176 +1196,66 @@ impl Tool for AppLocker {
             };
             self.confirm.ask(text, Pending::Mode(want));
         }
-
-        // Quick blocks
-        ui.add_space(6.0);
-        ui.strong("Quick blocks (every account)");
-        if !policy.skip_admins {
-            ui.weak("Win Manager RS uses Command Prompt and PowerShell for some of its own tools; while those are blocked for administrators, those parts stop working.");
-        }
-        ui.horizontal_wrapped(|ui| {
-            for (title, path) in QUICK {
-                let existing = quick_rule(&rules, path).cloned();
-                let mut on = existing.is_some();
-                if ui.checkbox(&mut on, title).changed() {
-                    if on {
-                        let r = add_path_rule(&root(), Level::Blocked, path, title);
-                        self.done(ctx, format!("Blocked {title}"), r);
-                    } else if let Some(rule) = existing {
-                        let r = ctx.journal.backup_reg_key(&rule.key).and_then(|undo| {
-                            delete_key(&rule.key)?;
-                            Ok(undo)
-                        });
-                        self.done(ctx, format!("Unblocked {title}"), r);
-                    }
+        ui.add_space(8.0);
+        section(
+            ui,
+            "Quick blocks",
+            |_| {},
+            |ui| {
+                if !policy.skip_admins {
+                    ui.weak("Win Manager RS uses Command Prompt and PowerShell for some of its own tools; while those are blocked for administrators, those parts stop working.");
+                    ui.add_space(4.0);
                 }
-            }
-        });
-        ui.horizontal_wrapped(|ui| {
-            ui.weak("Templates:");
-            for (name, what, titles) in TEMPLATES {
-                if ui.button(name).on_hover_text(format!("{what}: {}", titles.join(", "))).clicked() {
-                    if ctx.config.dry_run {
-                        self.message = Some(Ok(ctx.i18n.tr("common-dry-run-skip")));
-                    } else {
-                        match apply_template(&root(), titles) {
-                            Ok(Some(undo)) => self.done(ctx, format!("Applied the {name} template"), Ok(undo)),
-                            Ok(None) => self.message = Some(Ok(format!("Everything in {name} is already blocked."))),
-                            Err(e) => self.done(ctx, String::new(), Err(e)),
+                for (title, path) in QUICK {
+                    let existing = quick_rule(rules, path).cloned();
+                    let mut on = existing.is_some();
+                    if ui.checkbox(&mut on, title).changed() {
+                        if on {
+                            let r = add_path_rule(&root(), Level::Blocked, path, title);
+                            self.done(ctx, format!("Blocked {title}"), r);
+                        } else if let Some(rule) = existing {
+                            let r = ctx.journal.backup_reg_key(&rule.key).and_then(|undo| {
+                                delete_key(&rule.key)?;
+                                Ok(undo)
+                            });
+                            self.done(ctx, format!("Unblocked {title}"), r);
                         }
                     }
                 }
-            }
-            ui.separator();
-            if ui.button("Back up…").on_hover_text("Saves the mode and the path and content rules to a .reg file. Publisher rules aren't included.").clicked()
-                && let Some(f) = rfd::FileDialog::new()
-                    .add_filter("Registry file", &["reg"])
-                    .set_file_name("App Locker backup.reg")
-                    .save_file()
-            {
-                self.message = Some(
-                    back_up(&root(), &f)
-                        .map(|()| format!("Saved to {}.", f.display()))
-                        .map_err(|e| format!("{e:#}")),
-                );
-            }
-            if ui.button("Restore…").clicked()
-                && let Some(f) = rfd::FileDialog::new().add_filter("Registry file", &["reg"]).pick_file()
-            {
-                self.confirm.ask(
-                    format!(
-                        "Replace the current App Locker rules with the ones in {}? It can be undone.",
-                        f.display()
-                    ),
-                    Pending::Restore(f),
-                );
-            }
-        });
-
-        // Add a rule
-        ui.add_space(6.0);
-        ui.strong("Add a rule");
-        ui.horizontal(|ui| {
-            egui::ComboBox::from_id_salt("al-level")
-                .selected_text(self.level.label())
-                .show_ui(ui, |ui| {
-                    ui.selectable_value(&mut self.level, Level::Blocked, "Block");
-                    ui.selectable_value(&mut self.level, Level::Allowed, "Allow");
-                });
-            egui::ComboBox::from_id_salt("al-how")
-                .selected_text(self.how.label())
-                .width(280.0)
-                .show_ui(ui, |ui| {
-                    for h in AddHow::ALL {
-                        ui.selectable_value(&mut self.how, h, h.label());
-                    }
-                });
-            if self.how == AddHow::Name {
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.typed)
-                        .hint_text("game.exe")
-                        .desired_width(160.0),
-                );
-                if ui.button("Add").clicked() && !self.typed.trim().is_empty() {
-                    self.add(ctx, None);
-                    self.typed.clear();
-                }
-            }
-            if ui.button("Choose a program…").clicked()
-                && let Some(f) = rfd::FileDialog::new()
-                    .add_filter(
-                        "Programs",
-                        &["exe", "com", "bat", "cmd", "msi", "ps1", "vbs", "js"],
-                    )
-                    .pick_file()
-            {
-                self.add(ctx, Some(&f));
-            }
-            if self.how == AddHow::Path
-                && ui.button("Choose a folder…").clicked()
-                && let Some(d) = rfd::FileDialog::new().pick_folder()
-            {
-                self.add(ctx, Some(&d));
-            }
-        });
-
-        // Rules
-        ui.add_space(6.0);
-        ui.horizontal(|ui| {
-            ui.strong(format!("Rules ({})", rules.len()));
-            if ui.small_button(ctx.i18n.tr("common-refresh")).clicked() {
-                self.rules = None;
-            }
-            let inactive = inactive_count(&root());
-            if inactive > 0 {
-                ui.weak(format!(
-                    "· {inactive} inactive templates from another program are left alone"
-                ));
-            }
-        });
-        let mut remove = None;
-        egui::ScrollArea::vertical()
-            .auto_shrink([false, true])
-            .show(ui, |ui| {
-                egui::Grid::new("al-rules")
-                    .striped(true)
-                    .num_columns(5)
-                    .show(ui, |ui| {
-                        for h in ["", "Type", "Matches", "Note", ""] {
-                            ui.strong(h);
-                        }
-                        ui.end_row();
-                        for r in &rules {
-                            if r.level == Level::Blocked {
-                                ui.colored_label(ui.visuals().warn_fg_color, r.level.label());
+            },
+        );
+        ui.add_space(8.0);
+        section(
+            ui,
+            "Templates",
+            |_| {},
+            |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    for (name, what, titles) in TEMPLATES {
+                        if ui
+                            .button(name)
+                            .on_hover_text(format!("{what}: {}", titles.join(", ")))
+                            .clicked()
+                        {
+                            if ctx.config.dry_run {
+                                self.message = Some(Ok(ctx.i18n.tr("common-dry-run-skip")));
                             } else {
-                                ui.label(r.level.label());
+                                match apply_template(&root(), titles) {
+                                    Ok(Some(undo)) => {
+                                        self.done(ctx, format!("Applied the {name} template"), Ok(undo))
+                                    }
+                                    Ok(None) => {
+                                        self.message =
+                                            Some(Ok(format!("Everything in {name} is already blocked.")))
+                                    }
+                                    Err(e) => self.done(ctx, String::new(), Err(e)),
+                                }
                             }
-                            ui.weak(r.kind.label());
-                            ui.label(&r.target);
-                            ui.weak(
-                                r.description
-                                    .strip_prefix(&format!("{MARK}: "))
-                                    .unwrap_or(&r.description),
-                            );
-                            if ui.small_button("Remove").clicked() {
-                                remove = Some(r.clone());
-                            }
-                            ui.end_row();
                         }
-                    });
-            });
-        if let Some(r) = remove {
-            let extra = if r.ours {
-                ""
-            } else {
-                " It wasn't made by Win Manager RS."
-            };
-            self.confirm.ask(
-                format!("Remove the rule for {}?{extra} It can be undone.", r.target),
-                Pending::Remove(r),
-            );
-        }
+                    }
+                });
+            },
+        );
     }
 }
 
