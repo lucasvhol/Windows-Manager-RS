@@ -15,6 +15,7 @@ mod settings_security;
 mod system_keys;
 mod system_protection;
 mod undelete;
+mod windows_features;
 
 use wm_core::{Category, Tool, tweaks::TweakTool};
 
@@ -32,6 +33,7 @@ pub fn tools() -> Vec<Box<dyn Tool>> {
         Box::new(file_security::FileSecurity::default()),
         Box::new(file_security::Unlocker::default()),
         Box::new(image_hijack::ImageHijack::default()),
+        Box::new(windows_features::WindowsFeatures::default()),
         Box::new(security_lock::SecurityLock::default()),
         Box::new(undelete::FileUndelete::default()),
         Box::new(device_security::DeviceSecurity::default()),
