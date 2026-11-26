@@ -20,5 +20,5 @@ jobs:
         run: |
           cargo test --workspace --no-fail-fast 2>&1 | Tee-Object -FilePath test.log
           $code = $LASTEXITCODE
-          Select-String -Path test.log -Pattern "^test .* FAILED$|panicked at|^error" -Context 0,2 | Select-Object -First 30 | ForEach-Object { "::error::$(($_.Line, $_.Context.PostContext) -join " | ")" }
+          Select-String -Path test.log -Pattern "panicked at" -Context 0,3 | Select-Object -First 30 | ForEach-Object { "::error::" + $_.Line + " | " + ($_.Context.PostContext -join " ") }
           exit $code
