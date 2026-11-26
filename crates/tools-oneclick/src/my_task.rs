@@ -86,12 +86,28 @@ impl Tool for MyTask {
 
     fn ui(&mut self, ui: &mut egui::Ui, ctx: &mut AppCtx<'_>) {
         let mut page = usize::from(self.live);
+        // The original's bottom bar: Task Scheduler on the left, Exit on the right.
+        let mut exit = false;
+        frame::footer(
+            ui,
+            |ui| {
+                if ui.button("Task Scheduler").clicked() {
+                    wm_core::ui::request_open_tool(ui.ctx(), "tasks");
+                }
+            },
+            |ui| {
+                exit = ui.button("Exit").clicked();
+            },
+        );
+        if exit {
+            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+        }
         frame::left(ui, 180.0, |ui| {
             section_nav(
                 ui,
                 &[
-                    (icons::CALENDAR_CHECK, "Scheduled tasks"),
-                    (icons::LIGHTNING, "Live rules"),
+                    (icons::CALENDAR_CHECK, "Scheduled Task"),
+                    (icons::LIGHTNING, "Event Rules"),
                 ],
                 &mut page,
             )
