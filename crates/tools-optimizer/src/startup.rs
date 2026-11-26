@@ -153,6 +153,44 @@ impl StartupItem {
         };
         p.is_absolute().then_some(p).filter(|p| p.exists())
     }
+
+    /// The entry's program is gone: a Startup-folder shortcut whose target is missing, or a
+    /// command naming a missing program (see [`missing_program`]). Windows apps never are.
+    pub fn is_invalid(&self) -> bool {
+        match (&self.source, &self.file) {
+            (Source::WindowsApp, _) => false,
+            (_, Some(f)) if f.extension().is_some_and(|e| e.eq_ignore_ascii_case("lnk")) => {
+                wm_core::shell::is_broken_shortcut(f)
+            }
+            // A Startup-folder file other than a shortcut is the program itself.
+            (_, Some(_)) => false,
+            (_, None) => missing_program(&self.command),
+        }
+    }
+}
+
+/// Whether a command line names a program that no longer exists. Deliberately
+/// conservative, as the answer is used to delete entries: the program must be an
+/// absolute path that was quoted or ends in `.exe` (so an unquoted path with spaces is
+/// never cut short), on a drive that is present, and the file itself must be missing.
+pub fn missing_program(command: &str) -> bool {
+    let Some(exe) = exe_from_command(command) else {
+        return false;
+    };
+    let quoted = command.trim_start().starts_with('"');
+    if !quoted && !exe.to_ascii_lowercase().ends_with(".exe") {
+        return false;
+    }
+    let p = PathBuf::from(expand_env(&exe));
+    let drive_present = p.components().next().is_some_and(|root| {
+        std::path::Path::new(&format!("{}\\", root.as_os_str().to_string_lossy())).exists()
+    });
+    p.is_absolute() && drive_present && !p.exists()
+}
+
+/// Removes a startup entry (journaled; see [`delete`]).
+pub fn remove(ctx: &AppCtx<'_>, item: &StartupItem) -> Result<()> {
+    delete(ctx, item)
 }
 
 /// Expands `%VAR%` references.
@@ -1176,6 +1214,22 @@ fn rfd_pick_exe() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn missing_programs_are_detected_conservatively() {
+        assert!(missing_program(
+            r#""C:\definitely-missing-wm-test\a b\app.exe" /min"#
+        ));
+        assert!(missing_program(r"C:\definitely-missing-wm-test\app.exe /min"));
+        assert!(!missing_program(r"%SystemRoot%\System32\cmd.exe /c echo"));
+        // Unquoted, no .exe: the program can't be told apart from its arguments.
+        assert!(!missing_program(r"C:\definitely-missing-wm-test\run.bat now"));
+        // Not an absolute path: found through PATH, never flagged.
+        assert!(!missing_program("ctfmon.exe"));
+        // A drive that isn't there (unplugged) is not a missing program.
+        assert!(!missing_program(r"Q:\gone\app.exe"));
+        assert!(!missing_program(""));
+    }
 
     #[test]
     fn approved_flags() {

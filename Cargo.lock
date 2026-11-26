@@ -5301,6 +5301,7 @@ dependencies = [
  "crossbeam-channel",
  "directories",
  "eframe",
+ "egui_extras",
  "fluent-bundle",
  "getrandom 0.4.3",
  "serde",

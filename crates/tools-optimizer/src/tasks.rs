@@ -45,6 +45,9 @@ pub struct TaskRow {
     pub actions: String,
     /// Human-readable trigger summary, e.g. "Daily at 03:00; At log on".
     pub triggers: String,
+    /// The program of each action, as registered (`None` for COM handlers and other
+    /// non-program actions).
+    pub programs: Vec<Option<String>>,
 }
 
 impl TaskRow {
@@ -54,6 +57,17 @@ impl TaskRow {
 
     pub fn is_microsoft(&self) -> bool {
         self.path.starts_with(r"\Microsoft\")
+    }
+
+    /// A non-Windows task whose every action starts a program that no longer exists
+    /// (see [`crate::startup::missing_program`]).
+    pub fn is_invalid(&self) -> bool {
+        !self.is_microsoft()
+            && !self.programs.is_empty()
+            && self.programs.iter().all(|p| {
+                p.as_deref()
+                    .is_some_and(|p| crate::startup::missing_program(&format!("\"{}\"", p.trim_matches('"'))))
+            })
     }
 }
 
@@ -141,6 +155,7 @@ unsafe fn describe(task: &IRegisteredTask) -> Result<TaskRow> {
         };
         let (mut author, mut description, mut actions, mut triggers) =
             (String::new(), String::new(), Vec::new(), Vec::new());
+        let mut programs = Vec::new();
         if let Ok(def) = task.Definition() {
             if let Ok(info) = def.RegistrationInfo() {
                 author = bstr_out(|p| info.Author(p));
@@ -158,12 +173,14 @@ unsafe fn describe(task: &IRegisteredTask) -> Result<TaskRow> {
                     {
                         let path = bstr_out(|p| exec.Path(p));
                         let args = bstr_out(|p| exec.Arguments(p));
+                        programs.push(Some(path.clone()));
                         actions.push(if args.is_empty() {
                             path
                         } else {
                             format!("{path} {args}")
                         });
                     } else {
+                        programs.push(None);
                         actions.push("(COM handler / other action)".into());
                     }
                 }
@@ -191,6 +208,7 @@ unsafe fn describe(task: &IRegisteredTask) -> Result<TaskRow> {
             description,
             actions: actions.join(" ; "),
             triggers: triggers.join("; "),
+            programs,
         })
     }
 }
@@ -1451,7 +1469,23 @@ mod tests {
             description: String::new(),
             actions: String::new(),
             triggers: String::new(),
+            programs: Vec::new(),
         }
+    }
+
+    #[test]
+    fn invalid_tasks_need_every_program_missing() {
+        let mut t = row(r"\Vendor\Updater");
+        assert!(!t.is_invalid(), "no actions");
+        t.programs = vec![Some(r"C:\definitely-missing-wm-test\updater.exe".into())];
+        assert!(t.is_invalid());
+        t.programs.push(Some(r"%SystemRoot%\System32\cmd.exe".into()));
+        assert!(!t.is_invalid(), "one program still exists");
+        t.programs = vec![Some(r"C:\definitely-missing-wm-test\a.exe".into()), None];
+        assert!(!t.is_invalid(), "a COM action can't be checked");
+        let mut ms = row(r"\Microsoft\Windows\Thing");
+        ms.programs = vec![Some(r"C:\definitely-missing-wm-test\x.exe".into())];
+        assert!(!ms.is_invalid(), "Windows tasks are never invalid");
     }
 
     #[test]

@@ -436,6 +436,27 @@ pub mod frame {
             });
     }
 
+    /// The command bar along the bottom of dialog-style tools (the original's
+    /// "Task ▾ … Start / Exit" row): `left` widgets on the left, `right` widgets drawn
+    /// right to left. Call it before [`status`] when a window has both.
+    pub fn footer(ui: &mut Ui, left: impl FnOnce(&mut Ui), right: impl FnOnce(&mut Ui)) {
+        let fill = strip_fill(ui);
+        egui::Panel::bottom("tf-footer")
+            .resizable(false)
+            .frame(
+                egui::Frame::new()
+                    .fill(fill)
+                    .inner_margin(egui::Margin::symmetric(12, 8)),
+            )
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().button_padding = egui::vec2(18.0, 6.0);
+                    left(ui);
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), right);
+                });
+            });
+    }
+
     /// A resizable pane on the left (a list, tree or sections).
     pub fn left<R>(ui: &mut Ui, width: f32, add: impl FnOnce(&mut Ui) -> R) -> R {
         egui::Panel::left("tf-left")
@@ -485,6 +506,73 @@ pub mod frame {
             .show(ui, add)
             .inner
     }
+}
+
+/// One row of a [`checklist`].
+pub struct CheckItem<'a> {
+    pub on: &'a mut bool,
+    pub icon: &'static str,
+    pub label: String,
+    /// Shows an "[Options]" link after the label.
+    pub options: bool,
+    /// Text for the Result column (empty before a run).
+    pub result: String,
+    pub enabled: bool,
+    /// Shown when the row is disabled (e.g. "Needs administrator rights").
+    pub disabled_hint: String,
+}
+
+/// The original's "Select the items to run | Result" list: a checkbox, icon and label
+/// per row (optionally with an [Options] link) and a result column. Fills the height it
+/// is given. Returns the index whose Options link was clicked.
+pub fn checklist(
+    ui: &mut Ui,
+    header: &str,
+    result_header: &str,
+    items: &mut [CheckItem<'_>],
+) -> Option<usize> {
+    use egui_extras::{Column, TableBuilder};
+    let mut options = None;
+    let accent = ui.visuals().selection.bg_fill;
+    let width = ui.available_width();
+    ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
+    TableBuilder::new(ui)
+        .striped(true)
+        .column(Column::exact((width * 0.64).max(260.0)).clip(true))
+        .column(Column::remainder().clip(true))
+        .header(24.0, |mut h| {
+            h.col(|ui| {
+                ui.strong(header);
+            });
+            h.col(|ui| {
+                ui.strong(result_header);
+            });
+        })
+        .body(|body| {
+            body.rows(28.0, items.len(), |mut row| {
+                let i = row.index();
+                let item = &mut items[i];
+                row.col(|ui| {
+                    ui.add_enabled_ui(item.enabled, |ui| {
+                        ui.horizontal(|ui| {
+                            let r = ui.checkbox(item.on, "");
+                            if !item.enabled && !item.disabled_hint.is_empty() {
+                                r.on_disabled_hover_text(&item.disabled_hint);
+                            }
+                            ui.label(egui::RichText::new(item.icon).size(16.0).color(accent));
+                            ui.label(&item.label);
+                            if item.options && ui.link("[Options]").clicked() {
+                                options = Some(i);
+                            }
+                        })
+                    });
+                });
+                row.col(|ui| {
+                    ui.label(&item.result);
+                });
+            });
+        });
+    options
 }
 
 /// Left section list (icon + label). The selected entry uses the accent with a notch.
