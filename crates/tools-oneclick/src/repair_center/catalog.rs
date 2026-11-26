@@ -191,7 +191,7 @@ pub fn sections() -> Vec<Section> {
     vec![
         Section {
             icon: icons::WRENCH,
-            title: "System repair",
+            title: "System Repair",
             repairs: vec![
                 shared("component"),
                 shared("sysfiles"),
@@ -226,7 +226,7 @@ pub fn sections() -> Vec<Section> {
         },
         Section {
             icon: icons::TOOLBOX,
-            title: "Misc repair",
+            title: "Misc. Repair",
             repairs: vec![
                 shared("explorer"),
                 shared("time"),
@@ -248,7 +248,7 @@ pub fn sections() -> Vec<Section> {
         },
         Section {
             icon: icons::APP_WINDOW,
-            title: "Windows apps",
+            title: "Windows Apps",
             repairs: vec![
                 shared("store"),
                 run(
@@ -285,7 +285,7 @@ pub fn sections() -> Vec<Section> {
         },
         Section {
             icon: icons::LIST_CHECKS,
-            title: "Event viewer",
+            title: "Event Viewer",
             repairs: vec![
                 tool(
                     "eventstool",
@@ -324,12 +324,12 @@ pub fn sections() -> Vec<Section> {
         },
         Section {
             icon: icons::LOCK,
-            title: "Unlock system",
+            title: "Unlock System",
             repairs: unlock,
         },
         Section {
             icon: icons::SHIELD,
-            title: "Security settings",
+            title: "Security Lock",
             repairs: vec![
                 restart(run(
                     "uac",
@@ -377,7 +377,7 @@ pub fn sections() -> Vec<Section> {
         },
         Section {
             icon: icons::LINK,
-            title: "File associations",
+            title: "File Associations",
             repairs: vec![
                 shared("assoc"),
                 run(
@@ -396,7 +396,7 @@ pub fn sections() -> Vec<Section> {
         },
         Section {
             icon: icons::LIST,
-            title: "Context menu",
+            title: "Context Menu",
             repairs: vec![
                 tool(
                     "ctxtool",
@@ -420,7 +420,7 @@ pub fn sections() -> Vec<Section> {
         },
         Section {
             icon: icons::IMAGE,
-            title: "Icon repair",
+            title: "Icon Repair",
             repairs: vec![
                 shared("icons"),
                 shared("thumbs"),
@@ -440,7 +440,7 @@ pub fn sections() -> Vec<Section> {
         },
         Section {
             icon: icons::NETWORK,
-            title: "Network problems",
+            title: "Network Problems",
             repairs: vec![
                 shared("dns"),
                 shared("internet"),
@@ -533,7 +533,7 @@ pub fn sections() -> Vec<Section> {
         },
         Section {
             icon: icons::ARROW_COUNTER_CLOCKWISE,
-            title: "System reset",
+            title: "System Reset",
             repairs: vec![
                 open(
                     "rstrui",

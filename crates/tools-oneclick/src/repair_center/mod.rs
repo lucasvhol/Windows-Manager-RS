@@ -19,8 +19,8 @@ use wm_core::{
 use crate::fixer::{self, Outcome};
 use catalog::{Health, How, Repair, Section};
 
-/// Repair boxes per page.
-const PAGE: usize = 6;
+/// Repair boxes per page (the original shows three full-width boxes per tab).
+const PAGE: usize = 3;
 
 pub struct RepairCenter {
     sections: Vec<Section>,
@@ -91,47 +91,57 @@ fn save_log(id: &str, lines: &[String]) -> anyhow::Result<PathBuf> {
     Ok(path)
 }
 
-/// One described repair box. Returns true when its button is pressed.
+/// One described repair box, full width like the original's: title, description and
+/// status on the left, its button at the right. Returns true when the button is pressed.
 fn repair_box(ui: &mut egui::Ui, r: &Repair, health: Option<&Health>, enabled: bool, hint: &str) -> bool {
     let mut clicked = false;
-    egui::Frame::group(ui.style()).inner_margin(10.0).show(ui, |ui| {
-        ui.set_width(ui.available_width());
-        ui.set_min_height(112.0);
-        ui.strong(r.title);
-        ui.add(egui::Label::new(egui::RichText::new(r.description).weak()).wrap());
-        ui.add_space(2.0);
-        match health {
-            Some(Health::Fine(t)) => {
-                ui.colored_label(egui::Color32::from_rgb(70, 160, 90), format!("✔ {t}"));
+    wm_core::ui::section(
+        ui,
+        r.title,
+        |_| {},
+        |ui| {
+            ui.add(egui::Label::new(egui::RichText::new(r.description).weak()).wrap());
+            ui.add_space(2.0);
+            match health {
+                Some(Health::Fine(t)) => {
+                    ui.colored_label(egui::Color32::from_rgb(70, 160, 90), format!("✔ {t}"));
+                }
+                Some(Health::Problem(t)) => {
+                    ui.colored_label(ui.visuals().warn_fg_color, format!("⚠ {t}"));
+                }
+                Some(Health::Info(t)) => {
+                    ui.weak(t);
+                }
+                None => {}
             }
-            Some(Health::Problem(t)) => {
-                ui.colored_label(ui.visuals().warn_fg_color, format!("⚠ {t}"));
-            }
-            Some(Health::Info(t)) => {
-                ui.weak(t);
-            }
-            None => {}
-        }
-        ui.horizontal(|ui| {
-            let label = match r.how {
-                How::Run if r.id == "advstartup" => "Restart",
-                How::Run => "Repair",
-                How::Open(..) => "Open",
-                How::Tool(_) => "Open tool",
-            };
-            let mut b = ui.add_enabled(enabled, egui::Button::new(label).min_size(egui::vec2(90.0, 0.0)));
-            if r.admin {
-                b = b.on_disabled_hover_text(hint);
-            }
-            clicked = b.clicked();
-            if r.admin {
-                ui.weak("administrator");
-            }
-            if r.restart {
-                ui.weak("· restart required");
-            }
-        });
-    });
+            // Notes on the left and the button at the bottom right, as in the original.
+            ui.horizontal(|ui| {
+                let mut notes = Vec::new();
+                if r.admin {
+                    notes.push("administrator");
+                }
+                if r.restart {
+                    notes.push("restart required");
+                }
+                if !notes.is_empty() {
+                    ui.weak(notes.join(" · "));
+                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let label = match r.how {
+                        How::Run if r.id == "advstartup" => "Restart",
+                        How::Run => "Fix",
+                        How::Open(..) | How::Tool(_) => "Open",
+                    };
+                    let mut b =
+                        ui.add_enabled(enabled, egui::Button::new(label).min_size(egui::vec2(96.0, 28.0)));
+                    if r.admin {
+                        b = b.on_disabled_hover_text(hint);
+                    }
+                    clicked = b.clicked();
+                });
+            });
+        },
+    );
     clicked
 }
 
@@ -224,7 +234,9 @@ impl RepairCenter {
         let section = &self.sections[self.section];
         let pages = section.repairs.len().div_ceil(PAGE);
         if pages > 1 {
-            numbered_tabs(ui, &vec![""; pages], &mut self.page);
+            // Like the original: "1 System Repair", "2 System Repair", …
+            numbered_tabs(ui, &vec![section.title; pages], &mut self.page);
+            ui.add_space(4.0);
         }
         self.page = self.page.min(pages.saturating_sub(1));
         let hint = ctx.i18n.tr("shell-needs-admin");
@@ -241,16 +253,12 @@ impl RepairCenter {
             .id_salt("repair-boxes")
             .max_height((ui.available_height() - 150.0).max(240.0))
             .show(ui, |ui| {
-                for pair in shown.chunks(2) {
-                    ui.columns(2, |cols| {
-                        for (col, r) in cols.iter_mut().zip(pair) {
-                            let enabled = (!r.admin || ctx.elevated) && !(busy && r.how == How::Run);
-                            if repair_box(col, r, self.health.get(r.id), enabled, &hint) {
-                                pressed = Some(*r);
-                            }
-                        }
-                    });
-                    ui.add_space(4.0);
+                for r in &shown {
+                    let enabled = (!r.admin || ctx.elevated) && !(busy && r.how == How::Run);
+                    if repair_box(ui, r, self.health.get(r.id), enabled, &hint) {
+                        pressed = Some(*r);
+                    }
+                    ui.add_space(6.0);
                 }
             });
         if let Some(r) = pressed {
@@ -319,25 +327,29 @@ impl Tool for RepairCenter {
         let logs_index = self.sections.len() + 1;
         let mut nav: Vec<(&str, &str)> = self.sections.iter().map(|s| (s.icon, s.title)).collect();
         nav.push(("", ""));
-        nav.push((icons::LIST, "Repair logs"));
+        nav.push((icons::LIST, "Repair Logs"));
         if frame::left(ui, 190.0, |ui| section_nav(ui, &nav, &mut self.section)) {
             self.page = 0;
             if self.section == logs_index {
                 self.logs = list_logs();
             }
         }
+        // Like the original, the status bar names the section shown.
         let status = match &self.running {
             Some((r, t)) => format!("{}: {}", r.title, t.status),
-            None if !ctx.elevated => {
-                "Repairs marked \"administrator\" need the app to run as administrator".into()
-            }
-            None => "Each repair says what it does and can be undone from the Change Journal where possible"
-                .into(),
+            None => self
+                .sections
+                .get(self.section)
+                .map_or("Repair Logs", |s| s.title)
+                .to_owned(),
         };
         let running = self.running.is_some();
+        let elevated = ctx.elevated;
         frame::status(ui, &status, |ui| {
             if running {
                 ui.spinner();
+            } else if !elevated {
+                ui.weak("Repairs marked \"administrator\" need the app to run as administrator.");
             }
         });
         frame::central(ui, |ui| self.page_body(ui, ctx, logs_index));
