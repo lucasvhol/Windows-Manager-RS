@@ -9,11 +9,11 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use wm_core::{
-    AppCtx, Category, Tool, egui, icons, paths,
+    AppCtx, Category, Layout, Tool, egui, icons, paths,
     safety::UndoAction,
     shell::shell_open,
     task::BackgroundTask,
-    ui::{Confirm, Message, numbered_tabs, request_open_tool, section_nav, show_message},
+    ui::{Confirm, Message, frame, numbered_tabs, request_open_tool, section_nav, show_message},
 };
 
 use crate::fixer::{self, Outcome};
@@ -320,39 +320,40 @@ impl Tool for RepairCenter {
         let mut nav: Vec<(&str, &str)> = self.sections.iter().map(|s| (s.icon, s.title)).collect();
         nav.push(("", ""));
         nav.push((icons::LIST, "Repair logs"));
-        egui::Panel::left("repair-sections")
-            .resizable(false)
-            .exact_size(180.0)
-            .frame(egui::Frame::NONE.inner_margin(egui::Margin {
-                right: 8,
-                ..Default::default()
-            }))
-            .show(ui, |ui| {
-                if section_nav(ui, &nav, &mut self.section) {
-                    self.page = 0;
-                    if self.section == logs_index {
-                        self.logs = list_logs();
-                    }
-                }
-            });
-
-        if !ctx.elevated {
-            ui.colored_label(
-                ui.visuals().warn_fg_color,
-                "Repairs marked \"administrator\" need the app to run as administrator.",
-            );
+        if frame::left(ui, 190.0, |ui| section_nav(ui, &nav, &mut self.section)) {
+            self.page = 0;
+            if self.section == logs_index {
+                self.logs = list_logs();
+            }
         }
+        let status = match &self.running {
+            Some((r, t)) => format!("{}: {}", r.title, t.status),
+            None if !ctx.elevated => {
+                "Repairs marked \"administrator\" need the app to run as administrator".into()
+            }
+            None => "Each repair says what it does and can be undone from the Change Journal where possible"
+                .into(),
+        };
+        let running = self.running.is_some();
+        frame::status(ui, &status, |ui| {
+            if running {
+                ui.spinner();
+            }
+        });
+        frame::central(ui, |ui| self.page_body(ui, ctx, logs_index));
+    }
+
+    fn layout(&self) -> Layout {
+        Layout::Fill
+    }
+}
+
+impl RepairCenter {
+    fn page_body(&mut self, ui: &mut egui::Ui, ctx: &mut AppCtx<'_>, logs_index: usize) {
         if self.section == logs_index {
             self.logs_page(ui);
         } else {
             self.repairs_page(ui, ctx);
-        }
-
-        if let Some((r, t)) = &self.running {
-            ui.horizontal(|ui| {
-                ui.spinner();
-                ui.label(format!("{}: {}", r.title, t.status));
-            });
         }
         show_message(ui, &self.message);
         if self.log.len() > 1 && self.section != logs_index {

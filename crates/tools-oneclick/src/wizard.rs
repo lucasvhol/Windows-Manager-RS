@@ -7,12 +7,12 @@
 use std::collections::HashMap;
 
 use wm_core::{
-    AppCtx, Category, Tool, drives, egui, icons, machine,
+    AppCtx, Category, Layout, Tool, drives, egui, icons, machine,
     safety::restore_point,
     shell::shell_open,
     task::BackgroundTask,
     tweaks::{State, Tweak, parse},
-    ui::{Message, request_open_tool, section_nav, show_message},
+    ui::{Message, frame, request_open_tool, section_nav, show_message},
 };
 
 use crate::my_task::{self, Schedule};
@@ -641,17 +641,46 @@ impl Tool for Wizard {
         }
         self.poll(ctx);
 
-        egui::Panel::left("wizard-steps")
-            .resizable(false)
-            .exact_size(190.0)
-            .frame(egui::Frame::NONE.inner_margin(egui::Margin {
-                right: 8,
-                ..Default::default()
-            }))
-            .show(ui, |ui| self.nav(ui));
+        frame::left(ui, 200.0, |ui| self.nav(ui));
 
+        // Back / Next / Skip pinned to the bottom, like the original's wizard.
+        let last = STEPS.len() - 1;
+        let (mut back, mut next, mut skip) = (false, false, false);
+        let step_no = self.step;
+        frame::status(ui, &format!("Step {} of {}", step_no + 1, STEPS.len()), |ui| {
+            if step_no < last {
+                if step_no > 0 {
+                    skip = ui.button("Skip").clicked();
+                }
+                next = ui.button("Next ›").clicked();
+            }
+            back = ui.add_enabled(step_no > 0, egui::Button::new("‹ Back")).clicked();
+        });
+        if back {
+            self.step -= 1;
+            self.message = None;
+        } else if next {
+            if self.progress[self.step] != Progress::Skipped {
+                self.progress[self.step] = Progress::Done;
+            }
+            self.step += 1;
+            self.message = None;
+        } else if skip {
+            self.progress[self.step] = Progress::Skipped;
+            self.step += 1;
+            self.message = None;
+        }
+        frame::central(ui, |ui| self.step_body(ui, ctx));
+    }
+
+    fn layout(&self) -> Layout {
+        Layout::Fill
+    }
+}
+
+impl Wizard {
+    fn step_body(&mut self, ui: &mut egui::Ui, ctx: &mut AppCtx<'_>) {
         let step = &STEPS[self.step];
-        ui.weak(format!("Step {} of {}", self.step + 1, STEPS.len()));
         ui.heading(step.title);
         ui.label(step.why);
         for tip in step.tips {
@@ -684,34 +713,6 @@ impl Tool for Wizard {
             Page::Finish => self.finish_page(ui, ctx),
         }
         show_message(ui, &self.message);
-
-        let last = STEPS.len() - 1;
-        ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
-            ui.horizontal(|ui| {
-                if ui
-                    .add_enabled(self.step > 0, egui::Button::new("‹ Back"))
-                    .clicked()
-                {
-                    self.step -= 1;
-                    self.message = None;
-                }
-                if self.step < last {
-                    if ui.button("Next ›").clicked() {
-                        if self.progress[self.step] != Progress::Skipped {
-                            self.progress[self.step] = Progress::Done;
-                        }
-                        self.step += 1;
-                        self.message = None;
-                    }
-                    if self.step > 0 && ui.button("Skip").clicked() {
-                        self.progress[self.step] = Progress::Skipped;
-                        self.step += 1;
-                        self.message = None;
-                    }
-                }
-            });
-            ui.separator();
-        });
     }
 }
 

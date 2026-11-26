@@ -6,12 +6,12 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use wm_core::{
-    AppCtx, Category, Tool, egui,
+    AppCtx, Category, Layout, Tool, egui, icons,
     process::{hidden_command, run_checked},
     safety::UndoAction,
     task::BackgroundTask,
     tool_settings,
-    ui::{Confirm, Message, format_bytes, show_message},
+    ui::{Confirm, Message, ToolButton, format_bytes, frame, section, show_message},
 };
 use wm_tools_cleaner::junk::{CleanReport, Rule, RuleScan};
 use wm_tools_cleaner::registry_cleaner::{self, Issue};
@@ -344,109 +344,38 @@ impl Tool for OneClickCleaner {
         Category::OneClick
     }
 
+    fn layout(&self) -> Layout {
+        Layout::Fill
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, ctx: &mut AppCtx<'_>) {
         self.poll(ui, ctx);
         if self.confirm.show(ui.ctx(), ctx.i18n).is_some() {
             self.start_clean(ui, ctx.config.dry_run);
         }
 
-        ui.label("Scans junk files, dead registry entries and activity history in one go.");
-        ui.horizontal(|ui| {
-            ui.weak(self.settings.last_clean_text());
-            if !self.settings.last_summary.is_empty() {
-                ui.weak(format!("· {}", self.settings.last_summary));
-            }
-        });
-        ui.add_space(6.0);
-
         let busy = self.scan.is_some() || self.clean.is_some() || self.defrag.is_some();
-        let before = self.settings.clone();
-        let res = self.result.clone();
-        ui.strong("Items to clean");
-        egui::Grid::new("oneclick_items")
-            .num_columns(2)
-            .spacing([24.0, 6.0])
-            .show(ui, |ui| {
-                ui.checkbox(
-                    &mut self.settings.junk,
-                    "Junk files (temporary files, caches, error reports)",
-                );
-                count_label(ui, res.as_ref().map(|r| format_bytes(r.junk_bytes())));
-                ui.end_row();
-                ui.checkbox(&mut self.settings.registry, "Dead registry entries");
-                count_label(ui, res.as_ref().map(|r| r.issues.len().to_string()));
-                ui.end_row();
-
-                let mut all = self.settings.traces.iter().all(|t| *t);
-                let partial = !all && self.settings.traces.contains(&true);
-                if ui
-                    .add(egui::Checkbox::new(&mut all, "Privacy traces").indeterminate(partial))
-                    .changed()
-                {
-                    self.settings.traces = [all; 5];
-                }
-                count_label(
-                    ui,
-                    res.as_ref().map(|r| {
-                        let n: usize = r
-                            .traces
-                            .iter()
-                            .zip(self.settings.traces)
-                            .filter(|(_, on)| *on)
-                            .map(|(n, _)| n)
-                            .sum();
-                        format!("{n} selected")
-                    }),
-                );
-                ui.end_row();
-                for (i, t) in Trace::ALL.iter().enumerate() {
-                    ui.horizontal(|ui| {
-                        ui.add_space(24.0);
-                        ui.checkbox(&mut self.settings.traces[i], t.label());
-                    });
-                    count_label(ui, res.as_ref().map(|r| r.traces[i].to_string()));
-                    ui.end_row();
-                }
-            });
-        ui.weak(
-            "Junk files are deleted permanently. Registry entries and activity traces (except the clipboard) can be restored from the Change Journal.",
-        );
-
-        ui.add_space(6.0);
-        ui.strong("Options");
-        ui.checkbox(&mut self.settings.silent, "Silent mode")
-            .on_hover_text("Clean as soon as the scan ends, without showing the results first.");
-        ui.checkbox(&mut self.settings.shutdown, "Shut down Windows when done")
-            .on_hover_text(format!(
-                "Windows shuts down {SHUTDOWN_DELAY} seconds after the clean, and you can still cancel. Scheduled cleans never shut down."
-            ));
-        ui.add_enabled(
-            ctx.elevated,
-            egui::Checkbox::new(&mut self.settings.defrag, "Compact the registry, then restart"),
-        )
-        .on_hover_text(format!(
-            "After the clean, the registry files are rebuilt without their empty space and Windows restarts {DEFRAG_DELAY} seconds later to finish (instead of shutting down). Don't change settings before the restart. Scheduled cleans never do this."
-        ))
-        .on_disabled_hover_text("Needs the app to run as administrator.");
-        if self.settings != before {
-            self.save();
-        }
-
-        ui.add_space(6.0);
-        let label = if self.settings.silent {
+        let scan_label = if self.settings.silent {
             "Scan and clean"
         } else {
             "Scan"
         };
-        ui.horizontal(|ui| {
-            if ui
-                .add_enabled(
-                    !busy && self.settings.anything(),
-                    egui::Button::new(egui::RichText::new(label).size(18.0))
-                        .min_size(egui::vec2(160.0, 36.0)),
-                )
-                .clicked()
-            {
+        let can_clean = self.result.is_some() && !self.settings.silent;
+        match frame::toolbar(
+            ui,
+            &[
+                Some(
+                    ToolButton::new(icons::MAGNIFYING_GLASS, scan_label)
+                        .enabled(!busy && self.settings.anything()),
+                ),
+                Some(
+                    ToolButton::new(icons::BROOM, "Clean selected")
+                        .enabled(can_clean && !busy && self.settings.anything()),
+                ),
+            ],
+            |_| {},
+        ) {
+            Some(0) => {
                 let elevated = ctx.elevated;
                 self.message = None;
                 self.result = None;
@@ -455,15 +384,7 @@ impl Tool for OneClickCleaner {
                     Ok(scan(elevated, &|f, s| p.report(f, s)))
                 }));
             }
-            if self.result.is_some()
-                && !self.settings.silent
-                && ui
-                    .add_enabled(
-                        !busy && self.settings.anything(),
-                        egui::Button::new("Clean selected").min_size(egui::vec2(0.0, 36.0)),
-                    )
-                    .clicked()
-            {
+            Some(1) => {
                 let question = if self.settings.defrag && ctx.elevated {
                     "Clean the selected items now? The registry is then compacted and Windows restarts."
                 } else if self.settings.shutdown {
@@ -473,42 +394,135 @@ impl Tool for OneClickCleaner {
                 };
                 self.confirm.ask(question, ());
             }
-        });
-        if let Some(t) = &self.scan {
-            ui.add(
-                egui::ProgressBar::new(t.progress)
-                    .desired_width(300.0)
-                    .text(t.status.clone()),
-            );
+            _ => {}
         }
-        if self.clean.is_some() {
-            ui.horizontal(|ui| {
-                ui.spinner();
-                ui.label("Cleaning…");
-            });
-        }
-        if self.defrag.is_some() {
-            ui.horizontal(|ui| {
-                ui.spinner();
-                ui.label("Compacting the registry…");
-            });
-        }
-        show_message(ui, &self.message);
-        if self.shutdown_pending {
-            ui.horizontal(|ui| {
+
+        let status = if let Some(t) = &self.scan {
+            t.status.clone()
+        } else if self.clean.is_some() {
+            "Cleaning…".to_owned()
+        } else if self.defrag.is_some() {
+            "Compacting the registry…".to_owned()
+        } else if self.settings.last_summary.is_empty() {
+            self.settings.last_clean_text()
+        } else {
+            format!(
+                "{} · {}",
+                self.settings.last_clean_text(),
+                self.settings.last_summary
+            )
+        };
+        let progress = self.scan.as_ref().map(|t| t.progress);
+        let mut cancel_shutdown_now = false;
+        let shutdown_pending = self.shutdown_pending;
+        frame::status(ui, &status, |ui| {
+            if shutdown_pending {
+                cancel_shutdown_now = ui.button("Cancel shutdown").clicked();
                 ui.colored_label(
                     ui.visuals().warn_fg_color,
                     format!("Windows shuts down in {SHUTDOWN_DELAY} seconds."),
                 );
-                if ui.button("Cancel shutdown").clicked() {
-                    self.shutdown_pending = false;
-                    self.message = Some(
-                        cancel_shutdown()
-                            .map(|()| "Shutdown cancelled.".into())
-                            .map_err(|e| format!("Cancelling the shutdown: {e:#}")),
-                    );
-                }
-            });
+            }
+            if let Some(p) = progress {
+                ui.add(egui::ProgressBar::new(p).desired_width(200.0).show_percentage());
+            } else if busy {
+                ui.spinner();
+            }
+        });
+        if cancel_shutdown_now {
+            self.shutdown_pending = false;
+            self.message = Some(
+                cancel_shutdown()
+                    .map(|()| "Shutdown cancelled.".into())
+                    .map_err(|e| format!("Cancelling the shutdown: {e:#}")),
+            );
+        }
+
+        let before = self.settings.clone();
+        let res = self.result.clone();
+        frame::central(ui, |ui| {
+            show_message(ui, &self.message);
+            section(
+                ui,
+                "Items to clean",
+                |_| {},
+                |ui| {
+                    egui::Grid::new("oneclick_items")
+                        .num_columns(2)
+                        .spacing([32.0, 6.0])
+                        .show(ui, |ui| {
+                            ui.checkbox(
+                                &mut self.settings.junk,
+                                "Junk files (temporary files, caches, error reports)",
+                            );
+                            count_label(ui, res.as_ref().map(|r| format_bytes(r.junk_bytes())));
+                            ui.end_row();
+                            ui.checkbox(&mut self.settings.registry, "Dead registry entries");
+                            count_label(ui, res.as_ref().map(|r| r.issues.len().to_string()));
+                            ui.end_row();
+
+                            let mut all = self.settings.traces.iter().all(|t| *t);
+                            let partial = !all && self.settings.traces.contains(&true);
+                            if ui
+                                .add(egui::Checkbox::new(&mut all, "Privacy traces").indeterminate(partial))
+                                .changed()
+                            {
+                                self.settings.traces = [all; 5];
+                            }
+                            count_label(
+                                ui,
+                                res.as_ref().map(|r| {
+                                    let n: usize = r
+                                        .traces
+                                        .iter()
+                                        .zip(self.settings.traces)
+                                        .filter(|(_, on)| *on)
+                                        .map(|(n, _)| n)
+                                        .sum();
+                                    format!("{n} selected")
+                                }),
+                            );
+                            ui.end_row();
+                            for (i, t) in Trace::ALL.iter().enumerate() {
+                                ui.horizontal(|ui| {
+                                    ui.add_space(24.0);
+                                    ui.checkbox(&mut self.settings.traces[i], t.label());
+                                });
+                                count_label(ui, res.as_ref().map(|r| r.traces[i].to_string()));
+                                ui.end_row();
+                            }
+                        });
+                    ui.add_space(4.0);
+                    ui.weak(
+                    "Junk files are deleted permanently. Registry entries and activity traces (except the clipboard) can be restored from the Change Journal.",
+                );
+                },
+            );
+            ui.add_space(8.0);
+            section(
+                ui,
+                "Options",
+                |_| {},
+                |ui| {
+                    ui.checkbox(&mut self.settings.silent, "Silent mode")
+                        .on_hover_text("Clean as soon as the scan ends, without showing the results first.");
+                    ui.checkbox(&mut self.settings.shutdown, "Shut down Windows when done")
+                    .on_hover_text(format!(
+                        "Windows shuts down {SHUTDOWN_DELAY} seconds after the clean, and you can still cancel. Scheduled cleans never shut down."
+                    ));
+                    ui.add_enabled(
+                    ctx.elevated,
+                    egui::Checkbox::new(&mut self.settings.defrag, "Compact the registry, then restart"),
+                )
+                .on_hover_text(format!(
+                    "After the clean, the registry files are rebuilt without their empty space and Windows restarts {DEFRAG_DELAY} seconds later to finish (instead of shutting down). Don't change settings before the restart. Scheduled cleans never do this."
+                ))
+                .on_disabled_hover_text("Needs the app to run as administrator.");
+                },
+            );
+        });
+        if self.settings != before {
+            self.save();
         }
     }
 }

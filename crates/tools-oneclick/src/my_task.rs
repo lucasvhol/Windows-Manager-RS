@@ -4,8 +4,8 @@
 
 use anyhow::{Result, bail};
 use wm_core::{
-    AppCtx, Category, Tool, egui,
-    ui::{Confirm, Message, show_message},
+    AppCtx, Category, Layout, Tool, egui, icons,
+    ui::{Confirm, Message, frame, section, section_nav, show_message},
 };
 use wm_tools_optimizer::tasks::{self, Action, TaskRow};
 
@@ -80,14 +80,25 @@ impl Tool for MyTask {
         Category::Misc
     }
 
+    fn layout(&self) -> Layout {
+        Layout::Fill
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, ctx: &mut AppCtx<'_>) {
-        ui.horizontal(|ui| {
-            ui.selectable_value(&mut self.live, false, "Scheduled tasks");
-            ui.selectable_value(&mut self.live, true, "Live rules");
+        let mut page = usize::from(self.live);
+        frame::left(ui, 180.0, |ui| {
+            section_nav(
+                ui,
+                &[
+                    (icons::CALENDAR_CHECK, "Scheduled tasks"),
+                    (icons::LIGHTNING, "Live rules"),
+                ],
+                &mut page,
+            )
         });
-        ui.separator();
+        self.live = page == 1;
         if self.live {
-            self.rules.ui(ui, ctx);
+            frame::central(ui, |ui| self.rules.ui(ui, ctx));
             return;
         }
         if self.tasks.is_none() {
@@ -101,112 +112,128 @@ impl Tool for MyTask {
             );
             self.tasks = None;
         }
-        ui.label(
-            "Schedule maintenance to run automatically. Tasks run this program in the background \
-             (even when it is closed) and record what they did in the Change Journal.",
-        );
-        egui::Frame::group(ui.style()).show(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.name)
-                        .hint_text("Task name")
-                        .desired_width(180.0),
-                );
-                egui::ComboBox::from_id_salt("mytask_action")
-                    .selected_text(ACTIONS[self.action].1)
-                    .width(380.0)
-                    .show_ui(ui, |ui| {
-                        for (i, (_, desc, admin)) in ACTIONS.iter().enumerate() {
-                            ui.selectable_value(
-                                &mut self.action,
-                                i,
-                                if *admin {
-                                    format!("{desc} (admin)")
-                                } else {
-                                    (*desc).to_owned()
-                                },
-                            );
-                        }
-                    });
-            });
-            ui.horizontal(|ui| {
-                ui.selectable_value(&mut self.schedule, Schedule::Daily, "Daily");
-                let weekly = matches!(self.schedule, Schedule::Weekly(_));
-                if ui.selectable_label(weekly, "Weekly").clicked() && !weekly {
-                    self.schedule = Schedule::Weekly(6);
-                }
-                ui.selectable_value(&mut self.schedule, Schedule::AtLogon, "At sign-in");
-                if let Schedule::Weekly(d) = &mut self.schedule {
-                    egui::ComboBox::from_id_salt("mytask_day")
-                        .selected_text(DAYS[*d])
-                        .width(70.0)
-                        .show_ui(ui, |ui| {
-                            for (i, day) in DAYS.iter().enumerate() {
-                                ui.selectable_value(d, i, *day);
-                            }
-                        });
-                }
-                if !matches!(self.schedule, Schedule::AtLogon) {
-                    ui.label("at");
-                    ui.add(egui::TextEdit::singleline(&mut self.time).desired_width(50.0));
-                }
-            });
-            ui.horizontal(|ui| {
-                ui.add_enabled(
-                    ctx.elevated,
-                    egui::Checkbox::new(&mut self.highest, "Run with highest privileges"),
-                )
-                .on_disabled_hover_text(ctx.i18n.tr("shell-needs-admin"));
-                if ui.button("Create task").clicked() {
-                    self.message = Some(self.create(ctx).map_err(|e| format!("{e:#}")));
-                    self.tasks = None;
-                }
-            });
+        let count = match &self.tasks {
+            Some(Ok(l)) => format!("{} scheduled tasks", l.len()),
+            _ => String::new(),
+        };
+        frame::status(ui, &count, |ui| {
+            ui.weak("Tasks run in the background, even when this app is closed, and record what they did in the Change Journal.");
         });
-        show_message(ui, &self.message);
-        ui.separator();
-
-        match self.tasks.clone() {
-            Some(Ok(list)) if list.is_empty() => {
-                ui.weak("No scheduled tasks yet.");
-            }
-            Some(Ok(list)) => {
-                egui::Grid::new("mytasks")
-                    .num_columns(5)
-                    .striped(true)
-                    .spacing([16.0, 4.0])
-                    .show(ui, |ui| {
-                        for h in ["Task", "Next run", "Last run", "Last result", ""] {
-                            ui.strong(h);
-                        }
-                        ui.end_row();
-                        for t in list {
-                            ui.label(&t.name);
-                            ui.label(t.next_run.clone().unwrap_or_else(|| "—".into()));
-                            ui.label(t.last_run.clone().unwrap_or_else(|| "Never".into()));
-                            ui.weak(tasks::result_text(t.last_result));
-                            ui.horizontal(|ui| {
-                                if ui.small_button("Run now").clicked() {
-                                    self.message = Some(
-                                        tasks::perform(&t, Action::Run)
-                                            .map(|(d, _)| d)
-                                            .map_err(|e| format!("{e:#}")),
+        frame::central(ui, |ui| {
+            show_message(ui, &self.message);
+            section(
+                ui,
+                "New task",
+                |_| {},
+                |ui| {
+                    ui.horizontal(|ui| {
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.name)
+                                .hint_text("Task name")
+                                .desired_width(180.0),
+                        );
+                        egui::ComboBox::from_id_salt("mytask_action")
+                            .selected_text(ACTIONS[self.action].1)
+                            .width(380.0)
+                            .show_ui(ui, |ui| {
+                                for (i, (_, desc, admin)) in ACTIONS.iter().enumerate() {
+                                    ui.selectable_value(
+                                        &mut self.action,
+                                        i,
+                                        if *admin {
+                                            format!("{desc} (admin)")
+                                        } else {
+                                            (*desc).to_owned()
+                                        },
                                     );
                                 }
-                                if ui.small_button("Delete").clicked() {
-                                    self.confirm
-                                        .ask(format!("Delete the scheduled task \"{}\"?", t.name), t.clone());
-                                }
                             });
-                            ui.end_row();
+                    });
+                    ui.horizontal(|ui| {
+                        ui.selectable_value(&mut self.schedule, Schedule::Daily, "Daily");
+                        let weekly = matches!(self.schedule, Schedule::Weekly(_));
+                        if ui.selectable_label(weekly, "Weekly").clicked() && !weekly {
+                            self.schedule = Schedule::Weekly(6);
+                        }
+                        ui.selectable_value(&mut self.schedule, Schedule::AtLogon, "At sign-in");
+                        if let Schedule::Weekly(d) = &mut self.schedule {
+                            egui::ComboBox::from_id_salt("mytask_day")
+                                .selected_text(DAYS[*d])
+                                .width(70.0)
+                                .show_ui(ui, |ui| {
+                                    for (i, day) in DAYS.iter().enumerate() {
+                                        ui.selectable_value(d, i, *day);
+                                    }
+                                });
+                        }
+                        if !matches!(self.schedule, Schedule::AtLogon) {
+                            ui.label("at");
+                            ui.add(egui::TextEdit::singleline(&mut self.time).desired_width(64.0));
                         }
                     });
-            }
-            Some(Err(e)) => {
-                ui.colored_label(ui.visuals().error_fg_color, e);
-            }
-            None => {}
-        }
+                    ui.horizontal(|ui| {
+                        ui.add_enabled(
+                            ctx.elevated,
+                            egui::Checkbox::new(&mut self.highest, "Run with highest privileges"),
+                        )
+                        .on_disabled_hover_text(ctx.i18n.tr("shell-needs-admin"));
+                        if ui.button(format!("{}  Create task", icons::PLUS)).clicked() {
+                            self.message = Some(self.create(ctx).map_err(|e| format!("{e:#}")));
+                            self.tasks = None;
+                        }
+                    });
+                },
+            );
+            ui.add_space(8.0);
+            section(
+                ui,
+                "Scheduled tasks",
+                |_| {},
+                |ui| match self.tasks.clone() {
+                    Some(Ok(list)) if list.is_empty() => {
+                        ui.weak("No scheduled tasks yet. Create one above.");
+                    }
+                    Some(Ok(list)) => {
+                        egui::Grid::new("mytasks")
+                            .num_columns(5)
+                            .striped(true)
+                            .spacing([16.0, 6.0])
+                            .show(ui, |ui| {
+                                for h in ["Task", "Next run", "Last run", "Last result", ""] {
+                                    ui.strong(h);
+                                }
+                                ui.end_row();
+                                for t in list {
+                                    ui.label(&t.name);
+                                    ui.label(t.next_run.clone().unwrap_or_else(|| "—".into()));
+                                    ui.label(t.last_run.clone().unwrap_or_else(|| "Never".into()));
+                                    ui.weak(tasks::result_text(t.last_result));
+                                    ui.horizontal(|ui| {
+                                        if ui.small_button("Run now").clicked() {
+                                            self.message = Some(
+                                                tasks::perform(&t, Action::Run)
+                                                    .map(|(d, _)| d)
+                                                    .map_err(|e| format!("{e:#}")),
+                                            );
+                                        }
+                                        if ui.small_button("Delete").clicked() {
+                                            self.confirm.ask(
+                                                format!("Delete the scheduled task \"{}\"?", t.name),
+                                                t.clone(),
+                                            );
+                                        }
+                                    });
+                                    ui.end_row();
+                                }
+                            });
+                    }
+                    Some(Err(e)) => {
+                        ui.colored_label(ui.visuals().error_fg_color, e);
+                    }
+                    None => {}
+                },
+            );
+        });
     }
 }
 

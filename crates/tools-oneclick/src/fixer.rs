@@ -10,15 +10,15 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use wm_core::{
-    AppCtx, Category, Tool,
+    AppCtx, Category, Layout, Tool,
     command::run_streaming,
-    egui, paths,
+    egui, icons, paths,
     process::{hidden_command, restart_explorer},
     registry,
     safety::UndoAction,
     shell::{KnownFolder, known_folder},
     task::BackgroundTask,
-    ui::{Confirm, Message, request_open_tool, show_message},
+    ui::{Confirm, Message, ToolButton, frame, request_open_tool, section, show_message},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -697,31 +697,44 @@ fn group(
     admin_hint: &str,
 ) {
     let usable = |f: &Fix| !f.admin || elevated;
-    ui.horizontal(|ui| {
-        ui.strong(title);
-        let mut all = fixes
-            .iter()
-            .zip(selected.iter())
-            .filter(|(f, _)| usable(f))
-            .all(|(_, s)| *s);
-        if ui.checkbox(&mut all, "Select all").changed() {
-            for (f, s) in fixes.iter().zip(selected.iter_mut()) {
-                *s = all && usable(f);
-            }
+    let mut all = fixes
+        .iter()
+        .zip(selected.iter())
+        .filter(|(f, _)| usable(f))
+        .all(|(_, s)| *s);
+    let mut toggle_all = false;
+    section(
+        ui,
+        title,
+        |ui| {
+            toggle_all = ui.checkbox(&mut all, "Select all").changed();
+        },
+        |ui| {
+            egui::Grid::new(title)
+                .num_columns(2)
+                .spacing([16.0, 6.0])
+                .show(ui, |ui| {
+                    for (f, sel) in fixes.iter().zip(selected.iter_mut()) {
+                        let ok = usable(f);
+                        let mut off = false;
+                        let state = if ok { &mut *sel } else { &mut off };
+                        ui.add_enabled(ok, egui::Checkbox::new(state, f.title))
+                            .on_disabled_hover_text(admin_hint);
+                        ui.horizontal(|ui| {
+                            ui.weak(f.description);
+                            if f.restart {
+                                ui.weak("· restart required");
+                            }
+                        });
+                        ui.end_row();
+                    }
+                });
+        },
+    );
+    if toggle_all {
+        for (f, s) in fixes.iter().zip(selected.iter_mut()) {
+            *s = all && usable(f);
         }
-    });
-    for (f, sel) in fixes.iter().zip(selected.iter_mut()) {
-        ui.horizontal(|ui| {
-            let ok = usable(f);
-            let mut off = false;
-            let state = if ok { sel } else { &mut off };
-            ui.add_enabled(ok, egui::Checkbox::new(state, f.title))
-                .on_disabled_hover_text(admin_hint);
-            ui.weak(f.description);
-            if f.restart {
-                ui.weak("· restart required");
-            }
-        });
     }
 }
 
@@ -783,27 +796,6 @@ impl Tool for OneClickFixer {
             }
         }
 
-        ui.horizontal(|ui| {
-            ui.label("Tick the problems to fix, then press Start. Each repair is a standard Windows repair.");
-            if ui.link("More repairs in Repair Center").clicked() {
-                request_open_tool(ui.ctx(), "repair");
-            }
-        });
-        if !ctx.elevated {
-            ui.colored_label(
-                ui.visuals().warn_fg_color,
-                "Greyed-out repairs need administrator rights (restart the app as administrator).",
-            );
-        }
-        ui.add_space(4.0);
-        let hint = ctx.i18n.tr("shell-needs-admin");
-        egui::ScrollArea::vertical()
-            .max_height((ui.available_height() - 120.0).max(160.0))
-            .show(ui, |ui| {
-                group(ui, "Repairs", &REPAIRS, &mut self.repairs, ctx.elevated, &hint);
-                ui.add_space(8.0);
-                group(ui, "Quick fixes", &QUICK, &mut self.quick, ctx.elevated, &hint);
-            });
         let chosen: Vec<Fix> = REPAIRS
             .iter()
             .zip(&self.repairs)
@@ -811,42 +803,74 @@ impl Tool for OneClickFixer {
             .filter(|(f, s)| **s && (!f.admin || ctx.elevated))
             .map(|(f, _)| *f)
             .collect();
-        ui.separator();
-        ui.horizontal(|ui| {
-            let label = match chosen.len() {
-                0 => "Start".to_owned(),
-                1 => "Start (1 repair)".to_owned(),
-                n => format!("Start ({n} repairs)"),
-            };
-            if ui
-                .add_enabled(
-                    !chosen.is_empty() && self.task.is_none(),
-                    egui::Button::new(label),
-                )
-                .clicked()
-            {
+        let start = match chosen.len() {
+            0 => "Start".to_owned(),
+            1 => "Start (1)".to_owned(),
+            n => format!("Start ({n})"),
+        };
+        match frame::toolbar(
+            ui,
+            &[
+                Some(ToolButton::new(icons::PLAY, &start).enabled(!chosen.is_empty() && self.task.is_none())),
+                None,
+                Some(ToolButton::new(icons::FIRST_AID_KIT, "Repair Center")),
+            ],
+            |_| {},
+        ) {
+            Some(0) => {
                 let names: Vec<&str> = chosen.iter().map(|f| f.title).collect();
                 self.confirm
                     .ask(format!("Run: {}?", names.join(", ")), chosen.clone());
             }
-            if let Some(t) = &self.task {
-                ui.add(egui::ProgressBar::new(t.progress).desired_width(160.0));
-                ui.label(&t.status);
+            Some(2) => request_open_tool(ui.ctx(), "repair"),
+            _ => {}
+        }
+        let status = match &self.task {
+            Some(t) => t.status.clone(),
+            None if !ctx.elevated => format!(
+                "{} selected · greyed-out repairs need administrator rights",
+                chosen.len()
+            ),
+            None => format!(
+                "{} selected · each one is a standard Windows repair",
+                chosen.len()
+            ),
+        };
+        let progress = self.task.as_ref().map(|t| t.progress);
+        frame::status(ui, &status, |ui| {
+            if let Some(p) = progress {
+                ui.add(egui::ProgressBar::new(p).desired_width(180.0).show_percentage());
             }
         });
-        show_message(ui, &self.message);
-        if !self.log.is_empty() {
-            egui::CollapsingHeader::new(format!("Log ({} lines)", self.log.len()))
-                .default_open(true)
-                .show(ui, |ui| {
-                    egui::ScrollArea::vertical().max_height(220.0).show(ui, |ui| {
-                        ui.add(
-                            egui::Label::new(egui::RichText::new(self.log.join("\n")).monospace().small())
+        let hint = ctx.i18n.tr("shell-needs-admin");
+        frame::central(ui, |ui| {
+            show_message(ui, &self.message);
+            if !self.log.is_empty() {
+                section(
+                    ui,
+                    &format!("Log ({} lines)", self.log.len()),
+                    |_| {},
+                    |ui| {
+                        egui::ScrollArea::vertical().max_height(220.0).show(ui, |ui| {
+                            ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(self.log.join("\n")).monospace().small(),
+                                )
                                 .selectable(true),
-                        );
-                    });
-                });
-        }
+                            );
+                        });
+                    },
+                );
+                ui.add_space(8.0);
+            }
+            group(ui, "Repairs", &REPAIRS, &mut self.repairs, ctx.elevated, &hint);
+            ui.add_space(8.0);
+            group(ui, "Quick fixes", &QUICK, &mut self.quick, ctx.elevated, &hint);
+        });
+    }
+
+    fn layout(&self) -> Layout {
+        Layout::Fill
     }
 }
 

@@ -23,11 +23,11 @@ use windows::Win32::UI::WindowsAndMessaging::{
     GetWindowThreadProcessId, IsWindowVisible, WS_EX_TOOLWINDOW,
 };
 use wm_core::{
-    AppCtx, Category, Tool, egui,
+    AppCtx, Category, Layout, Tool, egui, icons,
     process::{hidden_command, run_checked},
     safety::UndoAction,
     tool_settings,
-    ui::{Confirm, Message, format_bytes, show_message},
+    ui::{Confirm, Message, ToolButton, empty_state, format_bytes, frame, section, show_message},
 };
 
 const ID: &str = "killprocs";
@@ -429,6 +429,10 @@ impl Tool for KillProcesses {
         Category::OneClick
     }
 
+    fn layout(&self) -> Layout {
+        Layout::Fill
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, ctx: &mut AppCtx<'_>) {
         if self.confirm.show(ui.ctx(), ctx.i18n).is_some() {
             if ctx.config.dry_run {
@@ -456,35 +460,20 @@ impl Tool for KillProcesses {
             self.refresh();
         }
 
-        ui.label("Ends programs you don't need right now, to free memory and CPU before a game, a big job or a meeting.");
-        ui.add_space(4.0);
-        let before = self.settings.tier;
-        for t in [Tier::Standard, Tier::Enhanced, Tier::Maximum] {
-            ui.horizontal(|ui| {
-                ui.radio_value(&mut self.settings.tier, t, t.label());
-                ui.weak(t.description());
-            });
-        }
-        if self.settings.tier != before {
-            self.save();
-            self.preview = None;
-        }
-        show_message(ui, &self.message);
-        ui.separator();
-
         let list = self.preview.clone().unwrap_or_default();
         let chosen: Vec<&Target> = list.iter().filter(|(_, on)| *on).map(|(t, _)| t).collect();
         let memory: u64 = chosen.iter().map(|t| t.memory).sum();
-        ui.horizontal(|ui| {
-            if ui
-                .add_enabled(
-                    !chosen.is_empty(),
-                    egui::Button::new(
-                        egui::RichText::new(format!("End {} programs", chosen.len())).size(16.0),
-                    ),
-                )
-                .clicked()
-            {
+        let end_label = format!("End {}", chosen.len());
+        let refresh = ctx.i18n.tr("common-refresh");
+        match frame::toolbar(
+            ui,
+            &[
+                Some(ToolButton::new(icons::LIGHTNING, &end_label).enabled(!chosen.is_empty())),
+                Some(ToolButton::new(icons::ARROWS_CLOCKWISE, &refresh)),
+            ],
+            |_| {},
+        ) {
+            Some(0) => {
                 let polite = chosen.iter().filter(|t| t.polite).count();
                 let mut q = format!("End {} programs (about {})?", chosen.len(), format_bytes(memory));
                 if polite > 0 {
@@ -495,42 +484,132 @@ impl Tool for KillProcesses {
                 }
                 self.confirm.ask(q, ());
             }
-            if ui.button(ctx.i18n.tr("common-refresh")).clicked() {
-                self.preview = None;
+            Some(1) => self.preview = None,
+            _ => {}
+        }
+
+        let before = self.settings.tier;
+        frame::options(ui, |ui| {
+            ui.label("How much to end:");
+            for t in [Tier::Standard, Tier::Enhanced, Tier::Maximum] {
+                ui.radio_value(&mut self.settings.tier, t, t.label())
+                    .on_hover_text(t.description());
             }
-            ui.weak(format!("{} would be freed", format_bytes(memory)));
         });
-        let mut toggles = Vec::new();
-        let mut protect = None;
-        egui::ScrollArea::vertical()
-            .max_height(280.0)
-            .auto_shrink([false, true])
-            .show(ui, |ui| {
-                if list.is_empty() {
-                    ui.weak("Nothing to end at this tier.");
-                }
-                egui::Grid::new("kill-grid")
-                    .striped(true)
-                    .num_columns(4)
-                    .show(ui, |ui| {
-                        for (i, (t, on)) in list.iter().enumerate() {
-                            let mut v = *on;
-                            if ui.checkbox(&mut v, &t.name).changed() {
-                                toggles.push((i, v));
+        if self.settings.tier != before {
+            self.save();
+            self.preview = None;
+        }
+        let tier_text = self.settings.tier.description();
+        frame::status(
+            ui,
+            &format!(
+                "{} of {} selected · {} would be freed",
+                chosen.len(),
+                list.len(),
+                format_bytes(memory)
+            ),
+            |ui| {
+                ui.weak(tier_text);
+            },
+        );
+
+        // Left: the protected list and the history.
+        let mut changed = false;
+        frame::left(ui, 260.0, |ui| {
+            section(
+                ui,
+                &format!("Protected ({})", self.settings.protected.len()),
+                |_| {},
+                |ui| {
+                    ui.weak("Never ended at any tier. Windows' own processes, terminals and this app are always protected.");
+                    let mut remove = None;
+                    for (i, p) in self.settings.protected.iter().enumerate() {
+                        ui.horizontal(|ui| {
+                            if ui.small_button("✕").on_hover_text("Remove").clicked() {
+                                remove = Some(i);
                             }
-                            ui.weak(format_bytes(t.memory));
-                            ui.weak(if t.polite { "asked to close" } else { "ended" });
-                            if ui
-                                .small_button("Protect")
-                                .on_hover_text("Never end this program")
-                                .clicked()
-                            {
-                                protect = Some(t.name.clone());
-                            }
-                            ui.end_row();
+                            ui.label(p);
+                        });
+                    }
+                    ui.horizontal(|ui| {
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.new_protected)
+                                .hint_text("program.exe")
+                                .desired_width(140.0),
+                        );
+                        if ui.button("Add").clicked() && !self.new_protected.trim().is_empty() {
+                            self.settings.protected.push(self.new_protected.trim().to_owned());
+                            self.new_protected.clear();
+                            changed = true;
                         }
                     });
-            });
+                    if let Some(i) = remove {
+                        self.settings.protected.remove(i);
+                        changed = true;
+                    }
+                },
+            );
+            ui.add_space(8.0);
+            section(
+                ui,
+                "History",
+                |_| {},
+                |ui| {
+                    if self.settings.log.is_empty() {
+                        ui.weak("Nothing ended yet.");
+                    }
+                    for l in self.settings.log.iter().rev() {
+                        ui.weak(l);
+                    }
+                },
+            );
+        });
+        if changed {
+            self.save();
+            self.preview = None;
+        }
+
+        let mut toggles = Vec::new();
+        let mut protect = None;
+        frame::central(ui, |ui| {
+            show_message(ui, &self.message);
+            if list.is_empty() {
+                empty_state(
+                    ui,
+                    icons::SHIELD_CHECK,
+                    "Nothing to end at this tier",
+                    "Try a higher tier, or come back when more programs are running.",
+                );
+                return;
+            }
+            egui::Grid::new("kill-grid")
+                .striped(true)
+                .num_columns(4)
+                .spacing([24.0, 6.0])
+                .show(ui, |ui| {
+                    for h in ["Program", "Memory", "How", ""] {
+                        ui.strong(h);
+                    }
+                    ui.end_row();
+                    for (i, (t, on)) in list.iter().enumerate() {
+                        let mut v = *on;
+                        if ui.checkbox(&mut v, &t.name).changed() {
+                            toggles.push((i, v));
+                        }
+                        ui.label(format_bytes(t.memory));
+                        ui.weak(if t.polite { "asked to close" } else { "ended" });
+                        if ui
+                            .small_button("Protect")
+                            .on_hover_text("Never end this program")
+                            .clicked()
+                        {
+                            protect = Some(t.name.clone());
+                        }
+                        ui.end_row();
+                    }
+                });
+        });
         if let Some(p) = &mut self.preview {
             for (i, v) in toggles {
                 p[i].1 = v;
@@ -543,42 +622,6 @@ impl Tool for KillProcesses {
             self.save();
             self.preview = None;
         }
-
-        ui.add_space(6.0);
-        egui::CollapsingHeader::new(format!("Protected programs ({})", self.settings.protected.len())).show(ui, |ui| {
-            ui.weak("Never ended, at any tier. Windows' own processes, terminals and this app are always protected.");
-            let mut remove = None;
-            for (i, p) in self.settings.protected.iter().enumerate() {
-                ui.horizontal(|ui| {
-                    ui.label(p);
-                    if ui.small_button("Remove").clicked() {
-                        remove = Some(i);
-                    }
-                });
-            }
-            ui.horizontal(|ui| {
-                ui.add(egui::TextEdit::singleline(&mut self.new_protected).hint_text("program.exe").desired_width(160.0));
-                if ui.button("Add").clicked() && !self.new_protected.trim().is_empty() {
-                    self.settings.protected.push(self.new_protected.trim().to_owned());
-                    self.new_protected.clear();
-                    self.save();
-                    self.preview = None;
-                }
-            });
-            if let Some(i) = remove {
-                self.settings.protected.remove(i);
-                self.save();
-                self.preview = None;
-            }
-        });
-        egui::CollapsingHeader::new("History").show(ui, |ui| {
-            if self.settings.log.is_empty() {
-                ui.weak("Nothing ended yet.");
-            }
-            for l in self.settings.log.iter().rev() {
-                ui.weak(l);
-            }
-        });
     }
 }
 

@@ -202,6 +202,33 @@ pub fn apply_style(style: &mut egui::Style, dark: bool) {
     }
 }
 
+/// A titled card grouping related settings or results (faint fill, thin border),
+/// the building block of tool pages. `right` draws widgets at the title's right end.
+pub fn section<R>(
+    ui: &mut Ui,
+    title: &str,
+    right: impl FnOnce(&mut Ui),
+    add: impl FnOnce(&mut Ui) -> R,
+) -> R {
+    egui::Frame::new()
+        .fill(ui.visuals().faint_bg_color)
+        .stroke(ui.visuals().widgets.noninteractive.bg_stroke)
+        .corner_radius(egui::CornerRadius::same(6))
+        .inner_margin(egui::Margin::same(12))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            if !title.is_empty() {
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new(title).size(14.5).strong());
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), right);
+                });
+                ui.add_space(6.0);
+            }
+            add(ui)
+        })
+        .inner
+}
+
 /// A centred placeholder for an area that has nothing to show yet: a faint icon, a
 /// title and one line of guidance (e.g. "Press Analyze to measure the store").
 pub fn empty_state(ui: &mut Ui, icon: &str, title: &str, hint: &str) {
