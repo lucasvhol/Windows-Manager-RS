@@ -718,6 +718,26 @@ enum Show {
     NonMicrosoft,
 }
 
+impl Show {
+    const ALL: [Show; 5] = [
+        Show::All,
+        Show::Running,
+        Show::Automatic,
+        Show::Disabled,
+        Show::NonMicrosoft,
+    ];
+
+    fn label(self) -> &'static str {
+        match self {
+            Show::All => "All",
+            Show::Running => "Running",
+            Show::Automatic => "Automatic",
+            Show::Disabled => "Disabled",
+            Show::NonMicrosoft => "Non-Microsoft",
+        }
+    }
+}
+
 enum Ask {
     One(Service, Action),
     Batch(String, Vec<(Service, StartType)>),
@@ -754,6 +774,10 @@ pub struct ServiceManager {
     confirm: Confirm<Ask>,
     questionnaire: Option<Questionnaire>,
     message: Message,
+    /// Folded groups: true = Non-Microsoft, false = Microsoft.
+    folded: HashSet<bool>,
+    /// File creation dates, read once per file.
+    created: HashMap<PathBuf, String>,
 }
 
 impl Default for ServiceManager {
@@ -774,6 +798,8 @@ impl Default for ServiceManager {
             confirm: Confirm::default(),
             questionnaire: None,
             message: None,
+            folded: HashSet::new(),
+            created: HashMap::new(),
         }
     }
 }
@@ -1175,23 +1201,7 @@ impl Tool for ServiceManager {
         }
         self.poll(ui, ctx);
 
-        let mut sel = usize::from(self.kind == Kind::Driver);
         let loading = self.load.is_some();
-        frame::left(ui, 170.0, |ui| {
-            ui.add_enabled_ui(!loading, |ui| {
-                wm_core::ui::section_nav(
-                    ui,
-                    &[(icons::GEAR, "Services"), (icons::CPU, "Drivers")],
-                    &mut sel,
-                )
-            })
-        });
-        let k = if sel == 1 { Kind::Driver } else { Kind::Service };
-        if k != self.kind && !loading {
-            self.kind = k;
-            self.selected = None;
-        }
-
         let list = match self.list() {
             Some(Ok(s)) => s.clone(),
             Some(Err(e)) => {
@@ -1226,86 +1236,58 @@ impl Tool for ServiceManager {
         let deletable = selected
             .as_ref()
             .is_some_and(|s| svc && !is_protected(&s.name) && self.is_microsoft(s) == Some(false));
+        // The original's toolbar order.
         let buttons = [
-            Some(ToolButton::new(icons::ARROWS_CLOCKWISE, "Refresh").enabled(self.load.is_none())),
-            None,
-            Some(ToolButton::new(icons::PLAY, "Start").enabled(sel_ok && !running)),
-            Some(ToolButton::new(icons::STOP, "Stop").enabled(sel_ok && running)),
-            Some(ToolButton::new(icons::ARROW_COUNTER_CLOCKWISE, "Restart").enabled(sel_ok && running)),
-            Some(ToolButton::new(icons::TRASH, "Delete").enabled(can && deletable)),
+            Some(ToolButton::new(icons::MAGIC_WAND, "Optimize").enabled(can)),
+            Some(ToolButton::new(icons::ARROWS_CLOCKWISE, "Refresh").enabled(!loading)),
             None,
             Some(
-                ToolButton::new(icons::INFO, "Properties").enabled(
+                ToolButton::new(icons::INFO, "File Properties").enabled(
                     selected
                         .as_ref()
                         .is_some_and(|s| s.file.as_ref().is_some_and(|f| f.exists())),
                 ),
             ),
             Some(
-                ToolButton::new(icons::FOLDER_OPEN, "Open folder")
+                ToolButton::new(icons::FOLDER_OPEN, "Open File Location")
                     .enabled(selected.as_ref().is_some_and(|s| s.file.is_some())),
             ),
-            Some(ToolButton::new(icons::MAGNIFYING_GLASS, "Look up").enabled(selected.is_some())),
+            Some(ToolButton::new(icons::GLOBE, "Query").enabled(selected.is_some())),
             None,
-            Some(ToolButton::new(icons::FLOPPY_DISK, "Back up").enabled(svc)),
+            Some(ToolButton::new(icons::PLAY, "Start").enabled(sel_ok && !running)),
+            Some(ToolButton::new(icons::STOP, "Stop").enabled(sel_ok && running)),
+            Some(ToolButton::new(icons::ARROW_COUNTER_CLOCKWISE, "Restart").enabled(sel_ok && running)),
+            None,
+            Some(ToolButton::new(icons::FLOPPY_DISK, "Backup").enabled(svc)),
             Some(ToolButton::new(icons::UPLOAD, "Restore").enabled(can)),
             Some(ToolButton::new(icons::CLOCK_COUNTER_CLOCKWISE, "Defaults").enabled(can)),
-            Some(ToolButton::new(icons::MAGIC_WAND, "Optimize").enabled(can)),
+            Some(ToolButton::new(icons::X, "Delete").enabled(can && deletable)),
+            None,
+            Some(ToolButton::new(icons::SIGN_OUT, "Exit")),
         ];
         match frame::toolbar(ui, &buttons, |_| {}) {
             Some(0) => {
+                self.questionnaire = Some(Questionnaire {
+                    answers: vec![true; QUESTIONS.len()],
+                })
+            }
+            Some(1) => {
                 *self.list_mut() = None;
                 self.message = None;
             }
-            Some(2) => {
-                if let Some(s) = &selected {
-                    self.run_ask(ui, ctx, Ask::One(s.clone(), Action::Start));
-                }
-            }
             Some(3) => {
-                if let Some(s) = &selected {
-                    self.confirm
-                        .ask(format!("Stop {}?", s.display), Ask::One(s.clone(), Action::Stop));
-                }
-            }
-            Some(4) => {
-                if let Some(s) = &selected {
-                    self.confirm.ask(
-                        format!("Restart {}?", s.display),
-                        Ask::One(s.clone(), Action::Restart),
-                    );
-                }
-            }
-            Some(5) => {
-                if let Some(s) = &selected {
-                    let file = match (&s.file, self.delete_file) {
-                        (Some(f), true) => {
-                            format!("\n\nIts file will be moved to the Recycle Bin:\n{}", f.display())
-                        }
-                        _ => String::new(),
-                    };
-                    self.confirm.ask(
-                        format!(
-                            "Delete the service {} ({})? Its settings are backed up first and can be re-imported from the Change Journal.{file}",
-                            s.display, s.name
-                        ),
-                        Ask::Delete(s.clone(), self.delete_file),
-                    );
-                }
-            }
-            Some(7) => {
                 if let Some(f) = selected.as_ref().and_then(|s| s.file.as_ref()) {
                     self.message = wm_core::shell::show_properties(f)
                         .err()
                         .map(|e| Err(format!("{e:#}")));
                 }
             }
-            Some(8) => {
+            Some(4) => {
                 if let Some(f) = selected.as_ref().and_then(|s| s.file.as_ref()) {
                     wm_core::shell::reveal_in_explorer(f);
                 }
             }
-            Some(9) => {
+            Some(5) => {
                 if let Some(s) = &selected {
                     let q: String = format!("{} {}", s.name, if svc { "service" } else { "driver" })
                         .chars()
@@ -1320,6 +1302,25 @@ impl Tool for ServiceManager {
                     let _ = std::process::Command::new("explorer")
                         .arg(format!("https://www.bing.com/search?q={q}"))
                         .spawn();
+                }
+            }
+            Some(7) => {
+                if let Some(s) = &selected {
+                    self.run_ask(ui, ctx, Ask::One(s.clone(), Action::Start));
+                }
+            }
+            Some(8) => {
+                if let Some(s) = &selected {
+                    self.confirm
+                        .ask(format!("Stop {}?", s.display), Ask::One(s.clone(), Action::Stop));
+                }
+            }
+            Some(9) => {
+                if let Some(s) = &selected {
+                    self.confirm.ask(
+                        format!("Restart {}?", s.display),
+                        Ask::One(s.clone(), Action::Restart),
+                    );
                 }
             }
             Some(11) => self.backup(&list),
@@ -1343,31 +1344,52 @@ impl Tool for ServiceManager {
                 }
             }
             Some(14) => {
-                self.questionnaire = Some(Questionnaire {
-                    answers: vec![true; QUESTIONS.len()],
-                })
+                if let Some(s) = &selected {
+                    let file = match (&s.file, self.delete_file) {
+                        (Some(f), true) => {
+                            format!("\n\nIts file will be moved to the Recycle Bin:\n{}", f.display())
+                        }
+                        _ => String::new(),
+                    };
+                    self.confirm.ask(
+                        format!(
+                            "Delete the service {} ({})? Its settings are backed up first and can be re-imported from the Change Journal.{file}",
+                            s.display, s.name
+                        ),
+                        Ask::Delete(s.clone(), self.delete_file),
+                    );
+                }
             }
+            Some(16) => ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close),
             _ => {}
         }
 
-        let filter_hint = ctx.i18n.tr("common-filter");
+        // Services / Drivers, as the original's toggle buttons, then the filters.
+        let mut kind = self.kind;
+        let search_hint = format!("{}  {}", icons::MAGNIFYING_GLASS, ctx.i18n.tr("common-filter"));
         frame::options(ui, |ui| {
+            ui.add_enabled_ui(!loading, |ui| {
+                ui.selectable_value(&mut kind, Kind::Service, format!("{}  Services", icons::GEAR));
+                ui.selectable_value(&mut kind, Kind::Driver, format!("{}  Drivers", icons::CPU));
+            });
+            ui.separator();
+            egui::ComboBox::from_id_salt("svc-show")
+                .selected_text(self.show.label())
+                .show_ui(ui, |ui| {
+                    for s in Show::ALL {
+                        ui.selectable_value(&mut self.show, s, s.label());
+                    }
+                });
             ui.add(
                 egui::TextEdit::singleline(&mut self.filter)
-                    .hint_text(format!("{}  {filter_hint}", icons::MAGNIFYING_GLASS))
+                    .hint_text(search_hint)
                     .desired_width(220.0),
             );
-            ui.separator();
-            for (s, label) in [
-                (Show::All, "All"),
-                (Show::Running, "Running"),
-                (Show::Automatic, "Automatic"),
-                (Show::Disabled, "Disabled"),
-                (Show::NonMicrosoft, "Non-Microsoft"),
-            ] {
-                ui.selectable_value(&mut self.show, s, label);
-            }
         });
+        if kind != self.kind {
+            self.kind = kind;
+            self.selected = None;
+        }
 
         let f = self.filter.to_lowercase();
         let visible: Vec<&Service> = list
@@ -1394,10 +1416,9 @@ impl Tool for ServiceManager {
         frame::status(
             ui,
             &format!(
-                "{} {} shown, {} running",
-                visible.len(),
-                if svc { "services" } else { "drivers" },
-                list.iter().filter(|s| s.state == RunState::Running).count()
+                "{} Total: {}",
+                if svc { "Services" } else { "Drivers" },
+                visible.len()
             ),
             |ui| {
                 if busy {
@@ -1427,33 +1448,84 @@ impl Tool for ServiceManager {
     }
 }
 
+/// A row of the grouped list: a Non-Microsoft / Microsoft header, or a service.
+enum Row<'a> {
+    Group(bool, usize),
+    Item(&'a Service),
+}
+
 impl ServiceManager {
+    /// The binary's creation date ("1/11/2026"), cached per file.
+    fn created_of(&mut self, s: &Service) -> String {
+        let Some(f) = &s.file else { return String::new() };
+        self.created
+            .entry(f.clone())
+            .or_insert_with(|| {
+                std::fs::metadata(f)
+                    .and_then(|m| m.created())
+                    .map(|t| {
+                        chrono::DateTime::<chrono::Local>::from(t)
+                            .format("%-d/%-m/%Y")
+                            .to_string()
+                    })
+                    .unwrap_or_default()
+            })
+            .clone()
+    }
+
     fn table(&mut self, ui: &mut egui::Ui, visible: &[&Service]) {
         show_message(ui, &self.message);
+        // Like the original: Non-Microsoft first, then Microsoft (still unchecked
+        // files count as Microsoft until their signature is read).
+        let mut rows: Vec<Row<'_>> = Vec::new();
+        for non_ms in [true, false] {
+            let group: Vec<&Service> = visible
+                .iter()
+                .copied()
+                .filter(|s| (self.is_microsoft(s) == Some(false)) == non_ms)
+                .collect();
+            if group.is_empty() {
+                continue;
+            }
+            rows.push(Row::Group(non_ms, group.len()));
+            if !self.folded.contains(&non_ms) {
+                rows.extend(group.into_iter().map(Row::Item));
+            }
+        }
+        let created: Vec<String> = rows
+            .iter()
+            .map(|r| match r {
+                Row::Item(s) => self.created_of(s),
+                Row::Group(..) => String::new(),
+            })
+            .collect();
         let mut clicked = None;
+        let mut fold = None;
         let (green, weak) = (
             egui::Color32::from_rgb(90, 180, 110),
             ui.visuals().weak_text_color(),
         );
+        let accent = ui.visuals().selection.bg_fill;
+        ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
         TableBuilder::new(ui)
             .striped(true)
             .sense(egui::Sense::click())
-            .column(Column::initial(250.0).clip(true))
+            .column(Column::initial(190.0).clip(true))
+            .column(Column::initial(230.0).clip(true))
             .column(Column::initial(70.0))
-            .column(Column::initial(130.0))
-            .column(Column::initial(150.0).clip(true))
-            .column(Column::initial(140.0).clip(true))
-            .column(Column::initial(130.0).clip(true))
+            .column(Column::initial(120.0))
+            .column(Column::initial(110.0).clip(true))
+            .column(Column::initial(95.0))
             .column(Column::remainder().clip(true))
             .header(22.0, |mut h| {
                 for t in [
-                    "Display name",
+                    "Name",
+                    "Title",
                     "Status",
-                    "Startup type",
-                    "Log on as",
-                    "Company",
-                    "Service name",
-                    "Description",
+                    "Startup Type",
+                    "Log On As",
+                    "Creation Date",
+                    "Command Line",
                 ] {
                     h.col(|ui| {
                         ui.strong(t);
@@ -1461,36 +1533,67 @@ impl ServiceManager {
                 }
             })
             .body(|body| {
-                body.rows(20.0, visible.len(), |mut row| {
-                    let s = visible[row.index()];
-                    row.set_selected(self.selected.as_deref() == Some(s.name.as_str()));
-                    row.col(|ui| {
-                        ui.label(&s.display);
-                    });
-                    row.col(|ui| {
-                        let color = if s.state == RunState::Running { green } else { weak };
-                        ui.colored_label(color, s.state.label());
-                    });
-                    row.col(|ui| {
-                        ui.label(s.start.label());
-                    });
-                    row.col(|ui| {
-                        ui.weak(short_account(&s.log_on));
-                    });
-                    row.col(|ui| {
-                        ui.weak(self.info_of(s).map(|i| i.company.as_str()).unwrap_or(""));
-                    });
-                    row.col(|ui| {
-                        ui.weak(&s.name);
-                    });
-                    row.col(|ui| {
-                        ui.weak(&s.description);
-                    });
-                    if row.response().clicked() {
-                        clicked = Some(s.name.clone());
+                body.rows(22.0, rows.len(), |mut row| {
+                    let i = row.index();
+                    match &rows[i] {
+                        Row::Group(non_ms, n) => {
+                            let open = !self.folded.contains(non_ms);
+                            row.col(|ui| {
+                                ui.horizontal(|ui| {
+                                    ui.label(if open { "▾" } else { "▸" });
+                                    ui.colored_label(
+                                        accent,
+                                        if *non_ms { "Non-Microsoft" } else { "Microsoft" },
+                                    );
+                                    ui.weak(format!("({n})"));
+                                });
+                            });
+                            for _ in 0..6 {
+                                row.col(|_| {});
+                            }
+                            if row.response().clicked() {
+                                fold = Some(*non_ms);
+                            }
+                        }
+                        Row::Item(s) => {
+                            row.set_selected(self.selected.as_deref() == Some(s.name.as_str()));
+                            row.col(|ui| {
+                                ui.horizontal(|ui| {
+                                    ui.add_space(18.0);
+                                    ui.label(&s.name);
+                                });
+                            });
+                            row.col(|ui| {
+                                ui.label(&s.display).on_hover_text(&s.description);
+                            });
+                            row.col(|ui| {
+                                let color = if s.state == RunState::Running { green } else { weak };
+                                ui.colored_label(color, s.state.label());
+                            });
+                            row.col(|ui| {
+                                ui.label(s.start.label());
+                            });
+                            row.col(|ui| {
+                                ui.label(short_account(&s.log_on));
+                            });
+                            row.col(|ui| {
+                                ui.weak(&created[i]);
+                            });
+                            row.col(|ui| {
+                                ui.weak(&s.binary).on_hover_text(&s.binary);
+                            });
+                            if row.response().clicked() {
+                                clicked = Some(s.name.clone());
+                            }
+                        }
                     }
                 });
             });
+        if let Some(g) = fold
+            && !self.folded.remove(&g)
+        {
+            self.folded.insert(g);
+        }
         if clicked.is_some() {
             self.selected = clicked;
         }
