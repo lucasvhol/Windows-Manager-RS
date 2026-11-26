@@ -382,6 +382,39 @@ impl Filter {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AppSort {
+    Name,
+    Publisher,
+    Version,
+}
+
+impl AppSort {
+    const ALL: [AppSort; 3] = [AppSort::Name, AppSort::Publisher, AppSort::Version];
+
+    fn label(self) -> &'static str {
+        match self {
+            AppSort::Name => "Name",
+            AppSort::Publisher => "Publisher",
+            AppSort::Version => "Version",
+        }
+    }
+}
+
+fn sort_packages(list: &mut [&Package], (key, asc): (AppSort, bool)) {
+    list.sort_by(|a, b| {
+        let o = match key {
+            AppSort::Name => a.display_name.to_lowercase().cmp(&b.display_name.to_lowercase()),
+            AppSort::Publisher => a
+                .publisher_name()
+                .to_lowercase()
+                .cmp(&b.publisher_name().to_lowercase()),
+            AppSort::Version => a.version.cmp(&b.version),
+        };
+        if asc { o } else { o.reverse() }
+    });
+}
+
 /// Per-app removal outcome (display name, result).
 type RemovalResults = Vec<(String, Result<(), String>)>;
 type LogoBatch = Vec<(String, Option<([usize; 2], Vec<u8>)>)>;
@@ -410,6 +443,9 @@ pub struct AppsUninstaller {
     selected: Option<String>,
     filter: String,
     kind: Filter,
+    sort: (AppSort, bool),
+    /// Batch Uninstall is on: apps get tick boxes and Uninstall takes the ticked ones.
+    batch_mode: bool,
     tiles: bool,
     tile_colors: bool,
     logos: HashMap<String, egui::TextureHandle>,
@@ -431,8 +467,10 @@ impl Default for AppsUninstaller {
             selected: None,
             filter: String::new(),
             kind: Filter::All,
-            tiles: false,
-            tile_colors: true,
+            sort: (AppSort::Name, true),
+            batch_mode: false,
+            tiles: true,
+            tile_colors: false,
             logos: HashMap::new(),
             logo_tried: HashSet::new(),
             logo_task: None,
@@ -546,10 +584,11 @@ impl AppsUninstaller {
     fn list_view(&mut self, ui: &mut egui::Ui, visible: &[&Package]) {
         ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
         let mut clicked = None;
+        let batch = self.batch_mode;
         TableBuilder::new(ui)
             .striped(true)
             .sense(egui::Sense::click())
-            .column(Column::exact(26.0))
+            .column(Column::exact(if batch { 26.0 } else { 0.0 }))
             .column(Column::exact(22.0))
             .column(Column::initial(230.0).clip(true))
             .column(Column::initial(170.0).clip(true))
@@ -567,7 +606,11 @@ impl AppsUninstaller {
                 body.rows(22.0, visible.len(), |mut row| {
                     let p = visible[row.index()];
                     row.set_selected(self.selected.as_deref() == Some(p.package_full_name.as_str()));
-                    row.col(|ui| self.mark_box(ui, p));
+                    row.col(|ui| {
+                        if batch {
+                            self.mark_box(ui, p);
+                        }
+                    });
                     row.col(|ui| {
                         if let Some(t) = self.logos.get(&p.package_full_name) {
                             let (r, _) = ui.allocate_exact_size(Vec2::splat(18.0), egui::Sense::hover());
@@ -677,13 +720,13 @@ impl AppsUninstaller {
                     let resp =
                         resp.on_hover_text(format!("{}\n{}\n{}", p.display_name, p.publisher_name(), p.name));
                     if resp.clicked() {
-                        if ui.input(|i| i.modifiers.ctrl) && !p.is_protected() {
+                        if (self.batch_mode || ui.input(|i| i.modifiers.ctrl)) && !p.is_protected() {
                             if !self.marked.remove(key) {
                                 self.marked.insert(key.clone());
                             }
-                        } else {
-                            self.selected = Some(key.clone());
+                            self.batch_mode = true;
                         }
+                        self.selected = Some(key.clone());
                     }
                     if resp.double_clicked() {
                         let _ = launch(p);
@@ -754,14 +797,19 @@ impl Tool for AppsUninstaller {
         };
         let busy = self.working.is_some();
         let has_app = selected.as_ref().is_some_and(|p| p.app_id.is_some());
-        let remove_label = if targets.len() > 1 {
-            format!("Remove {}", targets.len())
+        let uninstall_label = if targets.len() > 1 {
+            format!("Uninstall {}", targets.len())
         } else {
-            "Remove".to_owned()
+            "Uninstall".to_owned()
+        };
+        let batch_label = if self.batch_mode {
+            "Batch Uninstall ✓"
+        } else {
+            "Batch Uninstall"
         };
 
         let f = self.filter.to_lowercase();
-        let visible: Vec<&Package> = packages
+        let mut visible: Vec<&Package> = packages
             .iter()
             .filter(|p| self.kind.keeps(p))
             .filter(|p| {
@@ -770,46 +818,53 @@ impl Tool for AppsUninstaller {
                     || p.name.to_lowercase().contains(&f)
             })
             .collect();
+        sort_packages(&mut visible, self.sort);
 
+        // The original's toolbar; its Filter, View, Sort and Background Color
+        // drop-downs are the pickers in the strip below.
         let clicked = frame::toolbar(
             ui,
             &[
-                Some(ToolButton::new(icons::TRASH, &remove_label).enabled(!busy && !targets.is_empty())),
-                Some(
-                    ToolButton::new(icons::USER, "All users")
-                        .enabled(!busy && !targets.is_empty() && ctx.elevated),
-                ),
+                Some(ToolButton::new(icons::ARROWS_CLOCKWISE, "Refresh").enabled(!busy)),
+                Some(ToolButton::new(icons::UPLOAD, "Export")),
                 None,
                 Some(ToolButton::new(icons::PLAY, "Launch").enabled(has_app)),
-                Some(ToolButton::new(icons::DESKTOP, "Shortcut").enabled(has_app)),
-                Some(ToolButton::new(icons::WRENCH, "Repair").enabled(!busy && selected.is_some())),
+                Some(ToolButton::new(icons::DESKTOP, "Create on Desktop").enabled(has_app)),
+                Some(ToolButton::new(icons::WRENCH, "Re-Register").enabled(!busy && selected.is_some())),
+                None,
+                Some(ToolButton::new(icons::LIST_CHECKS, batch_label).enabled(!busy)),
+                Some(ToolButton::new(icons::TRASH, &uninstall_label).enabled(!busy && !targets.is_empty())),
                 Some(
-                    ToolButton::new(icons::FOLDER_OPEN, "Open folder")
+                    ToolButton::new(icons::X, "Delete").enabled(!busy && !targets.is_empty() && ctx.elevated),
+                ),
+                None,
+                Some(
+                    ToolButton::new(icons::FOLDER_OPEN, "Open Folder")
                         .enabled(selected.as_ref().is_some_and(|p| p.install_location.is_some())),
                 ),
                 None,
-                Some(ToolButton::new(icons::UPLOAD, "Export")),
-                Some(ToolButton::new(icons::ARROWS_CLOCKWISE, "Refresh").enabled(!busy)),
+                Some(ToolButton::new(icons::SIGN_OUT, "Exit")),
             ],
             |_| {},
         );
         match clicked {
-            Some(i @ (0 | 1)) => {
-                let all = i == 1;
-                let names: Vec<&str> = targets.iter().map(|p| p.display_name.as_str()).collect();
-                let scope = if all {
-                    "for every account on this PC, and stop Windows adding them for new accounts"
-                } else {
-                    "for your account"
-                };
-                self.confirm.ask(
-                    format!(
-                        "Remove {} {scope}? They can be reinstalled from the Microsoft Store, but their local \
-                         data will be deleted.",
-                        names.join(", ")
-                    ),
-                    Ask::Remove(targets.clone(), all),
-                );
+            Some(0) => {
+                self.packages = None;
+                self.logos.clear();
+                self.logo_tried.clear();
+            }
+            Some(1) => {
+                if let Some(file) = rfd::FileDialog::new()
+                    .set_file_name("Windows apps.csv")
+                    .add_filter("CSV", &["csv"])
+                    .save_file()
+                {
+                    self.message = Some(
+                        std::fs::write(&file, export_csv(&visible))
+                            .map(|_| format!("Exported {} apps to {}.", visible.len(), file.display()))
+                            .map_err(|e| format!("{e:#}")),
+                    );
+                }
             }
             Some(3) => {
                 if let Some(p) = &selected {
@@ -837,39 +892,40 @@ impl Tool for AppsUninstaller {
                     );
                 }
             }
-            Some(6) => {
+            Some(7) => {
+                self.batch_mode = !self.batch_mode;
+                if !self.batch_mode {
+                    self.marked.clear();
+                }
+            }
+            Some(i @ (8 | 9)) => {
+                let all = i == 9;
+                let names: Vec<&str> = targets.iter().map(|p| p.display_name.as_str()).collect();
+                let scope = if all {
+                    "for every account on this PC, and stop Windows adding them for new accounts"
+                } else {
+                    "for your account"
+                };
+                self.confirm.ask(
+                    format!(
+                        "Remove {} {scope}? They can be reinstalled from the Microsoft Store, but their local \
+                         data will be deleted.",
+                        names.join(", ")
+                    ),
+                    Ask::Remove(targets.clone(), all),
+                );
+            }
+            Some(11) => {
                 if let Some(l) = selected.as_ref().and_then(|p| p.install_location.clone()) {
                     let _ = std::process::Command::new("explorer").arg(l).spawn();
                 }
             }
-            Some(8) => {
-                if let Some(file) = rfd::FileDialog::new()
-                    .set_file_name("Windows apps.csv")
-                    .add_filter("CSV", &["csv"])
-                    .save_file()
-                {
-                    self.message = Some(
-                        std::fs::write(&file, export_csv(&visible))
-                            .map(|_| format!("Exported {} apps to {}.", visible.len(), file.display()))
-                            .map_err(|e| format!("{e:#}")),
-                    );
-                }
-            }
-            Some(9) => {
-                self.packages = None;
-                self.logos.clear();
-                self.logo_tried.clear();
-            }
+            Some(13) => ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close),
             _ => {}
         }
 
-        let filter_hint = ctx.i18n.tr("common-filter");
         frame::options(ui, |ui| {
-            ui.add(
-                egui::TextEdit::singleline(&mut self.filter)
-                    .hint_text(format!("{}  {filter_hint}", icons::MAGNIFYING_GLASS))
-                    .desired_width(220.0),
-            );
+            ui.label("Filter:");
             egui::ComboBox::from_id_salt("apps-kind")
                 .selected_text(self.kind.label())
                 .show_ui(ui, |ui| {
@@ -877,39 +933,54 @@ impl Tool for AppsUninstaller {
                         ui.selectable_value(&mut self.kind, k, k.label());
                     }
                 });
-            ui.separator();
-            ui.selectable_value(&mut self.tiles, false, format!("{} List", icons::LIST));
-            ui.selectable_value(&mut self.tiles, true, format!("{} Tiles", icons::GRID_FOUR));
-            ui.checkbox(&mut self.tile_colors, "Tile colours")
-                .on_hover_text("Show each app's own tile background colour behind its logo.");
-            if !self.marked.is_empty()
-                && ui
-                    .small_button(format!("Clear {} ticks", self.marked.len()))
-                    .clicked()
+            ui.label("View:");
+            egui::ComboBox::from_id_salt("apps-view")
+                .selected_text(if self.tiles { "Large Icons" } else { "Details" })
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut self.tiles, true, "Large Icons");
+                    ui.selectable_value(&mut self.tiles, false, "Details");
+                });
+            ui.label("Sort:");
+            egui::ComboBox::from_id_salt("apps-sort")
+                .selected_text(self.sort.0.label())
+                .show_ui(ui, |ui| {
+                    for k in AppSort::ALL {
+                        if ui.selectable_label(self.sort.0 == k, k.label()).clicked() {
+                            self.sort = (k, true);
+                        }
+                    }
+                });
+            if ui
+                .small_button(if self.sort.1 { "▲" } else { "▼" })
+                .on_hover_text("Reverse the order")
+                .clicked()
             {
-                self.marked.clear();
+                self.sort.1 = !self.sort.1;
             }
+            ui.separator();
+            ui.checkbox(&mut self.tile_colors, "Background colour")
+                .on_hover_text("Show each app's own tile background colour behind its logo.");
         });
         let status = match &self.working {
             Some(t) => t.status.clone(),
             None => format!(
-                "{} of {} removable apps shown{}",
+                "Loading completed  |  Total: {}{}",
                 visible.len(),
-                packages.len(),
                 if self.marked.is_empty() {
                     String::new()
                 } else {
-                    format!(" · {} ticked", self.marked.len())
+                    format!("; {} ticked", self.marked.len())
                 }
             ),
         };
-        let tiles = self.tiles;
         frame::status(ui, &status, |ui| {
+            ui.add(
+                egui::TextEdit::singleline(&mut self.filter)
+                    .hint_text(format!("{}  Search", icons::MAGNIFYING_GLASS))
+                    .desired_width(180.0),
+            );
             if busy {
                 ui.spinner();
-            }
-            if tiles {
-                ui.weak("Ctrl+click ticks, double-click launches");
             }
         });
         frame::central_fixed(ui, |ui| {
