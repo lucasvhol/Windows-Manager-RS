@@ -194,51 +194,60 @@ impl Shell {
                     ui.weak(&self.summary.os);
                     ui.add_space(6.0);
                     ui.separator();
-                    ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
-                        // Laid out top-down from here, so the list keeps its order.
-                        let h = 28.0 * 5.0 + 9.0;
-                        ui.allocate_ui_with_layout(
-                            egui::vec2(ui.available_width(), h),
-                            egui::Layout::bottom_up(egui::Align::Min),
-                            |ui| {
-                                if self.elevated {
-                                    widgets::rail_link(
-                                        ui,
-                                        icons::SHIELD_CHECK,
-                                        &self.i18n.tr("shell-admin"),
-                                        widgets::ACCENT,
-                                    );
-                                } else {
-                                    elevate = widgets::rail_link(
-                                        ui,
-                                        icons::SHIELD,
-                                        &self.i18n.tr("shell-restart-admin"),
-                                        egui::Color32::from_rgb(230, 170, 60),
-                                    )
-                                    .clicked();
-                                }
-                                let weak = ui.visuals().weak_text_color();
-                                about = widgets::rail_link(ui, icons::INFO, &self.i18n.tr("hub-about"), weak)
-                                    .clicked();
-                                update = widgets::rail_link(ui, icons::ARROWS_CLOCKWISE, "Update", weak)
-                                    .on_hover_text("Check for a newer version")
-                                    .clicked();
-                                for id in ["journal", "settings"] {
-                                    if widgets::rail_link(
-                                        ui,
-                                        catalog::tool_icon(id),
-                                        &self.title_of(id),
-                                        weak,
-                                    )
+                    // One "Menu" entry; its options open to the right. Without admin
+                    // rights a second entry offers the restart, so it stays visible.
+                    if !self.elevated {
+                        elevate = widgets::rail_link(
+                            ui,
+                            icons::SHIELD,
+                            &self.i18n.tr("shell-restart-admin"),
+                            egui::Color32::from_rgb(230, 170, 60),
+                        )
+                        .clicked();
+                    }
+                    let weak = ui.visuals().weak_text_color();
+                    let menu = widgets::rail_link(ui, icons::LIST, "Menu", weak);
+                    egui::Popup::menu(&menu)
+                        .align(egui::RectAlign::RIGHT_END)
+                        .gap(4.0)
+                        .show(|ui| {
+                            ui.set_min_width(190.0);
+                            for id in ["settings", "journal"] {
+                                if ui
+                                    .button(format!("{}  {}", catalog::tool_icon(id), self.title_of(id)))
                                     .clicked()
-                                    {
-                                        open = Some(id);
-                                    }
+                                {
+                                    open = Some(id);
                                 }
-                                ui.separator();
-                            },
-                        );
-                    });
+                            }
+                            ui.separator();
+                            update = ui
+                                .button(format!("{}  Check for updates", icons::ARROWS_CLOCKWISE))
+                                .clicked();
+                            about = ui
+                                .button(format!("{}  {}", icons::INFO, self.i18n.tr("hub-about")))
+                                .clicked();
+                            ui.separator();
+                            if self.elevated {
+                                ui.label(
+                                    egui::RichText::new(format!(
+                                        "{}  {}",
+                                        icons::SHIELD_CHECK,
+                                        self.i18n.tr("shell-admin")
+                                    ))
+                                    .color(widgets::ACCENT),
+                                );
+                            } else {
+                                elevate |= ui
+                                    .button(format!(
+                                        "{}  {}",
+                                        icons::SHIELD,
+                                        self.i18n.tr("shell-restart-admin")
+                                    ))
+                                    .clicked();
+                            }
+                        });
+                    ui.separator();
                 });
                 let ctx = ui.ctx().clone();
                 if let Some(id) = open {
