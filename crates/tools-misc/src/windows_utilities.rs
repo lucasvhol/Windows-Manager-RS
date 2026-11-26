@@ -15,7 +15,7 @@ use wm_core::{
     safety::UndoAction,
     shell::{shell_open, shell_open_as_admin},
     task::BackgroundTask,
-    ui::{Confirm, Message, frame, section, show_message},
+    ui::{Confirm, Message, ToolButton, frame, section_nav, show_message},
 };
 
 /// (group, name, target, arguments, description)
@@ -853,6 +853,12 @@ enum Ask {
 
 pub struct WindowsUtilities {
     filter: String,
+    /// The category shown: 0 = all, then the groups, then Windows Apps.
+    group: usize,
+    /// The highlighted tool (the toolbar acts on it).
+    selected: Option<&'static str>,
+    /// Launch tools as administrator.
+    as_admin: bool,
     view: View,
     sorted: bool,
     apps: Option<Result<Vec<App>, String>>,
@@ -866,6 +872,9 @@ impl Default for WindowsUtilities {
     fn default() -> Self {
         Self {
             filter: String::new(),
+            group: 0,
+            selected: None,
+            as_admin: false,
             view: View::Grid,
             sorted: false,
             apps: None,
@@ -933,15 +942,20 @@ impl WindowsUtilities {
         &mut self,
         ui: &mut egui::Ui,
         ctx: &AppCtx<'_>,
-        name: &str,
+        name: &'static str,
         target: &str,
         args: &str,
         desc: &str,
     ) {
+        let sel = self.selected == Some(name);
         let resp = match self.view {
-            View::Grid => ui.add(egui::Button::new(name).min_size(egui::vec2(190.0, 28.0))),
+            View::Grid => ui.add(
+                egui::Button::new(name)
+                    .selected(sel)
+                    .min_size(egui::vec2(190.0, 28.0)),
+            ),
             View::List => {
-                let r = ui.add(egui::Button::new(name).frame(false));
+                let r = ui.selectable_label(sel, name);
                 if !desc.is_empty() {
                     ui.weak(desc);
                 }
@@ -954,9 +968,23 @@ impl WindowsUtilities {
             resp.on_hover_text(desc)
         };
         if resp.clicked() {
-            self.message = shell_open(target, args).err().map(|e| Err(format!("{e:#}")));
+            self.selected = Some(name);
+        }
+        if resp.double_clicked() {
+            self.launch(target, args);
         }
         self.item_menu(&resp, ctx, name, target, args);
+    }
+
+    /// Opens a tool, as administrator when that box is ticked.
+    fn launch(&mut self, target: &str, args: &str) {
+        let r = if self.as_admin {
+            let (exe, a) = launcher(target, args);
+            shell_open_as_admin(&exe.display().to_string(), &a)
+        } else {
+            shell_open(target, args)
+        };
+        self.message = r.err().map(|e| Err(format!("{e:#}")));
     }
 
     fn extras_ui(&mut self, ui: &mut egui::Ui) {
@@ -1052,6 +1080,17 @@ impl WindowsUtilities {
     }
 }
 
+/// The groups of [`UTILITIES`], in order.
+fn groups() -> Vec<&'static str> {
+    let mut out: Vec<&str> = Vec::new();
+    for (g, ..) in UTILITIES {
+        if !out.contains(g) {
+            out.push(g);
+        }
+    }
+    out
+}
+
 impl Tool for WindowsUtilities {
     fn id(&self) -> &'static str {
         "utilities"
@@ -1089,51 +1128,135 @@ impl Tool for WindowsUtilities {
         } else if !self.confirm.is_open() {
             self.pending.clear();
         }
-        let filter_hint = format!("{}  {}", icons::MAGNIFYING_GLASS, ctx.i18n.tr("common-filter"));
-        frame::options(ui, |ui| {
+        let groups = groups();
+        let apps_page = groups.len() + 1;
+        let selected = self
+            .selected
+            .and_then(|n| UTILITIES.iter().find(|(_, name, ..)| *name == n));
+        let in_menu = selected.is_some_and(|(_, n, ..)| in_desktop_menu(n));
+
+        // The original's toolbar (Pin to Taskbar is left out: Windows only lets people
+        // pin from Start or the taskbar itself).
+        let clicked = frame::toolbar(
+            ui,
+            &[
+                Some(ToolButton::new(icons::DESKTOP, "Create to Desktop").enabled(selected.is_some())),
+                Some(
+                    ToolButton::new(
+                        icons::LIST,
+                        if in_menu {
+                            "Remove from Context Menu"
+                        } else {
+                            "Add to Context Menu"
+                        },
+                    )
+                    .enabled(selected.is_some()),
+                ),
+                None,
+                Some(ToolButton::new(icons::PLAY, "Launch").enabled(selected.is_some())),
+                None,
+                Some(ToolButton::new(
+                    if self.view == View::Grid {
+                        icons::LIST_BULLETS
+                    } else {
+                        icons::GRID_FOUR
+                    },
+                    "View",
+                )),
+                Some(ToolButton::new(
+                    icons::SWAP,
+                    if self.sorted { "Sort: A–Z" } else { "Sort" },
+                )),
+                None,
+                Some(ToolButton::new(icons::SIGN_OUT, "Exit")),
+            ],
+            |ui| {
+                ui.checkbox(&mut self.as_admin, "Run as Administrator");
+            },
+        );
+        match (clicked, selected) {
+            (Some(0), Some((_, name, target, args, _))) => {
+                self.message = Some(
+                    desktop_shortcut(name, target, args)
+                        .map(|p| format!("Created {}.", p.display()))
+                        .map_err(|e| format!("{e:#}")),
+                );
+            }
+            (Some(1), Some((_, name, target, args, _))) => {
+                self.message = Some(if ctx.config.dry_run {
+                    Ok(ctx.i18n.tr("common-dry-run-skip"))
+                } else {
+                    set_desktop_menu(ctx, name, target, args, !in_menu)
+                        .map(|()| {
+                            if in_menu {
+                                format!("Removed {name} from the desktop right-click menu.")
+                            } else {
+                                format!("Added {name} to the desktop right-click menu.")
+                            }
+                        })
+                        .map_err(|e| format!("{e:#}"))
+                });
+            }
+            (Some(3), Some((_, _, target, args, _))) => self.launch(target, args),
+            (Some(5), _) => {
+                self.view = if self.view == View::Grid {
+                    View::List
+                } else {
+                    View::Grid
+                };
+            }
+            (Some(6), _) => self.sorted = !self.sorted,
+            (Some(8), _) => ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close),
+            _ => {}
+        }
+
+        // The original's category list, with the search box under it.
+        let mut nav: Vec<(&str, &str)> = vec![(icons::GRID_FOUR, "All Utilities")];
+        nav.extend(groups.iter().map(|g| (icons::FOLDERS, *g)));
+        nav.push((icons::APP_WINDOW, "Windows Apps"));
+        let filter_hint = format!("{}  Search", icons::MAGNIFYING_GLASS);
+        frame::left(ui, 200.0, |ui| {
+            section_nav(ui, &nav, &mut self.group);
+            ui.add_space(8.0);
             ui.add(
                 egui::TextEdit::singleline(&mut self.filter)
                     .hint_text(filter_hint)
-                    .desired_width(220.0),
+                    .desired_width(ui.available_width()),
             );
-            ui.separator();
-            ui.selectable_value(&mut self.view, View::Grid, format!("{}  Tiles", icons::GRID_FOUR));
-            ui.selectable_value(
-                &mut self.view,
-                View::List,
-                format!("{}  List", icons::LIST_BULLETS),
-            );
-            ui.checkbox(&mut self.sorted, "Sort A–Z");
         });
+
         let f = self.filter.to_lowercase();
+        let matches = |name: &str, target: &str, desc: &str| {
+            available(target)
+                && (f.is_empty() || name.to_lowercase().contains(&f) || desc.to_lowercase().contains(&f))
+        };
         let shown = UTILITIES
             .iter()
-            .filter(|(_, name, target, _, desc)| {
-                available(target)
-                    && (f.is_empty() || name.to_lowercase().contains(&f) || desc.to_lowercase().contains(&f))
+            .filter(|(g, name, target, _, desc)| {
+                (self.group == 0 || groups.get(self.group - 1) == Some(g)) && matches(name, target, desc)
             })
             .count();
-        frame::status(ui, &format!("{shown} Windows tools"), |ui| {
-            ui.weak("Right-click an item for more.");
+        let status = match selected {
+            Some((_, name, _, _, desc)) => format!("{name}: {desc}"),
+            None => format!("{shown} Windows tools"),
+        };
+        frame::status(ui, &status, |ui| {
+            ui.weak("Double-click to launch; right-click for more.");
         });
-        let mut groups: Vec<&str> = Vec::new();
-        for (g, ..) in UTILITIES {
-            if !groups.contains(g) {
-                groups.push(g);
-            }
-        }
         frame::central(ui, |ui| {
             show_message(ui, &self.message);
-            for group in groups {
+            if self.group == apps_page {
+                self.apps_ui(ui, &f);
+                self.extras_ui(ui);
+                return;
+            }
+            for (gi, group) in groups.iter().enumerate() {
+                if self.group != 0 && self.group != gi + 1 {
+                    continue;
+                }
                 let mut items: Vec<_> = UTILITIES
                     .iter()
-                    .filter(|(g, name, target, _, desc)| {
-                        *g == group
-                            && available(target)
-                            && (f.is_empty()
-                                || name.to_lowercase().contains(&f)
-                                || desc.to_lowercase().contains(&f))
-                    })
+                    .filter(|(g, name, target, _, desc)| g == group && matches(name, target, desc))
                     .collect();
                 if items.is_empty() {
                     continue;
@@ -1141,29 +1264,34 @@ impl Tool for WindowsUtilities {
                 if self.sorted {
                     items.sort_by_key(|i| i.1.to_lowercase());
                 }
-                section(
-                    ui,
-                    group,
-                    |_| {},
-                    |ui| match self.view {
-                        View::Grid => {
-                            ui.horizontal_wrapped(|ui| {
-                                for (_, name, target, args, desc) in items {
-                                    self.item(ui, ctx, name, target, args, desc);
-                                }
-                            });
-                        }
-                        View::List => {
+                // A heading with a rule, like the original's groups.
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new(*group).color(wm_core::ui::ACCENT));
+                    let y = ui.min_rect().center().y;
+                    let x = ui.cursor().left() + 6.0;
+                    ui.painter().hline(
+                        x..=ui.max_rect().right(),
+                        y,
+                        egui::Stroke::new(1.0, ui.visuals().widgets.noninteractive.bg_stroke.color),
+                    );
+                });
+                ui.add_space(2.0);
+                match self.view {
+                    View::Grid => {
+                        ui.horizontal_wrapped(|ui| {
                             for (_, name, target, args, desc) in items {
-                                ui.horizontal(|ui| self.item(ui, ctx, name, target, args, desc));
+                                self.item(ui, ctx, name, target, args, desc);
                             }
+                        });
+                    }
+                    View::List => {
+                        for (_, name, target, args, desc) in items {
+                            ui.horizontal(|ui| self.item(ui, ctx, name, target, args, desc));
                         }
-                    },
-                );
-                ui.add_space(8.0);
+                    }
+                }
+                ui.add_space(10.0);
             }
-            self.apps_ui(ui, &f);
-            self.extras_ui(ui);
         });
     }
 
