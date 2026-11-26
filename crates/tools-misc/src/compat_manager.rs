@@ -9,9 +9,9 @@ use std::path::Path;
 
 use anyhow::{Result, bail};
 use wm_core::{
-    AppCtx, Category, Tool, egui, registry,
+    AppCtx, Category, Layout, Tool, egui, icons, registry,
     safety::UndoAction,
-    ui::{Message, show_message},
+    ui::{Message, ToolButton, frame, section, show_message},
 };
 
 const USER: &str = r"HKCU\Software\Microsoft\Windows NT\CurrentVersion\AppCompatFlags\Layers";
@@ -216,164 +216,227 @@ impl Tool for CompatManager {
         if self.user.is_none() {
             self.reload();
         }
-        ui.label("Programs Windows runs with compatibility settings — the same as a program's Properties > Compatibility tab.");
-        show_message(ui, &self.message);
         let user = self.user.clone().unwrap_or_default();
         let machine = self.machine.clone().unwrap_or_default();
-        let mut edit = None;
-        let mut remove_one = None;
-        ui.add_space(4.0);
-        ui.horizontal(|ui| {
-            ui.strong(format!("Your settings ({})", user.len()));
-            if ui.small_button("Add a program…").clicked() {
-                self.draft = Some(Entry::default());
-            }
-            let missing: Vec<String> = user
-                .iter()
-                .filter(|e| !Path::new(&e.exe).exists())
-                .map(|e| e.exe.clone())
-                .collect();
-            if !missing.is_empty()
-                && ui
-                    .small_button(format!("Remove {} for missing programs", missing.len()))
-                    .clicked()
-            {
+        let missing: Vec<String> = user
+            .iter()
+            .filter(|e| !Path::new(&e.exe).exists())
+            .map(|e| e.exe.clone())
+            .collect();
+        let clean_label = format!("Clean up ({})", missing.len());
+        match frame::toolbar(
+            ui,
+            &[
+                Some(ToolButton::new(icons::PLUS, "Add program")),
+                Some(ToolButton::new(icons::BROOM, &clean_label).enabled(!missing.is_empty())),
+                None,
+                Some(ToolButton::new(icons::ARROWS_CLOCKWISE, "Refresh")),
+            ],
+            |_| {},
+        ) {
+            Some(0) => self.draft = Some(Entry::default()),
+            Some(1) => {
                 self.message = Some(if ctx.config.dry_run {
                     Ok(ctx.i18n.tr("common-dry-run-skip"))
                 } else {
                     remove(ctx, &missing)
+                        .map(|()| {
+                            "Removed the settings of missing programs. Undo it from the Change Journal."
+                                .into()
+                        })
+                        .map_err(|e| format!("{e:#}"))
+                });
+                self.user = None;
+            }
+            Some(3) => {
+                self.user = None;
+                self.message = None;
+            }
+            _ => {}
+        }
+        frame::status(
+            ui,
+            &format!(
+                "{} programs with your settings, {} for all users, {} missing",
+                user.len(),
+                machine.len(),
+                missing.len()
+            ),
+            |ui| {
+                ui.weak("The same as a program's Properties > Compatibility tab.");
+            },
+        );
+        let mut edit = None;
+        let mut remove_one = None;
+        frame::central(ui, |ui| {
+            show_message(ui, &self.message);
+            section(
+                ui,
+                &format!("Your settings ({})", user.len()),
+                |_| {},
+                |ui| {
+                    if user.is_empty() {
+                        ui.weak("No program has compatibility settings for your account. Use Add program to add one.");
+                    }
+                    egui::Grid::new("compat-user")
+                        .striped(true)
+                        .num_columns(3)
+                        .show(ui, |ui| {
+                            for e in &user {
+                                if Path::new(&e.exe).exists() {
+                                    ui.label(&e.exe);
+                                } else {
+                                    ui.colored_label(
+                                        ui.visuals().warn_fg_color,
+                                        format!("{} (missing)", e.exe),
+                                    );
+                                }
+                                ui.weak(e.summary());
+                                ui.horizontal(|ui| {
+                                    if ui.small_button("Edit").clicked() {
+                                        edit = Some(e.clone());
+                                    }
+                                    if ui.small_button("Remove").clicked() {
+                                        remove_one = Some(e.exe.clone());
+                                    }
+                                });
+                                ui.end_row();
+                            }
+                        });
+                },
+            );
+            ui.add_space(8.0);
+            if let Some(e) = edit.take() {
+                self.draft = Some(e);
+            }
+            if let Some(x) = remove_one.take() {
+                self.message = Some(if ctx.config.dry_run {
+                    Ok(ctx.i18n.tr("common-dry-run-skip"))
+                } else {
+                    remove(ctx, &[x])
                         .map(|()| "Removed. Undo it from the Change Journal.".into())
                         .map_err(|e| format!("{e:#}"))
                 });
                 self.user = None;
             }
-        });
-        egui::Grid::new("compat-user")
-            .striped(true)
-            .num_columns(3)
-            .show(ui, |ui| {
-                for e in &user {
-                    if Path::new(&e.exe).exists() {
-                        ui.label(&e.exe);
-                    } else {
-                        ui.colored_label(ui.visuals().warn_fg_color, format!("{} (missing)", e.exe));
-                    }
-                    ui.weak(e.summary());
-                    ui.horizontal(|ui| {
-                        if ui.small_button("Edit").clicked() {
-                            edit = Some(e.clone());
-                        }
-                        if ui.small_button("Remove").clicked() {
-                            remove_one = Some(e.exe.clone());
-                        }
-                    });
-                    ui.end_row();
-                }
-            });
-        if let Some(e) = edit {
-            self.draft = Some(e);
-        }
-        if let Some(x) = remove_one {
-            self.message = Some(if ctx.config.dry_run {
-                Ok(ctx.i18n.tr("common-dry-run-skip"))
-            } else {
-                remove(ctx, &[x])
-                    .map(|()| "Removed. Undo it from the Change Journal.".into())
-                    .map_err(|e| format!("{e:#}"))
-            });
-            self.user = None;
-        }
 
-        let mut close = false;
-        if let Some(d) = &mut self.draft {
-            ui.group(|ui| {
-                ui.horizontal(|ui| {
-                    ui.label("Program");
-                    ui.add(egui::TextEdit::singleline(&mut d.exe).desired_width(380.0));
-                    if ui.small_button("Browse…").clicked()
-                        && let Some(p) = rfd::FileDialog::new()
-                            .add_filter("Programs", &["exe"])
-                            .pick_file()
-                    {
-                        d.exe = p.display().to_string();
-                    }
-                });
-                ui.horizontal(|ui| {
-                    let mut on = d.mode.is_some();
-                    ui.checkbox(&mut on, "Run in compatibility mode for");
-                    if on && d.mode.is_none() {
-                        d.mode = Some("WIN8RTM".into());
-                    }
-                    if !on {
-                        d.mode = None;
-                    }
-                    if let Some(m) = &mut d.mode {
-                        egui::ComboBox::from_id_salt("compat-mode")
-                            .selected_text(MODES.iter().find(|x| x.0 == m).map_or(m.as_str(), |x| x.1))
-                            .show_ui(ui, |ui| {
-                                for (code, label) in MODES {
-                                    ui.selectable_value(m, code.to_owned(), label);
-                                }
-                            });
-                    }
-                });
-                for (code, label) in FLAGS {
-                    let mut on = d.flags.contains(code);
-                    if ui.checkbox(&mut on, label).changed() {
-                        if on {
-                            d.flags.insert(code.to_owned());
-                        } else {
-                            d.flags.remove(code);
-                        }
-                    }
-                }
-                ui.horizontal(|ui| {
-                    ui.label("High DPI scaling performed by");
-                    egui::ComboBox::from_id_salt("compat-dpi")
-                        .selected_text(DPI[d.dpi].1)
-                        .show_ui(ui, |ui| {
-                            for (i, (_, label)) in DPI.iter().enumerate() {
-                                ui.selectable_value(&mut d.dpi, i, *label);
+            let mut close = false;
+            if let Some(d) = &mut self.draft {
+                let title = if d.exe.is_empty() {
+                    "New compatibility settings".to_owned()
+                } else {
+                    "Edit compatibility settings".to_owned()
+                };
+                section(
+                    ui,
+                    &title,
+                    |_| {},
+                    |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label("Program");
+                            ui.add(egui::TextEdit::singleline(&mut d.exe).desired_width(380.0));
+                            if ui.small_button("Browse…").clicked()
+                                && let Some(p) = rfd::FileDialog::new()
+                                    .add_filter("Programs", &["exe"])
+                                    .pick_file()
+                            {
+                                d.exe = p.display().to_string();
                             }
                         });
-                });
-                ui.horizontal(|ui| {
-                    if ui.button("Save").clicked() {
-                        self.message = Some(if ctx.config.dry_run {
-                            Ok(ctx.i18n.tr("common-dry-run-skip"))
-                        } else {
-                            save(ctx, d)
-                                .map(|()| "Saved; it applies the next time the program starts.".into())
-                                .map_err(|e| format!("{e:#}"))
+                        ui.horizontal(|ui| {
+                            let mut on = d.mode.is_some();
+                            ui.checkbox(&mut on, "Run in compatibility mode for");
+                            if on && d.mode.is_none() {
+                                d.mode = Some("WIN8RTM".into());
+                            }
+                            if !on {
+                                d.mode = None;
+                            }
+                            if let Some(m) = &mut d.mode {
+                                egui::ComboBox::from_id_salt("compat-mode")
+                                    .selected_text(
+                                        MODES.iter().find(|x| x.0 == m).map_or(m.as_str(), |x| x.1),
+                                    )
+                                    .show_ui(ui, |ui| {
+                                        for (code, label) in MODES {
+                                            ui.selectable_value(m, code.to_owned(), label);
+                                        }
+                                    });
+                            }
                         });
-                        close = self.message.as_ref().is_some_and(|m| m.is_ok());
-                    }
-                    if ui.button(ctx.i18n.tr("common-cancel")).clicked() {
-                        close = true;
-                    }
-                });
-            });
-        }
-        if close {
-            self.draft = None;
-            self.user = None;
-        }
+                        for (code, label) in FLAGS {
+                            let mut on = d.flags.contains(code);
+                            if ui.checkbox(&mut on, label).changed() {
+                                if on {
+                                    d.flags.insert(code.to_owned());
+                                } else {
+                                    d.flags.remove(code);
+                                }
+                            }
+                        }
+                        ui.horizontal(|ui| {
+                            ui.label("High DPI scaling performed by");
+                            egui::ComboBox::from_id_salt("compat-dpi")
+                                .selected_text(DPI[d.dpi].1)
+                                .show_ui(ui, |ui| {
+                                    for (i, (_, label)) in DPI.iter().enumerate() {
+                                        ui.selectable_value(&mut d.dpi, i, *label);
+                                    }
+                                });
+                        });
+                        ui.horizontal(|ui| {
+                            if ui.button("Save").clicked() {
+                                self.message = Some(if ctx.config.dry_run {
+                                    Ok(ctx.i18n.tr("common-dry-run-skip"))
+                                } else {
+                                    save(ctx, d)
+                                        .map(|()| {
+                                            "Saved; it applies the next time the program starts.".into()
+                                        })
+                                        .map_err(|e| format!("{e:#}"))
+                                });
+                                close = self.message.as_ref().is_some_and(|m| m.is_ok());
+                            }
+                            if ui.button(ctx.i18n.tr("common-cancel")).clicked() {
+                                close = true;
+                            }
+                        });
+                    },
+                );
+            }
+            if close {
+                self.draft = None;
+                self.user = None;
+            }
+            if self.draft.is_some() {
+                ui.add_space(8.0);
+            }
 
-        ui.add_space(8.0);
-        ui.strong(format!("For all users ({})", machine.len()));
-        ui.weak(
-            "Set by installers or by administrators; changing these needs the app to run as administrator.",
-        );
-        egui::Grid::new("compat-machine")
-            .striped(true)
-            .num_columns(2)
-            .show(ui, |ui| {
-                for e in &machine {
-                    ui.label(&e.exe);
-                    ui.weak(e.summary());
-                    ui.end_row();
-                }
-            });
+            section(
+                ui,
+                &format!("For all users ({})", machine.len()),
+                |_| {},
+                |ui| {
+                    ui.weak(
+                "Set by installers or by administrators; changing these needs the app to run as administrator.",
+            );
+                    egui::Grid::new("compat-machine")
+                        .striped(true)
+                        .num_columns(2)
+                        .show(ui, |ui| {
+                            for e in &machine {
+                                ui.label(&e.exe);
+                                ui.weak(e.summary());
+                                ui.end_row();
+                            }
+                        });
+                },
+            );
+        });
+    }
+
+    fn layout(&self) -> Layout {
+        Layout::Fill
     }
 }
 

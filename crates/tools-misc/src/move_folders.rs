@@ -6,6 +6,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
+use egui_extras::{Column, TableBuilder};
 use windows::Win32::System::Com::CoTaskMemFree;
 use windows::Win32::UI::Shell::{
     FOLDERID_Contacts, FOLDERID_Desktop, FOLDERID_Documents, FOLDERID_Downloads, FOLDERID_Favorites,
@@ -14,10 +15,10 @@ use windows::Win32::UI::Shell::{
 };
 use windows::core::{GUID, HSTRING};
 use wm_core::{
-    AppCtx, Category, Tool, egui, registry,
+    AppCtx, Category, Layout, Tool, egui, icons, registry,
     safety::UndoAction,
     task::BackgroundTask,
-    ui::{Confirm, Message, format_bytes, show_message},
+    ui::{Confirm, Message, ToolButton, format_bytes, frame, section, show_message},
 };
 
 const USF: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders";
@@ -334,83 +335,147 @@ impl Tool for MoveFolders {
             });
             self.rows.clear();
         }
-        ui.label("Keep big folders like Downloads or Pictures on another drive, so the Windows drive has room and your files survive a reinstall.");
-        show_message(ui, &self.message);
-        ui.add_space(4.0);
-        let mut pick = None;
-        egui::Grid::new("kf-grid")
-            .striped(true)
-            .num_columns(4)
-            .show(ui, |ui| {
-                for h in ["", "Folder", "Location", "Size"] {
-                    ui.strong(h);
-                }
-                ui.end_row();
-                for (i, r) in self.rows.iter().enumerate() {
-                    if ui.radio(self.selected == Some(i), "").clicked() {
-                        pick = Some(i);
-                    }
-                    ui.label(r.name);
-                    ui.label(
-                        r.path
-                            .as_ref()
-                            .map_or("(not available)".into(), |p| p.display().to_string()),
-                    );
-                    ui.weak(r.size.map_or("…".into(), format_bytes));
-                    ui.end_row();
-                }
-            });
-        if let Some(i) = pick {
-            self.selected = Some(i);
-        }
-        ui.add_space(4.0);
-        self.lock_ui(ui, ctx);
-        ui.add_space(6.0);
-        let Some(i) = self.selected else {
-            ui.weak("Pick a folder to move.");
-            return;
+        let selected = self.selected.filter(|&i| i < self.rows.len());
+        let row_name = selected.map_or("", |i| self.rows[i].name);
+        let current = selected.and_then(|i| self.rows[i].path.clone());
+        let target = selected
+            .and(self.target_parent.as_ref())
+            .map(|p| p.join(row_name));
+        let check = match (&target, &current) {
+            (Some(t), Some(cur)) => check_target(cur, t),
+            _ => Err(anyhow::anyhow!("")),
         };
-        let row_name = self.rows.get(i).map_or("", |r| r.name);
-        ui.group(|ui| {
-            ui.horizontal(|ui| {
-                ui.label(format!("Move {row_name} into"));
-                ui.label(
-                    self.target_parent
-                        .as_ref()
-                        .map_or("(choose a folder)".into(), |p| p.display().to_string()),
-                );
-                if ui.button("Choose…").clicked()
-                    && let Some(d) = rfd::FileDialog::new().pick_folder()
-                {
+        match frame::toolbar(
+            ui,
+            &[
+                Some(ToolButton::new(icons::FOLDER_OPEN, "Choose target").enabled(selected.is_some())),
+                Some(ToolButton::new(icons::ARROW_SQUARE_OUT, "Move").enabled(check.is_ok())),
+                None,
+                Some(ToolButton::new(icons::FOLDERS, "Open folder").enabled(current.is_some())),
+                Some(ToolButton::new(icons::ARROWS_CLOCKWISE, "Refresh")),
+            ],
+            |_| {},
+        ) {
+            Some(0) => {
+                if let Some(d) = rfd::FileDialog::new().pick_folder() {
                     self.target_parent = Some(d);
                 }
-            });
+            }
+            Some(1) => {
+                if let (Some(i), Some(t)) = (selected, target.clone()) {
+                    self.confirm.ask(
+                        format!(
+                            "Move {row_name} to {}{}? Close programs using files in it first. You can undo this from the Change Journal.",
+                            t.display(),
+                            if self.with_files { " with its files" } else { "" }
+                        ),
+                        (i, t, self.with_files),
+                    );
+                }
+            }
+            Some(3) => {
+                if let Some(p) = &current {
+                    let _ = std::process::Command::new("explorer").arg(p).spawn();
+                }
+            }
+            Some(4) => {
+                self.rows.clear();
+                self.message = None;
+            }
+            _ => {}
+        }
+        frame::options(ui, |ui| {
             ui.radio_value(&mut self.with_files, true, "Move my files there too");
-            ui.radio_value(&mut self.with_files, false, "Only change the location (files stay where they are)");
-            let target = self.target_parent.as_ref().map(|p| p.join(row_name));
-            if let Some(t) = &target {
-                ui.weak(format!("New location: {}", t.display()));
-            }
-            let check = match (&target, self.rows.get(i).and_then(|r| r.path.as_ref())) {
-                (Some(t), Some(cur)) => check_target(cur, t),
-                _ => Err(anyhow::anyhow!("")),
-            };
-            if let (Err(e), Some(_)) = (&check, &target) {
-                ui.colored_label(ui.visuals().warn_fg_color, format!("{e:#}"));
-            }
-            if ui.add_enabled(check.is_ok(), egui::Button::new("Move")).clicked()
-                && let Some(t) = target
-            {
-                self.confirm.ask(
-                    format!(
-                        "Move {row_name} to {}{}? Close programs using files in it first. You can undo this from the Change Journal.",
-                        t.display(),
-                        if self.with_files { " with its files" } else { "" }
-                    ),
-                    (i, t, self.with_files),
-                );
-            }
+            ui.radio_value(&mut self.with_files, false, "Only change the location");
+            ui.separator();
+            self.lock_ui(ui, ctx);
         });
+        let total: u64 = self.rows.iter().filter_map(|r| r.size).sum();
+        frame::status(
+            ui,
+            &format!("{} folders, {} in all", self.rows.len(), format_bytes(total)),
+            |ui| {
+                ui.weak("Another drive gives Windows room, and your files survive a reinstall.");
+            },
+        );
+        frame::central(ui, |ui| {
+            show_message(ui, &self.message);
+            let mut pick = None;
+            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
+            TableBuilder::new(ui)
+                .striped(true)
+                .sense(egui::Sense::click())
+                .vscroll(false)
+                .column(Column::initial(150.0))
+                .column(Column::initial(420.0).clip(true))
+                .column(Column::remainder())
+                .header(22.0, |mut h| {
+                    for t in ["Folder", "Location", "Size"] {
+                        h.col(|ui| {
+                            ui.strong(t);
+                        });
+                    }
+                })
+                .body(|body| {
+                    body.rows(22.0, self.rows.len(), |mut row| {
+                        let i = row.index();
+                        let r = &self.rows[i];
+                        row.set_selected(selected == Some(i));
+                        row.col(|ui| {
+                            ui.label(format!("{}  {}", icons::FOLDERS, r.name));
+                        });
+                        row.col(|ui| {
+                            ui.label(
+                                r.path
+                                    .as_ref()
+                                    .map_or("(not available)".into(), |p| p.display().to_string()),
+                            );
+                        });
+                        row.col(|ui| {
+                            ui.weak(r.size.map_or("…".into(), format_bytes));
+                        });
+                        if row.response().clicked() {
+                            pick = Some(i);
+                        }
+                    });
+                });
+            if let Some(i) = pick {
+                self.selected = Some(i);
+            }
+            ui.add_space(10.0);
+            if selected.is_none() {
+                ui.weak("Pick a folder above, then choose where to move it.");
+                return;
+            }
+            section(
+                ui,
+                &format!("Move {row_name}"),
+                |_| {},
+                |ui| {
+                    ui.horizontal(|ui| {
+                        ui.weak("Into");
+                        ui.label(
+                            self.target_parent
+                                .as_ref()
+                                .map_or("(press Choose target)".into(), |p| p.display().to_string()),
+                        );
+                    });
+                    if let Some(t) = &target {
+                        ui.horizontal(|ui| {
+                            ui.weak("New location");
+                            ui.label(t.display().to_string());
+                        });
+                        if let Err(e) = &check {
+                            ui.colored_label(ui.visuals().warn_fg_color, format!("{e:#}"));
+                        }
+                    }
+                },
+            );
+        });
+    }
+
+    fn layout(&self) -> Layout {
+        Layout::Fill
     }
 }
 

@@ -11,11 +11,11 @@ use serde::{Deserialize, Serialize};
 use winreg::RegKey;
 use winreg::enums::KEY_READ;
 use wm_core::{
-    AppCtx, Category, Tool, acl, egui, paths,
+    AppCtx, Category, Layout, Tool, acl, egui, icons, paths,
     process::{hidden_command, run_checked},
     registry,
     task::{BackgroundTask, Progress},
-    ui::{Confirm, Message, show_message},
+    ui::{Confirm, Message, frame, section_nav, show_message},
 };
 
 use crate::registry_extra::{self as rx, Kind, Matching, TypeFilter};
@@ -879,25 +879,71 @@ impl Tool for RegistryTools {
         } else if !self.confirm.is_open() {
             self.pending.clear();
         }
-        ui.horizontal(|ui| {
-            ui.selectable_value(&mut self.tab, Tab::Search, "Search");
-            ui.selectable_value(&mut self.tab, Tab::Jump, "Jump to key");
-            ui.selectable_value(&mut self.tab, Tab::Editor, "Edit key");
-            ui.selectable_value(&mut self.tab, Tab::Import, "Import");
-            ui.selectable_value(&mut self.tab, Tab::Compare, "Compare keys");
-            ui.selectable_value(&mut self.tab, Tab::Favorites, "Favourites");
-        });
-        show_message(ui, &self.message);
-        ui.separator();
-
-        match self.tab {
-            Tab::Search => self.search_ui(ui, ctx),
-            Tab::Jump => self.jump_ui(ui),
-            Tab::Editor => self.editor_ui(ui, ctx),
-            Tab::Import => self.import_ui(ui),
-            Tab::Compare => self.compare_ui(ui),
-            Tab::Favorites => self.favorites_ui(ui),
+        const TABS: [(Tab, &str, &str, &str); 6] = [
+            (
+                Tab::Search,
+                icons::MAGNIFYING_GLASS,
+                "Search",
+                "Finds keys, value names and data under a key.",
+            ),
+            (
+                Tab::Jump,
+                icons::ARROW_SQUARE_OUT,
+                "Jump to key",
+                "Opens the Registry Editor at a key you type or paste.",
+            ),
+            (
+                Tab::Editor,
+                icons::PENCIL_SIMPLE,
+                "Edit key",
+                "Every change can be undone from the Change Journal.",
+            ),
+            (
+                Tab::Import,
+                icons::DOWNLOAD,
+                "Import",
+                "Lists the keys a .reg file changes and backs them up before importing it.",
+            ),
+            (
+                Tab::Compare,
+                icons::SWAP,
+                "Compare keys",
+                "Lists the differences between two keys.",
+            ),
+            (
+                Tab::Favorites,
+                icons::BOOKMARK_SIMPLE,
+                "Favourites",
+                "Keys you visit often, one click away.",
+            ),
+        ];
+        let mut sel = TABS.iter().position(|t| t.0 == self.tab).unwrap_or(0);
+        let nav: Vec<(&str, &str)> = TABS.iter().map(|t| (t.1, t.2)).collect();
+        if frame::left(ui, 180.0, |ui| section_nav(ui, &nav, &mut sel)) {
+            self.message = None;
         }
+        self.tab = TABS[sel].0;
+        frame::status(ui, TABS[sel].3, |_| {});
+        let body = |this: &mut Self, ui: &mut egui::Ui, ctx: &mut AppCtx<'_>| {
+            show_message(ui, &this.message);
+            match this.tab {
+                Tab::Search => this.search_ui(ui, ctx),
+                Tab::Jump => this.jump_ui(ui),
+                Tab::Editor => this.editor_ui(ui, ctx),
+                Tab::Import => this.import_ui(ui),
+                Tab::Compare => this.compare_ui(ui),
+                Tab::Favorites => this.favorites_ui(ui),
+            }
+        };
+        if self.tab == Tab::Search {
+            frame::central_fixed(ui, |ui| body(self, ui, ctx));
+        } else {
+            frame::central(ui, |ui| body(self, ui, ctx));
+        }
+    }
+
+    fn layout(&self) -> Layout {
+        Layout::Fill
     }
 }
 

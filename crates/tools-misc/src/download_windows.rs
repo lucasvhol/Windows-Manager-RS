@@ -3,9 +3,9 @@
 //! nothing is downloaded by this app.
 
 use wm_core::{
-    AppCtx, Category, Tool, egui,
+    AppCtx, Category, Layout, Tool, egui, icons,
     shell::shell_open,
-    ui::{Message, show_message},
+    ui::{Message, ToolButton, frame, section, show_message},
 };
 
 /// (title, what it's for, link)
@@ -80,33 +80,61 @@ impl Tool for DownloadWindows {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, ctx: &mut AppCtx<'_>) {
-        ui.label(format!("This PC runs {}.", current_windows()));
-        ui.weak("For regular updates, Windows Update is the simplest way.");
-        if ui.button("Open Windows Update").clicked() {
+        if frame::toolbar(
+            ui,
+            &[Some(ToolButton::new(icons::ARROWS_CLOCKWISE, "Windows Update"))],
+            |_| {},
+        ) == Some(0)
+        {
             self.message = shell_open("ms-settings:windowsupdate", "")
                 .err()
                 .map(|e| Err(format!("{e:#}")));
         }
-        show_message(ui, &self.message);
-        ui.add_space(8.0);
-        for (title, what, url) in OPTIONS {
-            ui.group(|ui| {
-                ui.set_width(ui.available_width());
-                ui.strong(title);
-                ui.label(what);
-                ui.horizontal(|ui| {
-                    if ui.button("Open").on_hover_text(url).clicked() && is_microsoft(url) {
-                        self.message = shell_open(url, "").err().map(|e| Err(format!("{e:#}")));
-                    }
-                    if ui.small_button("Copy link").clicked() {
-                        ui.ctx().copy_text(url.to_owned());
-                    }
-                });
-            });
-        }
-        ui.add_space(6.0);
-        ui.weak("All links lead to microsoft.com. Your browser downloads the file; Win Manager RS doesn't.");
+        frame::status(ui, &format!("This PC runs {}.", current_windows()), |ui| {
+            ui.weak("All links lead to microsoft.com; your browser downloads the file.");
+        });
+        frame::central(ui, |ui| {
+            show_message(ui, &self.message);
+            ui.weak("For regular updates, Windows Update is the simplest way.");
+            ui.add_space(6.0);
+            for (i, (title, what, url)) in OPTIONS.into_iter().enumerate() {
+                let icon = [
+                    icons::DOWNLOAD,
+                    icons::USB,
+                    icons::ARCHIVE,
+                    icons::FIRST_AID_KIT,
+                    icons::WINDOWS_LOGO,
+                ][i];
+                section(
+                    ui,
+                    "",
+                    |_| {},
+                    |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new(icon).size(22.0));
+                            ui.vertical(|ui| {
+                                ui.strong(title);
+                                ui.weak(what);
+                            });
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                if ui.small_button("Copy link").clicked() {
+                                    ui.ctx().copy_text(url.to_owned());
+                                }
+                                if ui.button("Open").on_hover_text(url).clicked() && is_microsoft(url) {
+                                    self.message = shell_open(url, "").err().map(|e| Err(format!("{e:#}")));
+                                }
+                            });
+                        });
+                    },
+                );
+                ui.add_space(6.0);
+            }
+        });
         let _ = ctx;
+    }
+
+    fn layout(&self) -> Layout {
+        Layout::Fill
     }
 }
 

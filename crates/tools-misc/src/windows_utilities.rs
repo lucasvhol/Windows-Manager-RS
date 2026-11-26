@@ -11,11 +11,11 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use wm_core::{
-    AppCtx, Category, Tool, egui, paths, registry,
+    AppCtx, Category, Layout, Tool, egui, icons, paths, registry,
     safety::UndoAction,
     shell::{shell_open, shell_open_as_admin},
     task::BackgroundTask,
-    ui::{Confirm, Message, show_message},
+    ui::{Confirm, Message, frame, section, show_message},
 };
 
 /// (group, name, target, arguments, description)
@@ -1089,22 +1089,41 @@ impl Tool for WindowsUtilities {
         } else if !self.confirm.is_open() {
             self.pending.clear();
         }
-        ui.horizontal(|ui| {
-            ui.add(egui::TextEdit::singleline(&mut self.filter).hint_text(ctx.i18n.tr("common-filter")));
-            ui.selectable_value(&mut self.view, View::Grid, "Tiles");
-            ui.selectable_value(&mut self.view, View::List, "List");
+        let filter_hint = format!("{}  {}", icons::MAGNIFYING_GLASS, ctx.i18n.tr("common-filter"));
+        frame::options(ui, |ui| {
+            ui.add(
+                egui::TextEdit::singleline(&mut self.filter)
+                    .hint_text(filter_hint)
+                    .desired_width(220.0),
+            );
+            ui.separator();
+            ui.selectable_value(&mut self.view, View::Grid, format!("{}  Tiles", icons::GRID_FOUR));
+            ui.selectable_value(
+                &mut self.view,
+                View::List,
+                format!("{}  List", icons::LIST_BULLETS),
+            );
             ui.checkbox(&mut self.sorted, "Sort A–Z");
+        });
+        let f = self.filter.to_lowercase();
+        let shown = UTILITIES
+            .iter()
+            .filter(|(_, name, target, _, desc)| {
+                available(target)
+                    && (f.is_empty() || name.to_lowercase().contains(&f) || desc.to_lowercase().contains(&f))
+            })
+            .count();
+        frame::status(ui, &format!("{shown} Windows tools"), |ui| {
             ui.weak("Right-click an item for more.");
         });
-        show_message(ui, &self.message);
-        let f = self.filter.to_lowercase();
         let mut groups: Vec<&str> = Vec::new();
         for (g, ..) in UTILITIES {
             if !groups.contains(g) {
                 groups.push(g);
             }
         }
-        egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
+        frame::central(ui, |ui| {
+            show_message(ui, &self.message);
             for group in groups {
                 let mut items: Vec<_> = UTILITIES
                     .iter()
@@ -1122,26 +1141,34 @@ impl Tool for WindowsUtilities {
                 if self.sorted {
                     items.sort_by_key(|i| i.1.to_lowercase());
                 }
-                ui.add_space(6.0);
-                ui.strong(group);
-                match self.view {
-                    View::Grid => {
-                        ui.horizontal_wrapped(|ui| {
-                            for (_, name, target, args, desc) in items {
-                                self.item(ui, ctx, name, target, args, desc);
-                            }
-                        });
-                    }
-                    View::List => {
-                        for (_, name, target, args, desc) in items {
-                            ui.horizontal(|ui| self.item(ui, ctx, name, target, args, desc));
+                section(
+                    ui,
+                    group,
+                    |_| {},
+                    |ui| match self.view {
+                        View::Grid => {
+                            ui.horizontal_wrapped(|ui| {
+                                for (_, name, target, args, desc) in items {
+                                    self.item(ui, ctx, name, target, args, desc);
+                                }
+                            });
                         }
-                    }
-                }
+                        View::List => {
+                            for (_, name, target, args, desc) in items {
+                                ui.horizontal(|ui| self.item(ui, ctx, name, target, args, desc));
+                            }
+                        }
+                    },
+                );
+                ui.add_space(8.0);
             }
             self.apps_ui(ui, &f);
             self.extras_ui(ui);
         });
+    }
+
+    fn layout(&self) -> Layout {
+        Layout::Fill
     }
 }
 

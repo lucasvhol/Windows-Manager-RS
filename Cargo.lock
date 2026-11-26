@@ -5386,6 +5386,7 @@ dependencies = [
  "anyhow",
  "blake3",
  "chrono",
+ "egui_extras",
  "rayon",
  "rfd",
  "serde",

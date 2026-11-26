@@ -20,12 +20,12 @@ use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use walkdir::WalkDir;
 use wm_core::{
-    AppCtx, Category, Tool, egui, paths,
+    AppCtx, Category, Layout, Tool, egui, icons, paths,
     process::{hidden_command, run_checked},
     safety::UndoAction,
     task::{BackgroundTask, Progress},
     tool_settings,
-    ui::{Confirm, Message, format_bytes, show_message},
+    ui::{Confirm, Message, ToolButton, format_bytes, frame, section, show_message},
 };
 
 const TOOL: &str = "supercopy";
@@ -737,106 +737,156 @@ impl Tool for SuperCopy {
             self.start(ui, ctx);
         }
 
-        self.schemes_ui(ui);
-        ui.separator();
-        ui.horizontal(|ui| {
-            if ui.button("Add files…").clicked()
-                && let Some(f) = rfd::FileDialog::new().pick_files()
-            {
-                self.sources.extend(f);
-            }
-            if ui.button("Add folder…").clicked()
-                && let Some(d) = rfd::FileDialog::new().pick_folder()
-            {
-                self.sources.push(d);
-            }
-            if ui
-                .add_enabled(!self.sources.is_empty(), egui::Button::new("Clear"))
-                .clicked()
-            {
-                self.sources.clear();
-            }
-        });
-        for s in &self.sources {
-            ui.weak(s.display().to_string());
-        }
-        ui.horizontal(|ui| {
-            ui.label("Copy to:");
-            ui.label(
-                self.dest
-                    .as_ref()
-                    .map(|p| p.display().to_string())
-                    .unwrap_or_else(|| "(choose a folder)".into()),
-            );
-            if ui.button("Choose…").clicked()
-                && let Some(d) = rfd::FileDialog::new().pick_folder()
-            {
-                self.dest = Some(d);
-            }
-        });
-        self.options_ui(ui);
-        let before = self.saved.log;
-        ui.horizontal(|ui| {
-            ui.checkbox(&mut self.saved.log, "Write a log file");
-            if let Some(p) = &self.last_log
-                && ui.small_button("Open last log").clicked()
-            {
-                let _ = wm_core::shell::shell_open(&p.display().to_string(), "");
-            }
-            ui.checkbox(&mut self.shutdown, "Shut down Windows when done");
-        });
-        if self.saved.log != before {
-            self.save_settings();
-        }
-        if self.opts.overwrite != Overwrite::Never {
-            ui.weak("Replaced files are not kept; undo only removes files that did not exist before.");
-        }
-        ui.weak("Identical files (same size and date) are always skipped, so re-running a job resumes it.");
-
-        let ready = !self.sources.is_empty() && self.dest.is_some() && self.task.is_none();
-        ui.horizontal(|ui| {
-            let label = format!("Start {}", self.opts.mode.label().to_lowercase());
-            if ui.add_enabled(ready, egui::Button::new(label)).clicked() {
-                match self.opts.mode {
-                    Mode::Copy => self.start(ui, ctx),
-                    Mode::Mirror => self.confirm.ask(
-                        "Mirror: files in the destination that are no longer in the source go to the Recycle Bin. Continue?",
-                        (),
-                    ),
-                    Mode::Move => self.confirm.ask(
-                        "Move: after every file is copied, the sources go to the Recycle Bin. Continue?",
-                        (),
-                    ),
+        let idle = self.task.is_none();
+        let ready = !self.sources.is_empty() && self.dest.is_some() && idle;
+        let start_label = format!("Start {}", self.opts.mode.label().to_lowercase());
+        match frame::toolbar(
+            ui,
+            &[
+                Some(ToolButton::new(icons::PLUS, "Add files").enabled(idle)),
+                Some(ToolButton::new(icons::FOLDERS, "Add folder").enabled(idle)),
+                Some(ToolButton::new(icons::TRASH, "Clear").enabled(idle && !self.sources.is_empty())),
+                None,
+                Some(ToolButton::new(icons::FOLDER_OPEN, "Destination").enabled(idle)),
+                None,
+                Some(ToolButton::new(icons::PLAY, &start_label).enabled(ready)),
+                Some(ToolButton::new(icons::STOP, "Cancel").enabled(!idle)),
+            ],
+            |_| {},
+        ) {
+            Some(0) => {
+                if let Some(f) = rfd::FileDialog::new().pick_files() {
+                    self.sources.extend(f);
                 }
             }
-            if let Some(t) = &self.task {
-                ui.add(
-                    egui::ProgressBar::new(t.progress)
-                        .desired_width(260.0)
-                        .text(t.status.clone()),
-                );
-                if ui.button(ctx.i18n.tr("common-cancel")).clicked() {
+            Some(1) => {
+                if let Some(d) = rfd::FileDialog::new().pick_folder() {
+                    self.sources.push(d);
+                }
+            }
+            Some(2) => self.sources.clear(),
+            Some(4) => {
+                if let Some(d) = rfd::FileDialog::new().pick_folder() {
+                    self.dest = Some(d);
+                }
+            }
+            Some(6) => match self.opts.mode {
+                Mode::Copy => self.start(ui, ctx),
+                Mode::Mirror => self.confirm.ask(
+                    "Mirror: files in the destination that are no longer in the source go to the Recycle Bin. Continue?",
+                    (),
+                ),
+                Mode::Move => self.confirm.ask(
+                    "Move: after every file is copied, the sources go to the Recycle Bin. Continue?",
+                    (),
+                ),
+            },
+            Some(7) => {
+                if let Some(t) = &self.task {
                     t.cancel();
                 }
             }
-        });
-        show_message(ui, &self.message);
-        if self.shutdown_pending {
-            ui.horizontal(|ui| {
-                ui.colored_label(
-                    ui.visuals().warn_fg_color,
-                    format!("Windows shuts down in {SHUTDOWN_DELAY} seconds."),
-                );
-                if ui.button("Cancel shutdown").clicked() {
-                    self.shutdown_pending = false;
-                    self.message = Some(
-                        run_checked(hidden_command("shutdown").arg("/a"))
-                            .map(|_| "Shutdown cancelled.".into())
-                            .map_err(|e| format!("{e:#}")),
-                    );
-                }
-            });
+            _ => {}
         }
+        frame::options(ui, |ui| self.schemes_ui(ui));
+        let status = format!(
+            "{} sources → {}",
+            self.sources.len(),
+            self.dest
+                .as_ref()
+                .map_or("(no destination yet)".into(), |p| p.display().to_string())
+        );
+        let progress = self.task.as_ref().map(|t| (t.progress, t.status.clone()));
+        frame::status(ui, &status, |ui| {
+            if let Some((p, text)) = progress {
+                ui.add(egui::ProgressBar::new(p).desired_width(260.0).text(text));
+            } else {
+                ui.weak("Re-running a job resumes it: identical files are skipped.");
+            }
+        });
+        frame::central(ui, |ui| {
+            show_message(ui, &self.message);
+            if self.shutdown_pending {
+                ui.horizontal(|ui| {
+                    ui.colored_label(
+                        ui.visuals().warn_fg_color,
+                        format!("Windows shuts down in {SHUTDOWN_DELAY} seconds."),
+                    );
+                    if ui.button("Cancel shutdown").clicked() {
+                        self.shutdown_pending = false;
+                        self.message = Some(
+                            run_checked(hidden_command("shutdown").arg("/a"))
+                                .map(|_| "Shutdown cancelled.".into())
+                                .map_err(|e| format!("{e:#}")),
+                        );
+                    }
+                });
+            }
+            section(
+                ui,
+                &format!("Copy from ({})", self.sources.len()),
+                |_| {},
+                |ui| {
+                    if self.sources.is_empty() {
+                        ui.weak("Add files or folders with the buttons above.");
+                    }
+                    for s in &self.sources {
+                        let icon = if s.is_dir() {
+                            icons::FOLDERS
+                        } else {
+                            icons::FILE_TEXT
+                        };
+                        ui.label(format!("{icon}  {}", s.display()));
+                    }
+                },
+            );
+            ui.add_space(8.0);
+            section(
+                ui,
+                "Copy to",
+                |_| {},
+                |ui| {
+                    ui.label(
+                        self.dest
+                            .as_ref()
+                            .map_or("(press Destination to choose a folder)".into(), |p| {
+                                p.display().to_string()
+                            }),
+                    );
+                },
+            );
+            ui.add_space(8.0);
+            section(
+                ui,
+                "Options",
+                |_| {},
+                |ui| {
+                    self.options_ui(ui);
+                    let before = self.saved.log;
+                    ui.horizontal(|ui| {
+                        ui.checkbox(&mut self.saved.log, "Write a log file");
+                        if let Some(p) = &self.last_log
+                            && ui.small_button("Open last log").clicked()
+                        {
+                            let _ = wm_core::shell::shell_open(&p.display().to_string(), "");
+                        }
+                        ui.checkbox(&mut self.shutdown, "Shut down Windows when done");
+                    });
+                    if self.saved.log != before {
+                        self.save_settings();
+                    }
+                    if self.opts.overwrite != Overwrite::Never {
+                        ui.weak(
+                            "Replaced files are not kept; undo only removes files that did not exist before.",
+                        );
+                    }
+                },
+            );
+        });
+    }
+
+    fn layout(&self) -> Layout {
+        Layout::Fill
     }
 }
 

@@ -8,11 +8,12 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use wm_core::{
-    AppCtx, Category, Tool, egui,
+    AppCtx, Category, Layout, Tool, egui,
     explorer_verb::{self, Target, Verb},
+    icons,
     safety::UndoAction,
     task::{BackgroundTask, Progress},
-    ui::{Message, format_bytes, show_message},
+    ui::{Message, format_bytes, frame, section_nav, show_message},
 };
 
 pub const MANIFEST_EXT: &str = "wmsplit";
@@ -338,10 +339,16 @@ impl Tool for FileSplitter {
                 self.finish(ctx, r);
             }
         }
-        ui.horizontal(|ui| {
-            ui.selectable_value(&mut self.mode, Mode::Split, "Split a file");
-            ui.selectable_value(&mut self.mode, Mode::Join, "Join parts");
-            ui.separator();
+        let mut sel = usize::from(self.mode == Mode::Join);
+        frame::left(ui, 170.0, |ui| {
+            section_nav(
+                ui,
+                &[(icons::SCISSORS, "Split a file"), (icons::STACK, "Join parts")],
+                &mut sel,
+            )
+        });
+        self.mode = if sel == 1 { Mode::Join } else { Mode::Split };
+        frame::options(ui, |ui| {
             let installed = *self.menu_installed.get_or_insert_with(|| VERB.is_installed());
             let mut on = installed;
             if ui
@@ -363,164 +370,178 @@ impl Tool for FileSplitter {
                 self.menu_installed = None;
             }
         });
-        ui.separator();
-        let splitting = self.mode == Mode::Split;
-        if self.source.as_ref().is_some_and(|p| is_manifest(p) == splitting) {
-            self.source = None;
-        }
-
-        step(
+        frame::status(
             ui,
-            1,
-            if splitting {
-                "Choose the file to split"
+            if self.mode == Mode::Split {
+                "Each part is checked with a BLAKE3 hash; the .wmsplit file lists them."
             } else {
-                "Choose the .wmsplit file next to the parts"
+                "Every part is verified before the file is rebuilt."
             },
+            |_| {},
         );
-        ui.horizontal(|ui| {
-            ui.label(
-                self.source
-                    .as_ref()
-                    .map(|p| p.display().to_string())
-                    .unwrap_or_else(|| "(none)".into()),
-            );
-            if ui.button("Choose…").clicked() {
-                let dialog = rfd::FileDialog::new();
-                let dialog = if splitting {
-                    dialog
-                } else {
-                    dialog.add_filter("Split manifest", &[MANIFEST_EXT])
-                };
-                if let Some(p) = dialog.pick_file() {
-                    self.choose(p);
-                }
+        frame::central(ui, |ui| {
+            let splitting = self.mode == Mode::Split;
+            if self.source.as_ref().is_some_and(|p| is_manifest(p) == splitting) {
+                self.source = None;
             }
-        });
 
-        let size = self
-            .source
-            .as_ref()
-            .and_then(|p| std::fs::metadata(p).ok())
-            .map(|m| m.len());
-        let mut n = 2;
-        if splitting {
-            step(ui, n, "Choose the part size");
-            n += 1;
+            step(
+                ui,
+                1,
+                if splitting {
+                    "Choose the file to split"
+                } else {
+                    "Choose the .wmsplit file next to the parts"
+                },
+            );
             ui.horizontal(|ui| {
-                ui.radio_value(&mut self.by_count, false, "Size of each part");
-                ui.add_enabled(
-                    !self.by_count,
-                    egui::DragValue::new(&mut self.part_mb)
-                        .range(1.0..=100_000.0)
-                        .speed(1.0)
-                        .suffix(" MB"),
+                ui.label(
+                    self.source
+                        .as_ref()
+                        .map(|p| p.display().to_string())
+                        .unwrap_or_else(|| "(none)".into()),
                 );
-                for (label, mb) in [
-                    ("FAT32 max", 4095.0),
-                    ("DVD", 4480.0),
-                    ("1 GB", 1024.0),
-                    ("100 MB", 100.0),
-                    ("25 MB e-mail", 25.0),
-                ] {
-                    if ui.small_button(label).clicked() {
-                        self.part_mb = mb;
-                        self.by_count = false;
+                if ui.button("Choose…").clicked() {
+                    let dialog = rfd::FileDialog::new();
+                    let dialog = if splitting {
+                        dialog
+                    } else {
+                        dialog.add_filter("Split manifest", &[MANIFEST_EXT])
+                    };
+                    if let Some(p) = dialog.pick_file() {
+                        self.choose(p);
                     }
                 }
             });
-            ui.horizontal(|ui| {
-                ui.radio_value(&mut self.by_count, true, "Number of parts");
-                ui.add_enabled(
-                    self.by_count,
-                    egui::DragValue::new(&mut self.count).range(2..=999),
-                );
-            });
-            if let Some(size) = size {
-                let part = self.part_size(size);
-                let parts = size.div_ceil(part).max(1);
-                ui.weak(format!(
-                    "{} → {parts} parts of up to {}",
-                    format_bytes(size),
-                    format_bytes(part)
-                ));
-            }
-        }
 
-        step(ui, n, "Choose where to save");
-        n += 1;
-        ui.horizontal(|ui| {
-            ui.label(
-                self.out_dir
-                    .as_ref()
-                    .map(|p| p.display().to_string())
-                    .unwrap_or_else(|| "(none)".into()),
-            );
-            if ui.button("Change…").clicked()
-                && let Some(d) = rfd::FileDialog::new().pick_folder()
-            {
-                self.out_dir = Some(d);
-            }
-        });
-        ui.checkbox(
-            &mut self.delete_source,
+            let size = self
+                .source
+                .as_ref()
+                .and_then(|p| std::fs::metadata(p).ok())
+                .map(|m| m.len());
+            let mut n = 2;
             if splitting {
-                "Move the original file to the Recycle Bin afterwards"
-            } else {
-                "Move the parts to the Recycle Bin after a verified join"
-            },
-        );
-
-        step(ui, n, if splitting { "Split" } else { "Verify and join" });
-        let ready = self.source.is_some() && self.out_dir.is_some() && self.task.is_none();
-        ui.horizontal(|ui| {
-            if ui
-                .add_enabled(
-                    ready,
-                    egui::Button::new(if splitting { "Split" } else { "Verify and join" }),
-                )
-                .clicked()
-            {
-                if ctx.config.dry_run {
-                    self.message = Some(Ok(ctx.i18n.tr("common-dry-run-skip")));
-                } else if let (Some(src), Some(out)) = (self.source.clone(), self.out_dir.clone()) {
-                    let part = self.part_size(size.unwrap_or(0));
-                    let delete = self.delete_source;
-                    self.message = None;
-                    self.task = Some(BackgroundTask::spawn(ui.ctx(), move |p| {
-                        let r = reporter(p);
-                        if splitting {
-                            let (m, created) = split(&src, &out, part, Some(&r))?;
-                            Ok((
-                                format!(
-                                    "Split into {} parts; keep {} with them",
-                                    created.len() - 1,
-                                    m.display()
-                                ),
-                                created,
-                                if delete { vec![src] } else { Vec::new() },
-                            ))
-                        } else {
-                            let used = if delete { split_files(&src)? } else { Vec::new() };
-                            let dest = join(&src, &out, Some(&r))?;
-                            Ok((
-                                format!("Joined and verified {}", dest.display()),
-                                vec![dest],
-                                used,
-                            ))
+                step(ui, n, "Choose the part size");
+                n += 1;
+                ui.horizontal(|ui| {
+                    ui.radio_value(&mut self.by_count, false, "Size of each part");
+                    ui.add_enabled(
+                        !self.by_count,
+                        egui::DragValue::new(&mut self.part_mb)
+                            .range(1.0..=100_000.0)
+                            .speed(1.0)
+                            .suffix(" MB"),
+                    );
+                    for (label, mb) in [
+                        ("FAT32 max", 4095.0),
+                        ("DVD", 4480.0),
+                        ("1 GB", 1024.0),
+                        ("100 MB", 100.0),
+                        ("25 MB e-mail", 25.0),
+                    ] {
+                        if ui.small_button(label).clicked() {
+                            self.part_mb = mb;
+                            self.by_count = false;
                         }
-                    }));
+                    }
+                });
+                ui.horizontal(|ui| {
+                    ui.radio_value(&mut self.by_count, true, "Number of parts");
+                    ui.add_enabled(
+                        self.by_count,
+                        egui::DragValue::new(&mut self.count).range(2..=999),
+                    );
+                });
+                if let Some(size) = size {
+                    let part = self.part_size(size);
+                    let parts = size.div_ceil(part).max(1);
+                    ui.weak(format!(
+                        "{} → {parts} parts of up to {}",
+                        format_bytes(size),
+                        format_bytes(part)
+                    ));
                 }
             }
-            if let Some(t) = &self.task {
-                ui.add(
-                    egui::ProgressBar::new(t.progress)
-                        .desired_width(220.0)
-                        .text(t.status.clone()),
+
+            step(ui, n, "Choose where to save");
+            n += 1;
+            ui.horizontal(|ui| {
+                ui.label(
+                    self.out_dir
+                        .as_ref()
+                        .map(|p| p.display().to_string())
+                        .unwrap_or_else(|| "(none)".into()),
                 );
-            }
+                if ui.button("Change…").clicked()
+                    && let Some(d) = rfd::FileDialog::new().pick_folder()
+                {
+                    self.out_dir = Some(d);
+                }
+            });
+            ui.checkbox(
+                &mut self.delete_source,
+                if splitting {
+                    "Move the original file to the Recycle Bin afterwards"
+                } else {
+                    "Move the parts to the Recycle Bin after a verified join"
+                },
+            );
+
+            step(ui, n, if splitting { "Split" } else { "Verify and join" });
+            let ready = self.source.is_some() && self.out_dir.is_some() && self.task.is_none();
+            ui.horizontal(|ui| {
+                if ui
+                    .add_enabled(
+                        ready,
+                        egui::Button::new(if splitting { "Split" } else { "Verify and join" }),
+                    )
+                    .clicked()
+                {
+                    if ctx.config.dry_run {
+                        self.message = Some(Ok(ctx.i18n.tr("common-dry-run-skip")));
+                    } else if let (Some(src), Some(out)) = (self.source.clone(), self.out_dir.clone()) {
+                        let part = self.part_size(size.unwrap_or(0));
+                        let delete = self.delete_source;
+                        self.message = None;
+                        self.task = Some(BackgroundTask::spawn(ui.ctx(), move |p| {
+                            let r = reporter(p);
+                            if splitting {
+                                let (m, created) = split(&src, &out, part, Some(&r))?;
+                                Ok((
+                                    format!(
+                                        "Split into {} parts; keep {} with them",
+                                        created.len() - 1,
+                                        m.display()
+                                    ),
+                                    created,
+                                    if delete { vec![src] } else { Vec::new() },
+                                ))
+                            } else {
+                                let used = if delete { split_files(&src)? } else { Vec::new() };
+                                let dest = join(&src, &out, Some(&r))?;
+                                Ok((
+                                    format!("Joined and verified {}", dest.display()),
+                                    vec![dest],
+                                    used,
+                                ))
+                            }
+                        }));
+                    }
+                }
+                if let Some(t) = &self.task {
+                    ui.add(
+                        egui::ProgressBar::new(t.progress)
+                            .desired_width(220.0)
+                            .text(t.status.clone()),
+                    );
+                }
+            });
+            show_message(ui, &self.message);
         });
-        show_message(ui, &self.message);
+    }
+
+    fn layout(&self) -> Layout {
+        Layout::Fill
     }
 }
 
