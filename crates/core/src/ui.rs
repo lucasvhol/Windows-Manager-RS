@@ -438,7 +438,9 @@ pub mod frame {
 
     /// The command bar along the bottom of dialog-style tools (the original's
     /// "Task ▾ … Start / Exit" row): `left` widgets on the left, `right` widgets drawn
-    /// right to left. Call it before [`status`] when a window has both.
+    /// right to left. Bottom panels stack upwards in call order, so when a window has
+    /// both, call [`status`] first: the status line then stays at the very bottom with
+    /// this bar above it, as in the original.
     pub fn footer(ui: &mut Ui, left: impl FnOnce(&mut Ui), right: impl FnOnce(&mut Ui)) {
         let fill = strip_fill(ui);
         egui::Panel::bottom("tf-footer")
