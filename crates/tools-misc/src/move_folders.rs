@@ -418,6 +418,10 @@ impl Tool for MoveFolders {
 mod tests {
     use super::*;
 
+    /// The policy test and the relocation test must not overlap: while the policy is on,
+    /// Windows refuses to relocate folders.
+    static POLICY_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn known_folders_resolve() {
         let docs = location(&FOLDERID_Documents).unwrap();
@@ -465,6 +469,7 @@ mod tests {
 
     #[test]
     fn prevent_changes_policy_and_undo() {
+        let _guard = POLICY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         if !registry::writable(POLICY) {
             return; // per-user policy keys are read-only for standard accounts here
         }
@@ -494,6 +499,7 @@ mod tests {
 
     #[test]
     fn relocating_a_known_folder_and_undoing_it() {
+        let _guard = POLICY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         // Uses Saved Searches, the least-used known folder, and puts it back.
         let before = location(&FOLDERID_SavedSearches).unwrap();
         let dir = tempfile::tempdir().unwrap();

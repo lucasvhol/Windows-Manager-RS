@@ -14,11 +14,16 @@ use wm_core::{
     ui::{Message, format_bytes, show_message},
 };
 
-use crate::ntfs::{DeletedFile, Volume};
+use crate::carve::{self, RawVolume};
+use crate::ntfs::{Data, DeletedFile, Volume};
 
 pub fn condition(f: &DeletedFile) -> (&'static str, bool) {
-    if let crate::ntfs::Data::NonResident { complete: false, .. } = f.data {
-        return ("Fragmented: only partly recoverable", false);
+    match f.data {
+        Data::NonResident { complete: false, .. } => {
+            return ("Fragmented: only partly recoverable", false);
+        }
+        Data::Raw { .. } => return ("Found by content (whole if stored in one piece)", true),
+        _ => {}
     }
     match f.overwritten {
         x if x <= 0.0 => ("Good", true),
@@ -166,10 +171,12 @@ fn unique(dir: &Path, name: &str) -> PathBuf {
         .expect("unbounded")
 }
 
-fn ntfs_drives() -> Vec<char> {
+/// Drives with their file system ("NTFS", "exFAT"…; empty when Windows can't read it,
+/// as on a damaged drive). The MFT scan needs NTFS; the deep scan reads any drive.
+fn drives() -> Vec<(char, String)> {
     ('C'..='Z')
         .filter(|c| Path::new(&format!("{c}:\\")).exists())
-        .filter(|c| {
+        .map(|c| {
             let mut fs = [0u16; 16];
             let root: Vec<u16> = format!("{c}:\\")
                 .encode_utf16()
@@ -186,7 +193,33 @@ fn ntfs_drives() -> Vec<char> {
                 )
                 .is_ok()
             };
-            ok && String::from_utf16_lossy(&fs).trim_end_matches('\0') == "NTFS"
+            let name = if ok {
+                String::from_utf16_lossy(&fs).trim_end_matches('\0').to_owned()
+            } else {
+                String::new()
+            };
+            (c, name)
+        })
+        .collect()
+}
+
+/// Turns deep-scan results into list rows ("Found 0001.jpg"); their ids can't clash
+/// with MFT record numbers.
+pub fn carved_rows(found: &[carve::Found]) -> Vec<DeletedFile> {
+    found
+        .iter()
+        .enumerate()
+        .map(|(i, f)| DeletedFile {
+            record: (1 << 63) | f.offset,
+            name: format!("Found {:04}.{}", i + 1, f.kind.ext()),
+            path: String::new(),
+            size: f.len,
+            modified: String::new(),
+            data: Data::Raw {
+                offset: f.offset,
+                len: f.len,
+            },
+            overwritten: 0.0,
         })
         .collect()
 }
@@ -239,7 +272,8 @@ impl Tool for FileUndelete {
 
     fn ui(&mut self, ui: &mut egui::Ui, ctx: &mut AppCtx<'_>) {
         ui.label(
-            "Finds recently deleted files on NTFS drives. Stop using the drive as soon as possible: \
+            "Finds recently deleted files (Scan, NTFS drives) or the files of a formatted drive \
+             (Deep scan). Stop using the drive as soon as possible: \
              every new write can overwrite deleted data. Files are recovered to another drive.",
         );
         if !ctx.elevated {
@@ -281,11 +315,47 @@ impl Tool for FileUndelete {
 
         ui.horizontal(|ui| {
             ui.label("Drive:");
-            for d in ntfs_drives() {
-                ui.selectable_value(&mut self.drive, d, format!("{d}:"));
+            let drives = drives();
+            for (d, fs) in &drives {
+                let label = if fs.is_empty() {
+                    format!("{d}: (unreadable)")
+                } else {
+                    format!("{d}: {fs}")
+                };
+                ui.selectable_value(&mut self.drive, *d, label);
             }
+            let is_ntfs = drives.iter().any(|(d, fs)| *d == self.drive && fs == "NTFS");
             let busy = self.scan.is_some() || self.recover.is_some();
-            if ui.add_enabled(!busy, egui::Button::new("Scan")).clicked() {
+            if ui
+                .add_enabled(!busy, egui::Button::new("Deep scan"))
+                .on_hover_text(
+                    "For a formatted or damaged drive: reads every sector and finds pictures, \
+                     documents, archives, videos and sound files by their content. Names and \
+                     folders are lost. Slow on big drives.",
+                )
+                .clicked()
+            {
+                let drive = self.drive;
+                self.message = None;
+                self.scan = Some(BackgroundTask::spawn(ui.ctx(), move |p| {
+                    let v = RawVolume::open(drive)?;
+                    let found = carve::scan(&v, |f, n| {
+                        p.report(
+                            f,
+                            format!("Reading the drive… {:.0}%, {n} files found", f * 100.0),
+                        );
+                        !p.is_cancelled()
+                    });
+                    Ok(carved_rows(&found))
+                }));
+            }
+            if ui
+                .add_enabled(!busy && is_ntfs, egui::Button::new("Scan"))
+                .on_disabled_hover_text(
+                    "The quick scan reads the NTFS file table; use Deep scan on other drives.",
+                )
+                .clicked()
+            {
                 let drive = self.drive;
                 self.message = None;
                 self.scan = Some(BackgroundTask::spawn(ui.ctx(), move |p| {
@@ -356,7 +426,12 @@ impl Tool for FileUndelete {
                             .collect();
                         let keep = self.keep_folders;
                         self.recover = Some(BackgroundTask::spawn(ui.ctx(), move |p| {
-                            let v = Volume::open(source)?;
+                            let carved = chosen.iter().all(|f| matches!(f.data, Data::Raw { .. }));
+                            let (v, raw) = if carved {
+                                (None, Some(RawVolume::open(source)?))
+                            } else {
+                                (Some(Volume::open(source)?), None)
+                            };
                             let (mut ok, mut created, mut errors) = (0, Vec::new(), Vec::new());
                             for (i, file) in chosen.iter().enumerate() {
                                 p.report(i as f32 / chosen.len() as f32, file.name.clone());
@@ -364,9 +439,17 @@ impl Tool for FileUndelete {
                                 if let Some(parent) = out.parent() {
                                     let _ = std::fs::create_dir_all(parent);
                                 }
-                                let r = File::create(&out)
-                                    .context("creating output")
-                                    .and_then(|fh| v.copy_data(&file.data, &mut BufWriter::new(fh)));
+                                let r = File::create(&out).context("creating output").and_then(|fh| {
+                                    let mut w = BufWriter::new(fh);
+                                    match (&file.data, &v, &raw) {
+                                        (Data::Raw { offset, len }, _, Some(raw)) => {
+                                            carve::copy(raw, *offset, *len, &mut w)
+                                        }
+                                        (data, Some(v), _) => v.copy_data(data, &mut w),
+                                        _ => bail!("mixed scan results"),
+                                    }
+                                    .and_then(|()| std::io::Write::flush(&mut w).map_err(Into::into))
+                                });
                                 match r {
                                     Ok(()) => {
                                         ok += 1;
@@ -516,6 +599,21 @@ mod tests {
 
     #[test]
     fn finds_ntfs_system_drive() {
-        assert!(ntfs_drives().contains(&'C'));
+        assert!(drives().contains(&('C', "NTFS".to_owned())));
+    }
+
+    #[test]
+    fn carved_rows_recover_flat_and_never_clash() {
+        let rows = carved_rows(&[carve::Found {
+            offset: 4096,
+            len: 10,
+            kind: carve::Kind::Png,
+        }]);
+        assert_eq!(rows[0].name, "Found 0001.png");
+        assert!(rows[0].record >= 1 << 63);
+        assert!(condition(&rows[0]).1);
+        assert!(FileType::Pictures.matches(&rows[0].name));
+        let dest = Path::new(r"D:\Out");
+        assert_eq!(output_path(dest, &rows[0], true), dest.join("Found 0001.png"));
     }
 }

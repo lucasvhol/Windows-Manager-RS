@@ -2,6 +2,7 @@
 //! password encryption and read-only NTFS undelete.
 
 pub mod autologon;
+mod carve;
 pub mod crypto;
 mod device_security;
 mod file_security;

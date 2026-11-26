@@ -147,6 +147,11 @@ pub enum Data {
         size: u64,
         complete: bool,
     },
+    /// A byte range of the volume, for files found by content (deep scan).
+    Raw {
+        offset: u64,
+        len: u64,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -380,6 +385,7 @@ impl Volume {
     pub fn copy_data(&self, data: &Data, out: &mut impl std::io::Write) -> Result<()> {
         match data {
             Data::Resident(bytes) => out.write_all(bytes)?,
+            Data::Raw { .. } => bail!("files found by content are copied with the deep-scan reader"),
             Data::NonResident { runs, size, .. } => {
                 let cs = self.boot.cluster_size;
                 let mut remaining = *size;
@@ -437,6 +443,7 @@ impl Volume {
                 let size = match &data {
                     Data::Resident(b) => b.len() as u64,
                     Data::NonResident { size, .. } => *size,
+                    Data::Raw { len, .. } => *len,
                 };
                 DeletedFile {
                     record,
