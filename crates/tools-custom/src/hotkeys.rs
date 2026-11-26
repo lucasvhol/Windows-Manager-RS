@@ -25,7 +25,7 @@ use wm_core::{
     shell::{KnownFolder, ShortcutSpec, create_shortcut, known_folder, read_shortcut},
     task::BackgroundTask,
     tool_settings,
-    ui::{Confirm, Message, ToolButton, frame, show_message},
+    ui::{Confirm, Message, frame, show_message},
 };
 
 const TOOL: &str = "hotkeys";
@@ -471,7 +471,7 @@ impl Default for Draft {
 }
 
 enum Ask {
-    Delete(Box<HotkeyItem>),
+    Delete(Vec<HotkeyItem>),
     Restore(PathBuf),
 }
 
@@ -481,6 +481,8 @@ pub struct HotkeyManager {
     items: Option<Vec<HotkeyItem>>,
     selected: Option<PathBuf>,
     draft: Option<Draft>,
+    /// The Edit group's hotkey for the selected shortcut: (shortcut, Ctrl, Alt, Shift, key).
+    edit_keys: Option<(PathBuf, bool, bool, bool, usize)>,
     apps: Option<BackgroundTask<Vec<(String, String)>>>,
     app_list: Vec<(String, String)>,
     confirm: Confirm<Ask>,
@@ -769,16 +771,19 @@ impl Tool for HotkeyManager {
                 self.message = Some(Ok(ctx.i18n.tr("common-dry-run-skip")));
             } else {
                 let r = match ask {
-                    Ask::Delete(item) => ctx
-                        .journal
-                        .recycle(
-                            TOOL,
-                            format!("Deleted hotkey {}", item.name),
-                            vec![item.lnk.clone()],
-                        )
-                        .map(|_| format!("Deleted {}.", item.name)),
+                    Ask::Delete(list) => {
+                        let n = list.len();
+                        ctx.journal
+                            .recycle(
+                                TOOL,
+                                format!("Deleted {n} hotkeys"),
+                                list.iter().map(|i| i.lnk.clone()).collect(),
+                            )
+                            .map(|_| format!("Deleted {n} hotkeys."))
+                    }
                     Ask::Restore(dir) => restore(ctx, &dir).map(|n| format!("Restored {n} hotkeys.")),
                 };
+                self.selected = None;
                 self.done(r);
             }
         }
@@ -791,59 +796,106 @@ impl Tool for HotkeyManager {
             .and_then(|p| items.iter().find(|i| &i.lnk == p))
             .cloned();
         let usable = selected.as_ref().is_some_and(|i| !i.all_users || ctx.elevated);
-        let on_label = if selected.as_ref().is_some_and(|i| i.off) {
-            "Turn on"
-        } else {
-            "Turn off"
+        let has_key = selected.as_ref().is_some_and(|i| i.hotkey != 0);
+        let ours: Vec<HotkeyItem> = items
+            .iter()
+            .filter(|i| i.ours && (!i.all_users || ctx.elevated))
+            .cloned()
+            .collect();
+
+        // The original's action column.
+        let mut act = None;
+        frame::right(ui, 200.0, |ui| {
+            for (key, label) in [
+                ("file", "Add File"),
+                ("folder", "Add Folder"),
+                ("url", "Add URL"),
+                ("start", "Add Start Menu"),
+                ("utility", "Add Utility"),
+                ("app", "Add Windows App"),
+            ] {
+                if frame::action(ui, icons::PLUS, label, true) {
+                    act = Some(key);
+                }
+            }
+            ui.separator();
+            let off = selected.as_ref().is_some_and(|i| i.off);
+            if frame::action(ui, icons::CHECK, "Enable", usable && has_key && off) {
+                act = Some("enable");
+            }
+            if frame::action(ui, icons::STOP_CIRCLE, "Disable", usable && has_key && !off) {
+                act = Some("disable");
+            }
+            ui.separator();
+            if frame::action(
+                ui,
+                icons::X,
+                "Remove",
+                usable && selected.as_ref().is_some_and(|i| i.ours),
+            ) {
+                act = Some("remove");
+            }
+            if frame::action(ui, icons::X, "Remove All", !ours.is_empty()) {
+                act = Some("removeall");
+            }
+            ui.separator();
+            if frame::action(ui, icons::FLOPPY_DISK, "Backup", !items.is_empty()) {
+                act = Some("backup");
+            }
+            if frame::action(ui, icons::CLOCK_COUNTER_CLOCKWISE, "Restore", true) {
+                act = Some("restore");
+            }
+            ui.separator();
+            if frame::action(ui, icons::ARROWS_CLOCKWISE, "Refresh", true) {
+                act = Some("refresh");
+            }
+        });
+        let new_draft = |kind: Kind| Draft {
+            kind,
+            ..Draft::default()
         };
-        match frame::toolbar(
-            ui,
-            &[
-                Some(ToolButton::new(icons::PLUS, "New hotkey")),
-                Some(ToolButton::new(icons::KEYBOARD, "Change").enabled(usable)),
-                Some(
-                    ToolButton::new(icons::POWER, on_label)
-                        .enabled(usable && selected.as_ref().is_some_and(|i| i.hotkey != 0)),
-                ),
-                Some(
-                    ToolButton::new(icons::TRASH, "Delete")
-                        .enabled(usable && selected.as_ref().is_some_and(|i| i.ours)),
-                ),
-                None,
-                Some(ToolButton::new(icons::FLOPPY_DISK, "Back up").enabled(!items.is_empty())),
-                Some(ToolButton::new(icons::CLOCK_COUNTER_CLOCKWISE, "Restore")),
-                Some(ToolButton::new(icons::ARROWS_CLOCKWISE, "Refresh")),
-            ],
-            |_| {},
-        ) {
-            Some(0) => self.draft = Some(Draft::default()),
-            Some(1) => {
-                if let Some(i) = &selected {
-                    let keys = keys();
-                    let m = i.hotkey >> 8;
+        match act {
+            Some(k @ ("file" | "folder")) => {
+                let picked = if k == "file" {
+                    rfd::FileDialog::new().pick_file()
+                } else {
+                    rfd::FileDialog::new().pick_folder()
+                };
+                if let Some(p) = picked {
                     self.draft = Some(Draft {
-                        name: i.name.clone(),
-                        ctrl: i.hotkey == 0 || m & HOTKEYF_CONTROL != 0,
-                        alt: i.hotkey == 0 || m & HOTKEYF_ALT != 0,
-                        shift: m & HOTKEYF_SHIFT != 0,
-                        key: keys
-                            .iter()
-                            .position(|(_, k)| u16::from(*k) == i.hotkey & 0xFF)
-                            .unwrap_or(0),
-                        editing: Some(i.clone()),
+                        name: p
+                            .file_stem()
+                            .or(p.file_name())
+                            .map(|s| s.to_string_lossy().into_owned())
+                            .unwrap_or_default(),
+                        path: p.display().to_string(),
                         ..Draft::default()
                     });
                 }
             }
-            Some(2) => {
+            Some("url") => self.draft = Some(new_draft(Kind::Url)),
+            Some("start") => self.draft = Some(new_draft(Kind::StartItem)),
+            Some("utility") => {
+                let mut d = new_draft(Kind::Utility);
+                d.name = utilities()[0].0.to_owned();
+                self.draft = Some(d);
+            }
+            Some("app") => {
+                self.draft = Some(new_draft(Kind::App));
+                if self.app_list.is_empty() && self.apps.is_none() {
+                    self.apps = Some(BackgroundTask::spawn(ui.ctx(), |_| store_apps()));
+                }
+            }
+            Some(k @ ("enable" | "disable")) => {
                 if let Some(i) = &selected {
                     if ctx.config.dry_run {
                         self.message = Some(Ok(ctx.i18n.tr("common-dry-run-skip")));
                     } else {
-                        let r = set_on(ctx, i, i.off).map(|_| {
+                        let on = k == "enable";
+                        let r = set_on(ctx, i, on).map(|_| {
                             format!(
                                 "{} {}.",
-                                if i.off { "Turned on" } else { "Turned off" },
+                                if on { "Enabled" } else { "Disabled" },
                                 format_hotkey(i.hotkey)
                             )
                         });
@@ -851,15 +903,22 @@ impl Tool for HotkeyManager {
                     }
                 }
             }
-            Some(3) => {
+            Some("remove") => {
                 if let Some(i) = &selected {
                     self.confirm.ask(
                         format!("Delete the hotkey \"{}\"?", i.name),
-                        Ask::Delete(Box::new(i.clone())),
+                        Ask::Delete(vec![i.clone()]),
                     );
                 }
             }
-            Some(5) => {
+            Some("removeall") => self.confirm.ask(
+                format!(
+                    "Delete all {} hotkeys made with this tool? Hotkeys on other shortcuts stay.",
+                    ours.len()
+                ),
+                Ask::Delete(ours.clone()),
+            ),
+            Some("backup") => {
                 if let Some(parent) = rfd::FileDialog::new()
                     .set_title("Where to save the backup")
                     .pick_folder()
@@ -871,7 +930,7 @@ impl Tool for HotkeyManager {
                     );
                 }
             }
-            Some(6) => {
+            Some("restore") => {
                 if let Some(dir) = rfd::FileDialog::new()
                     .set_title("Choose a hotkey backup folder")
                     .pick_folder()
@@ -882,7 +941,7 @@ impl Tool for HotkeyManager {
                     );
                 }
             }
-            Some(7) => self.items = None,
+            Some("refresh") => self.items = None,
             _ => {}
         }
         let Some(items) = self.items.clone() else {
@@ -899,7 +958,7 @@ impl Tool for HotkeyManager {
             })
             .count();
         let status = format!(
-            "{} hotkeys, {} turned off{}",
+            "{} hotkeys, {} disabled{}",
             items.iter().filter(|i| i.hotkey != 0 && !i.off).count(),
             items.iter().filter(|i| i.off).count(),
             if conflicts > 0 {
@@ -911,6 +970,7 @@ impl Tool for HotkeyManager {
         frame::status(ui, &status, |ui| {
             ui.weak("Hotkeys live in shortcuts, so Windows handles them even when this app is closed.");
         });
+        self.edit_bar(ui, ctx, selected.as_ref().filter(|_| usable), &items);
         frame::central_fixed(ui, |ui| self.table(ui, &items));
     }
 
@@ -920,6 +980,102 @@ impl Tool for HotkeyManager {
 }
 
 impl HotkeyManager {
+    /// The original's Edit group: the selected shortcut and its hotkey, with Save.
+    fn edit_bar(
+        &mut self,
+        ui: &mut egui::Ui,
+        ctx: &mut AppCtx<'_>,
+        sel: Option<&HotkeyItem>,
+        items: &[HotkeyItem],
+    ) {
+        let keys = keys();
+        match sel {
+            Some(i) if self.edit_keys.as_ref().is_none_or(|e| e.0 != i.lnk) => {
+                let m = i.hotkey >> 8;
+                self.edit_keys = Some((
+                    i.lnk.clone(),
+                    i.hotkey == 0 || m & HOTKEYF_CONTROL != 0,
+                    i.hotkey == 0 || m & HOTKEYF_ALT != 0,
+                    m & HOTKEYF_SHIFT != 0,
+                    keys.iter()
+                        .position(|(_, k)| u16::from(*k) == i.hotkey & 0xFF)
+                        .unwrap_or(0),
+                ));
+            }
+            None => self.edit_keys = None,
+            _ => {}
+        }
+        let mut save = None;
+        frame::edit_bar(ui, |ui| {
+            let Some(item) = sel else {
+                ui.weak("Select a shortcut to change its hotkey.");
+                return;
+            };
+            let Some((_, ctrl, alt, shift, key)) = &mut self.edit_keys else {
+                return;
+            };
+            ui.horizontal(|ui| {
+                ui.strong(&item.name);
+                ui.weak(&item.target);
+            });
+            ui.horizontal(|ui| {
+                ui.checkbox(ctrl, "Ctrl");
+                ui.checkbox(alt, "Alt");
+                ui.checkbox(shift, "Shift");
+                egui::ComboBox::from_id_salt("hk-edit-key")
+                    .selected_text(&keys[*key].0)
+                    .width(90.0)
+                    .show_ui(ui, |ui| {
+                        for (i, (label, _)) in keys.iter().enumerate() {
+                            ui.selectable_value(key, i, label);
+                        }
+                    });
+                let hk = encode(*ctrl, *alt, *shift, keys[*key].1);
+                let clash = items
+                    .iter()
+                    .find(|o| o.hotkey == hk && !o.off && o.lnk != item.lnk);
+                let problem = match (validate(hk), clash) {
+                    (Err(e), _) => Some(e.to_string()),
+                    (Ok(()), Some(c)) => Some(format!(
+                        "{} is already used by \"{}\".",
+                        format_hotkey(hk),
+                        c.name
+                    )),
+                    _ => None,
+                };
+                let changed = hk != item.hotkey;
+                if ui
+                    .add_enabled(changed && problem.is_none(), egui::Button::new("Save"))
+                    .clicked()
+                {
+                    save = Some(hk);
+                }
+                match problem {
+                    Some(p) => {
+                        ui.colored_label(ui.visuals().warn_fg_color, p);
+                    }
+                    None if !free_system_wide(hk) && changed => {
+                        ui.colored_label(
+                            ui.visuals().warn_fg_color,
+                            format!("{} is taken by a running program.", format_hotkey(hk)),
+                        );
+                    }
+                    None => {}
+                }
+            });
+        });
+        if let (Some(hk), Some(item)) = (save, sel) {
+            if ctx.config.dry_run {
+                self.message = Some(Ok(ctx.i18n.tr("common-dry-run-skip")));
+            } else {
+                let r = set_hotkey(ctx, item, hk)
+                    .map(|_| format!("{} now opens {}.", format_hotkey(hk), item.name));
+                self.edit_keys = None;
+                self.done(r);
+            }
+        }
+    }
+
     fn table(&mut self, ui: &mut egui::Ui, items: &[HotkeyItem]) {
         show_message(ui, &self.message);
         let ours = our_folder();
@@ -928,13 +1084,12 @@ impl HotkeyManager {
         TableBuilder::new(ui)
             .striped(true)
             .sense(egui::Sense::click())
+            .column(Column::initial(240.0).clip(true))
             .column(Column::initial(150.0))
-            .column(Column::initial(200.0).clip(true))
-            .column(Column::initial(110.0))
             .column(Column::initial(90.0))
             .column(Column::remainder().clip(true))
             .header(22.0, |mut h| {
-                for t in ["Hotkey", "Name", "Where", "State", "Opens"] {
+                for t in ["Title", "Hotkey", "Status", "Where"] {
                     h.col(|ui| {
                         ui.strong(t);
                     });
@@ -948,10 +1103,21 @@ impl HotkeyManager {
                         && i.hotkey != 0
                         && items.iter().filter(|o| !o.off && o.hotkey == i.hotkey).count() > 1;
                     row.col(|ui| {
+                        ui.label(&i.name).on_hover_text(&i.target);
+                    });
+                    row.col(|ui| {
                         ui.strong(format_hotkey(i.hotkey));
                     });
                     row.col(|ui| {
-                        ui.label(&i.name);
+                        if dup {
+                            ui.colored_label(ui.visuals().warn_fg_color, "Conflict");
+                        } else if i.off {
+                            ui.weak("Disabled");
+                        } else if i.hotkey == 0 {
+                            ui.weak("No hotkey");
+                        } else {
+                            ui.label("Enabled");
+                        }
                     });
                     row.col(|ui| {
                         ui.weak(if i.lnk.starts_with(&ours) {
@@ -961,20 +1127,6 @@ impl HotkeyManager {
                         } else {
                             "Desktop"
                         });
-                    });
-                    row.col(|ui| {
-                        if dup {
-                            ui.colored_label(ui.visuals().warn_fg_color, "Conflict");
-                        } else if i.off {
-                            ui.weak("Off");
-                        } else if i.hotkey == 0 {
-                            ui.weak("No hotkey");
-                        } else {
-                            ui.label("On");
-                        }
-                    });
-                    row.col(|ui| {
-                        ui.weak(&i.target);
                     });
                     if row.response().clicked() {
                         clicked = Some(i.lnk.clone());
