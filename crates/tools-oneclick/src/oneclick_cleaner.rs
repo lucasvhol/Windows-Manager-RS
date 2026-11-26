@@ -76,6 +76,28 @@ impl Item {
         }
     }
 
+    fn tooltip(self) -> &'static str {
+        match self {
+            Item::Privacy => "Run dialog, address bar and recent-file history, and more (see Options).",
+            Item::Startup => {
+                "Removes startup entries whose program no longer exists. Undo from the Change Journal."
+            }
+            Item::Tasks => {
+                "Removes non-Windows scheduled tasks whose programs no longer exist. Each task is backed up first."
+            }
+            Item::Desktop => {
+                "Moves desktop items you haven't used for a while, with Desktop Cleaner's options."
+            }
+            Item::Junk => "Temporary files, caches and error reports. Deleted permanently.",
+            Item::Registry => {
+                "Entries that point to missing files and programs. Undo from the Change Journal."
+            }
+            Item::Defrag => {
+                "Rebuilds the registry files without their empty space; Windows restarts to finish."
+            }
+        }
+    }
+
     /// The tool whose options the [Options] link opens (Privacy opens its own list).
     fn options_tool(self) -> Option<&'static str> {
         match self {
@@ -685,6 +707,7 @@ impl Tool for OneClickCleaner {
                     } else {
                         String::new()
                     },
+                    tooltip: item.tooltip().to_owned(),
                 })
                 .collect();
             options = checklist(ui, "Select the items to run", "Result", &mut rows);

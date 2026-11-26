@@ -520,6 +520,8 @@ pub struct CheckItem<'a> {
     pub enabled: bool,
     /// Shown when the row is disabled (e.g. "Needs administrator rights").
     pub disabled_hint: String,
+    /// Shown when hovering the label (what the item does).
+    pub tooltip: String,
 }
 
 /// The original's "Select the items to run | Result" list: a checkbox, icon and label
@@ -560,7 +562,10 @@ pub fn checklist(
                                 r.on_disabled_hover_text(&item.disabled_hint);
                             }
                             ui.label(egui::RichText::new(item.icon).size(16.0).color(accent));
-                            ui.label(&item.label);
+                            let l = ui.label(&item.label);
+                            if !item.tooltip.is_empty() {
+                                l.on_hover_text(&item.tooltip);
+                            }
                             if item.options && ui.link("[Options]").clicked() {
                                 options = Some(i);
                             }

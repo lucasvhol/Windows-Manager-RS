@@ -18,7 +18,7 @@ use wm_core::{
     safety::UndoAction,
     shell::{KnownFolder, known_folder},
     task::BackgroundTask,
-    ui::{Confirm, Message, ToolButton, frame, request_open_tool, section, show_message},
+    ui::{CheckItem, Confirm, Message, checklist, frame, request_open_tool, show_message},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -44,61 +44,61 @@ const fn fix(id: &'static str, title: &'static str, description: &'static str, a
 pub const REPAIRS: [Fix; 10] = [
     fix(
         "component",
-        "Repair the component store",
+        "Scan and restore component store health",
         "DISM RestoreHealth: replaces damaged Windows components from Windows Update. 10–30 minutes.",
         true,
     ),
     fix(
         "sysfiles",
-        "Repair system files",
+        "Scan and repair system files",
         "SFC: checks protected Windows files and restores damaged ones. 10–20 minutes.",
         true,
     ),
     fix(
         "wmi",
-        "Check and repair WMI",
+        "Rebuild WMI repository",
         "Verifies the WMI repository (used by many tools and installers) and salvages it if inconsistent.",
         true,
     ),
     fix(
         "syspart",
-        "Scan the system drive",
+        "Scan and repair the system partition",
         "CHKDSK online scan of the Windows drive; problems found are fixed at the next restart.",
         true,
     ),
     fix(
         "volumes",
-        "Scan the other drives",
+        "Scan and repair the health of all volumes",
         "CHKDSK online scan of every other fixed NTFS drive.",
         true,
     ),
     fix(
         "internet",
-        "Repair the internet connection",
+        "Detect and repair internet connection",
         "Flushes DNS, resets the system proxy (WinHTTP), renews addresses, then tests name lookup.",
         true,
     ),
     fix(
         "assoc",
-        "Repair program file associations",
+        "Detect and repair file association errors",
         "Removes per-user overrides that hijack .exe, .lnk, .bat, .cmd, .com, .msi, .reg and similar files.",
         false,
     ),
     fix(
         "folders",
-        "Reset personal folder permissions",
+        "Detect and repair system folder permissions",
         "Desktop, Documents, Downloads, Music, Pictures and Videos inherit from your profile again (saved first).",
         false,
     ),
     fix(
         "regperm",
-        "Reset broken registry permissions",
+        "Detect and repair registry key permissions",
         "Keys in your part of the registry that you cannot read inherit their permissions again (saved first).",
         false,
     ),
     fix(
         "shell",
-        "Repair the Windows shell",
+        "Detect and repair File Explorer / Shell issues",
         "Restores the shell and sign-in programs malware may replace (Winlogon Shell, Userinit), then restarts Explorer.",
         true,
     ),
@@ -666,7 +666,11 @@ pub struct OneClickFixer {
     repairs: Vec<bool>,
     quick: Vec<bool>,
     task: Option<BackgroundTask<Outcome>>,
+    /// The fixes of the running (or last) run, in order.
+    running: Vec<Fix>,
     log: Vec<String>,
+    /// Each fix's result from the last run, by id.
+    results: Vec<(&'static str, String)>,
     confirm: Confirm<Vec<Fix>>,
     message: Message,
 }
@@ -674,66 +678,99 @@ pub struct OneClickFixer {
 impl Default for OneClickFixer {
     fn default() -> Self {
         Self {
-            repairs: REPAIRS
-                .iter()
-                .map(|f| matches!(f.id, "wmi" | "internet" | "assoc" | "shell"))
-                .collect(),
-            quick: QUICK.iter().map(|f| matches!(f.id, "dns" | "icons")).collect(),
+            // Like the original, every repair starts ticked; the quick fixes start off.
+            repairs: vec![true; REPAIRS.len()],
+            quick: vec![false; QUICK.len()],
             task: None,
+            running: Vec::new(),
             log: Vec::new(),
+            results: Vec::new(),
             confirm: Confirm::default(),
             message: None,
         }
     }
 }
 
-/// A group of fixes with a "Select all" box.
-fn group(
-    ui: &mut egui::Ui,
-    title: &str,
-    fixes: &[Fix],
-    selected: &mut [bool],
-    elevated: bool,
-    admin_hint: &str,
-) {
-    let usable = |f: &Fix| !f.admin || elevated;
-    let mut all = fixes
-        .iter()
-        .zip(selected.iter())
-        .filter(|(f, _)| usable(f))
-        .all(|(_, s)| *s);
-    let mut toggle_all = false;
-    section(
-        ui,
-        title,
-        |ui| {
-            toggle_all = ui.checkbox(&mut all, "Select all").changed();
-        },
-        |ui| {
-            egui::Grid::new(title)
-                .num_columns(2)
-                .spacing([16.0, 6.0])
-                .show(ui, |ui| {
-                    for (f, sel) in fixes.iter().zip(selected.iter_mut()) {
-                        let ok = usable(f);
-                        let mut off = false;
-                        let state = if ok { &mut *sel } else { &mut off };
-                        ui.add_enabled(ok, egui::Checkbox::new(state, f.title))
-                            .on_disabled_hover_text(admin_hint);
-                        ui.horizontal(|ui| {
-                            ui.weak(f.description);
-                            if f.restart {
-                                ui.weak("· restart required");
-                            }
-                        });
-                        ui.end_row();
+/// Each fix's result, read from the run log ("== title ==" starts a fix's section;
+/// a line "  failed: …" marks it failed).
+pub fn results_from_log(fixes: &[Fix], log: &[String]) -> Vec<(&'static str, String)> {
+    let mut out: Vec<(&'static str, String)> = Vec::new();
+    for line in log {
+        if let Some(title) = line.strip_prefix("== ").and_then(|l| l.strip_suffix(" ==")) {
+            if let Some(f) = fixes.iter().find(|f| f.title == title) {
+                out.push((f.id, "Done".into()));
+            }
+        } else if let Some(err) = line.strip_prefix("  failed: ")
+            && let Some(last) = out.last_mut()
+        {
+            last.1 = format!("Failed: {err}");
+        }
+    }
+    out
+}
+
+impl OneClickFixer {
+    fn poll(&mut self, ctx: &mut AppCtx<'_>) {
+        if let Some(t) = &mut self.task {
+            t.poll();
+            if let Some(r) = t.take_result() {
+                self.task = None;
+                match r {
+                    Ok(out) => {
+                        for (what, undo) in out.undo {
+                            let _ = ctx.journal.record("fixer", what, undo);
+                        }
+                        self.results = results_from_log(&self.running, &out.log);
+                        let failed = self.results.iter().any(|(_, r)| r.starts_with("Failed"));
+                        self.log = out.log;
+                        self.message =
+                            failed.then(|| Err("Finished with errors. See the repair logs.".into()));
                     }
-                });
-        },
-    );
-    if toggle_all {
-        for (f, s) in fixes.iter().zip(selected.iter_mut()) {
-            *s = all && usable(f);
+                    Err(e) => self.message = Some(Err(e)),
+                }
+            }
+        }
+    }
+
+    fn start(&mut self, ui: &egui::Ui, ctx: &AppCtx<'_>, fixes: Vec<Fix>) {
+        if ctx.config.dry_run {
+            self.message = Some(Ok(ctx.i18n.tr("common-dry-run-skip")));
+            return;
+        }
+        for f in &fixes {
+            let _ = ctx
+                .journal
+                .record("fixer", format!("Ran fix: {}", f.title), UndoAction::None);
+        }
+        self.log.clear();
+        self.results.clear();
+        self.message = None;
+        self.running = fixes.clone();
+        self.task = Some(BackgroundTask::spawn(ui.ctx(), move |p| {
+            let mut out = Outcome::default();
+            let n = fixes.len() as f32;
+            for (i, f) in fixes.iter().enumerate() {
+                p.report(i as f32 / n, f.title);
+                out.log.push(format!("== {} ==", f.title));
+                let mut status = |s: &str| p.report(i as f32 / n, format!("{}: {s}", f.title));
+                if let Err(e) = apply(f.id, &mut out, &mut status) {
+                    out.log.push(format!("  failed: {e:#}"));
+                }
+            }
+            Ok(out)
+        }));
+    }
+
+    /// The Result column for one fix.
+    fn result_of(&self, f: &Fix) -> String {
+        if let Some((_, r)) = self.results.iter().find(|(id, _)| *id == f.id) {
+            return r.clone();
+        }
+        match &self.task {
+            Some(t) if t.status.starts_with(f.title) => "Running…".into(),
+            Some(_) if self.running.iter().any(|r| r.id == f.id) => "Waiting…".into(),
+            _ if f.restart => "Restart required afterwards".into(),
+            _ => String::new(),
         }
     }
 }
@@ -748,124 +785,150 @@ impl Tool for OneClickFixer {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, ctx: &mut AppCtx<'_>) {
-        if let Some(t) = &mut self.task {
-            t.poll();
-            if let Some(r) = t.take_result() {
-                self.task = None;
-                match r {
-                    Ok(out) => {
-                        for (what, undo) in out.undo {
-                            let _ = ctx.journal.record("fixer", what, undo);
-                        }
-                        let failed = out.log.iter().any(|l| l.starts_with("  failed:"));
-                        self.log = out.log;
-                        self.message = Some(if failed {
-                            Err("Finished with errors. See the log.".into())
-                        } else {
-                            Ok("Done. See the log for details.".into())
-                        });
-                    }
-                    Err(e) => self.message = Some(Err(e)),
-                }
-            }
-        }
+        self.poll(ctx);
         if let Some(fixes) = self.confirm.show(ui.ctx(), ctx.i18n) {
-            if ctx.config.dry_run {
-                self.message = Some(Ok(ctx.i18n.tr("common-dry-run-skip")));
-            } else {
-                for f in &fixes {
-                    let _ = ctx
-                        .journal
-                        .record("fixer", format!("Ran fix: {}", f.title), UndoAction::None);
-                }
-                self.log.clear();
-                self.message = None;
-                self.task = Some(BackgroundTask::spawn(ui.ctx(), move |p| {
-                    let mut out = Outcome::default();
-                    let n = fixes.len() as f32;
-                    for (i, f) in fixes.iter().enumerate() {
-                        p.report(i as f32 / n, f.title);
-                        out.log.push(format!("== {} ==", f.title));
-                        let mut status = |s: &str| p.report(i as f32 / n, format!("{}: {s}", f.title));
-                        if let Err(e) = apply(f.id, &mut out, &mut status) {
-                            out.log.push(format!("  failed: {e:#}"));
-                        }
-                    }
-                    Ok(out)
-                }));
-            }
+            self.start(ui, ctx, fixes);
         }
-
+        let elevated = ctx.elevated;
+        let usable = |f: &Fix| !f.admin || elevated;
         let chosen: Vec<Fix> = REPAIRS
             .iter()
             .zip(&self.repairs)
             .chain(QUICK.iter().zip(&self.quick))
-            .filter(|(f, s)| **s && (!f.admin || ctx.elevated))
+            .filter(|(f, s)| **s && usable(f))
             .map(|(f, _)| *f)
             .collect();
-        let start = match chosen.len() {
-            0 => "Start".to_owned(),
-            1 => "Start (1)".to_owned(),
-            n => format!("Start ({n})"),
-        };
-        match frame::toolbar(
+        let busy = self.task.is_some();
+
+        let mut start = false;
+        frame::footer(
             ui,
-            &[
-                Some(ToolButton::new(icons::PLAY, &start).enabled(!chosen.is_empty() && self.task.is_none())),
-                None,
-                Some(ToolButton::new(icons::FIRST_AID_KIT, "Repair Center")),
-            ],
-            |_| {},
-        ) {
-            Some(0) => {
-                let names: Vec<&str> = chosen.iter().map(|f| f.title).collect();
-                self.confirm
-                    .ask(format!("Run: {}?", names.join(", ")), chosen.clone());
-            }
-            Some(2) => request_open_tool(ui.ctx(), "repair"),
-            _ => {}
+            |ui| {
+                let all_fixes = REPAIRS.iter().chain(&QUICK);
+                let states = self.repairs.iter().chain(&self.quick);
+                let usable_states: Vec<bool> = all_fixes
+                    .zip(states)
+                    .filter(|(f, _)| usable(f))
+                    .map(|(_, s)| *s)
+                    .collect();
+                let mut all = usable_states.iter().all(|s| *s);
+                let partial = !all && usable_states.iter().any(|s| *s);
+                if ui
+                    .add_enabled(
+                        !busy,
+                        egui::Checkbox::new(&mut all, "Select All").indeterminate(partial),
+                    )
+                    .changed()
+                {
+                    for (f, s) in REPAIRS
+                        .iter()
+                        .chain(&QUICK)
+                        .zip(self.repairs.iter_mut().chain(self.quick.iter_mut()))
+                    {
+                        *s = all && usable(f);
+                    }
+                }
+                ui.add_space(12.0);
+                if ui
+                    .button(format!("{}  Repair Center", icons::FIRST_AID_KIT))
+                    .clicked()
+                {
+                    request_open_tool(ui.ctx(), "repair");
+                }
+            },
+            |ui| {
+                if ui.button("Exit").clicked() {
+                    ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+                start = ui
+                    .add_enabled(
+                        !busy && !chosen.is_empty(),
+                        egui::Button::new(format!("Start ({})", chosen.len())),
+                    )
+                    .clicked();
+                if let Some(t) = &self.task {
+                    ui.add(
+                        egui::ProgressBar::new(t.progress)
+                            .desired_width(160.0)
+                            .show_percentage(),
+                    );
+                }
+            },
+        );
+        if start {
+            let names: Vec<&str> = chosen.iter().map(|f| f.title).collect();
+            self.confirm
+                .ask(format!("Run: {}?", names.join(", ")), chosen.clone());
         }
-        let status = match &self.task {
-            Some(t) => t.status.clone(),
-            None if !ctx.elevated => format!(
-                "{} selected · greyed-out repairs need administrator rights",
-                chosen.len()
-            ),
-            None => format!(
-                "{} selected · each one is a standard Windows repair",
-                chosen.len()
-            ),
-        };
-        let progress = self.task.as_ref().map(|t| t.progress);
-        frame::status(ui, &status, |ui| {
-            if let Some(p) = progress {
-                ui.add(egui::ProgressBar::new(p).desired_width(180.0).show_percentage());
-            }
-        });
+
+        let fill = ui.visuals().panel_fill;
+        egui::Panel::bottom("fixer-logs")
+            .resizable(false)
+            .frame(
+                egui::Frame::new()
+                    .fill(fill)
+                    .inner_margin(egui::Margin::symmetric(12, 4)),
+            )
+            .show(ui, |ui| {
+                egui::CollapsingHeader::new(format!("Repair Logs ({} lines)", self.log.len()))
+                    .id_salt("fixer-log")
+                    .open(if busy { Some(false) } else { None })
+                    .show(ui, |ui| {
+                        egui::ScrollArea::vertical()
+                            .max_height(170.0)
+                            .stick_to_bottom(true)
+                            .show(ui, |ui| {
+                                ui.add(
+                                    egui::Label::new(
+                                        egui::RichText::new(self.log.join("\n")).monospace().small(),
+                                    )
+                                    .selectable(true),
+                                );
+                            });
+                    });
+            });
+
+        let results: Vec<String> = REPAIRS.iter().chain(&QUICK).map(|f| self.result_of(f)).collect();
         let hint = ctx.i18n.tr("shell-needs-admin");
-        frame::central(ui, |ui| {
+        frame::central_fixed(ui, |ui| {
             show_message(ui, &self.message);
-            if !self.log.is_empty() {
-                section(
-                    ui,
-                    &format!("Log ({} lines)", self.log.len()),
-                    |_| {},
-                    |ui| {
-                        egui::ScrollArea::vertical().max_height(220.0).show(ui, |ui| {
-                            ui.add(
-                                egui::Label::new(
-                                    egui::RichText::new(self.log.join("\n")).monospace().small(),
-                                )
-                                .selectable(true),
-                            );
-                        });
-                    },
-                );
-                ui.add_space(8.0);
+            let fixes: Vec<&Fix> = REPAIRS.iter().chain(&QUICK).collect();
+            // Fixes this account can't run show unticked.
+            let mut shown: Vec<bool> = self
+                .repairs
+                .iter()
+                .chain(&self.quick)
+                .zip(&fixes)
+                .map(|(s, f)| *s && usable(f))
+                .collect();
+            let mut rows: Vec<CheckItem<'_>> = shown
+                .iter_mut()
+                .zip(&fixes)
+                .zip(&results)
+                .map(|((on, f), result)| CheckItem {
+                    on,
+                    icon: fix_icon(f.id),
+                    label: f.title.to_owned(),
+                    options: false,
+                    result: result.clone(),
+                    enabled: !busy && usable(f),
+                    disabled_hint: hint.clone(),
+                    tooltip: f.description.to_owned(),
+                })
+                .collect();
+            checklist(ui, "Select the items to run", "Result", &mut rows);
+            drop(rows);
+            for ((s, f), on) in self
+                .repairs
+                .iter_mut()
+                .chain(self.quick.iter_mut())
+                .zip(&fixes)
+                .zip(shown)
+            {
+                if usable(f) {
+                    *s = on;
+                }
             }
-            group(ui, "Repairs", &REPAIRS, &mut self.repairs, ctx.elevated, &hint);
-            ui.add_space(8.0);
-            group(ui, "Quick fixes", &QUICK, &mut self.quick, ctx.elevated, &hint);
         });
     }
 
@@ -874,9 +937,47 @@ impl Tool for OneClickFixer {
     }
 }
 
+fn fix_icon(id: &str) -> &'static str {
+    match id {
+        "component" => icons::STACK,
+        "sysfiles" => icons::FILE_TEXT,
+        "wmi" => icons::DATABASE,
+        "syspart" | "volumes" => icons::HARD_DRIVES,
+        "internet" | "network" => icons::GLOBE,
+        "assoc" => icons::LINK,
+        "folders" => icons::FOLDERS,
+        "regperm" => icons::KEY,
+        "shell" | "explorer" => icons::FOLDER_OPEN,
+        "dns" => icons::NETWORK,
+        "icons" | "thumbs" => icons::IMAGE,
+        "store" => icons::GRID_FOUR,
+        "time" => icons::CLOCK,
+        "print" => icons::PRINTER,
+        "update" => icons::ARROWS_CLOCKWISE,
+        _ => icons::WRENCH,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn results_are_read_from_the_log() {
+        let fixes = [REPAIRS[2], QUICK[0]];
+        let log: Vec<String> = [
+            format!("== {} ==", fixes[0].title),
+            "> winmgmt /verifyrepository".into(),
+            "  failed: access denied".into(),
+            format!("== {} ==", fixes[1].title),
+            "> something".into(),
+        ]
+        .into();
+        let r = results_from_log(&fixes, &log);
+        assert_eq!(r.len(), 2);
+        assert_eq!(r[0], (fixes[0].id, "Failed: access denied".to_owned()));
+        assert_eq!(r[1], (fixes[1].id, "Done".to_owned()));
+    }
 
     #[test]
     fn fix_ids_unique_and_known() {
