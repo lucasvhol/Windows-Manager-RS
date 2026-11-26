@@ -43,11 +43,11 @@ Tools reachable only from a dropdown: Windows Features (System Protection), App 
 | OptimizationWizard.exe | wizard | "Step (n/N): name" band, icon + explanation, Create Task / Back / Next > / Cancel / Skip; Next opens the step's tool | Only the first step was captured (stepping further was blocked as unsafe) | — | Our wizard keeps extra steps (updates, tweaks, drives, finish) and Back | 🟡 |
 | RepairCenter.exe | repair | Left categories, "n Section" tabs, three full-width boxes per tab with the button at the bottom right, section name in the status bar | Section names as the original | — | — | ✅ |
 | (hub) System Protection | systemprotection | Not captured: the hub's tiles ignore posted clicks | | | | ➖ |
-| SystemInfo.exe | sysinfo | | | | | ❌ |
-| ProcessManager.exe | procman | | | | | ❌ |
-| EventViewer.exe | events | | | | | ❌ |
-| DeviceManager.exe | devices | | | | | ❌ |
-| HardwareMonitor.exe | hwmon | | | | | ❌ |
+| SystemInfo.exe | sysinfo | Hardware / Software tree, foldable property groups, Export, date and uptime in the status bar | Page names as the original (we add Printers) | — | Microsoft Product Key shows the firmware key masked until asked | ✅ |
+| ProcessManager.exe | procman | Process tree, original toolbar (overflowing into More), Process Logger, "Total Processes" + search | Columns as the original, plus PID | Columns, Options buttons; per-row checkboxes | — | 🟡 |
+| EventViewer.exe | events | Grouped by event ID, foldable Query side panel, totals + Export to CSV + search | Columns as the original | — | — | ✅ |
+| DeviceManager.exe | devices | Device tree under Windows' class names, original toolbar, Details panel, count + combo + search | As the original | Per-row checkboxes for batch actions | USB Storage History added | 🟡 |
+| HardwareMonitor.exe | hwmon | Sensor tree with Current / Maximum, Options / Exit | Group names as the original (Load, Clocks, Temperatures, Data…) | — | Voltages, fan speeds and CPU power need a kernel driver | ✅ |
 | (hub) System Speed | speed | | | | | ❌ |
 | (hub) Boot Configuration | boot | | | | | ❌ |
 | StartupManager.exe | startup | | | | | ❌ |
