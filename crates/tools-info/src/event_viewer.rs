@@ -313,7 +313,10 @@ pub struct EventViewer {
     selected: Option<u64>,
     loaded_once: bool,
     hours: u32,
-    grouped: bool,
+    /// Event groups (source, ID) that are unfolded.
+    expanded: std::collections::HashSet<GroupKey>,
+    /// The Query side panel is open (the original starts with it folded).
+    query_open: bool,
     message: wm_core::ui::Message,
 }
 
@@ -332,7 +335,8 @@ impl Default for EventViewer {
             selected: None,
             loaded_once: false,
             hours: 168,
-            grouped: false,
+            expanded: Default::default(),
+            query_open: false,
             message: None,
         }
     }
@@ -362,10 +366,7 @@ impl Tool for EventViewer {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, ctx: &mut AppCtx<'_>) {
-        use wm_core::{
-            icons,
-            ui::{ToolButton, frame},
-        };
+        use wm_core::{icons, ui::frame};
         if !self.loaded_once {
             self.loaded_once = true;
             self.reload(ui.ctx());
@@ -391,89 +392,130 @@ impl Tool for EventViewer {
                     || r.event_id.to_string() == f
             })
             .collect();
-
         let mut reload = false;
-        let refresh = ctx.i18n.tr("common-refresh");
-        let group_label = if self.grouped {
-            "List events"
-        } else {
-            "Group by event"
-        };
-        match frame::toolbar(
-            ui,
-            &[
-                Some(ToolButton::new(icons::ARROWS_CLOCKWISE, &refresh).enabled(self.task.is_none())),
-                None,
-                Some(ToolButton::new(icons::LIST_BULLETS, group_label)),
-                Some(ToolButton::new(icons::UPLOAD, "Export CSV").enabled(!visible.is_empty())),
-            ],
-            |_| {},
-        ) {
-            Some(0) => reload = true,
-            Some(2) => self.grouped = !self.grouped,
-            Some(3) => {
-                if let Some(path) = rfd::FileDialog::new()
-                    .add_filter("CSV", &["csv"])
-                    .set_file_name(format!("{}-events.csv", LOGS[self.log]))
-                    .save_file()
-                {
-                    self.message = Some(
-                        std::fs::write(&path, to_csv(&visible))
-                            .map(|()| format!("Saved {} events to {}.", visible.len(), path.display()))
-                            .map_err(|e| e.to_string()),
-                    );
+
+        // The original's Query side panel: folded to a narrow strip, or the filters.
+        let fill = ui.visuals().faint_bg_color;
+        egui::Panel::left("ev-query")
+            .resizable(false)
+            .exact_size(if self.query_open { 220.0 } else { 30.0 })
+            .frame(egui::Frame::new().fill(fill).inner_margin(egui::Margin::same(6)))
+            .show(ui, |ui| {
+                if !self.query_open {
+                    ui.vertical_centered(|ui| {
+                        if ui
+                            .add(egui::Button::new("»").frame(false))
+                            .on_hover_text("Query")
+                            .clicked()
+                        {
+                            self.query_open = true;
+                        }
+                        ui.add_space(8.0);
+                        for c in "Query".chars() {
+                            ui.weak(c.to_string());
+                        }
+                    });
+                    return;
                 }
-            }
-            _ => {}
-        }
-        let filter_hint = ctx.i18n.tr("common-filter");
-        frame::options(ui, |ui| {
-            egui::ComboBox::from_id_salt("event_log")
-                .selected_text(LOGS[self.log])
-                .show_ui(ui, |ui| {
-                    for (i, name) in LOGS.iter().enumerate() {
-                        reload |= ui.selectable_value(&mut self.log, i, *name).changed();
-                    }
+                ui.horizontal(|ui| {
+                    ui.strong("Query");
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.add(egui::Button::new("«").frame(false)).clicked() {
+                            self.query_open = false;
+                        }
+                    });
                 });
-            reload |= ui.checkbox(&mut self.levels.critical, "Critical").changed();
-            reload |= ui.checkbox(&mut self.levels.error, "Error").changed();
-            reload |= ui.checkbox(&mut self.levels.warning, "Warning").changed();
-            reload |= ui.checkbox(&mut self.levels.information, "Information").changed();
-            egui::ComboBox::from_id_salt("event_range")
-                .selected_text(
-                    RANGES
-                        .iter()
-                        .find(|(h, _)| *h == self.hours)
-                        .map_or("", |(_, l)| *l),
-                )
-                .show_ui(ui, |ui| {
-                    for (h, label) in RANGES {
-                        reload |= ui.selectable_value(&mut self.hours, h, label).changed();
-                    }
+                ui.separator();
+                ui.label("Log");
+                egui::ComboBox::from_id_salt("event_log")
+                    .selected_text(LOGS[self.log])
+                    .width(190.0)
+                    .show_ui(ui, |ui| {
+                        for (i, name) in LOGS.iter().enumerate() {
+                            reload |= ui.selectable_value(&mut self.log, i, *name).changed();
+                        }
+                    });
+                ui.add_space(6.0);
+                ui.label("Level");
+                reload |= ui.checkbox(&mut self.levels.critical, "Critical").changed();
+                reload |= ui.checkbox(&mut self.levels.error, "Error").changed();
+                reload |= ui.checkbox(&mut self.levels.warning, "Warning").changed();
+                reload |= ui.checkbox(&mut self.levels.information, "Information").changed();
+                ui.add_space(6.0);
+                ui.label("Logged");
+                egui::ComboBox::from_id_salt("event_range")
+                    .selected_text(
+                        RANGES
+                            .iter()
+                            .find(|(h, _)| *h == self.hours)
+                            .map_or("", |(_, l)| *l),
+                    )
+                    .width(190.0)
+                    .show_ui(ui, |ui| {
+                        for (h, label) in RANGES {
+                            reload |= ui.selectable_value(&mut self.hours, h, label).changed();
+                        }
+                    });
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    ui.label("At most");
+                    reload |= ui
+                        .add(egui::DragValue::new(&mut self.max).range(50..=10_000).speed(10))
+                        .drag_stopped();
+                    ui.label("events");
                 });
-            ui.label("Max:");
-            reload |= ui
-                .add(egui::DragValue::new(&mut self.max).range(50..=10_000).speed(10))
-                .drag_stopped();
-            ui.separator();
+                ui.add_space(10.0);
+                if ui
+                    .add_enabled(
+                        self.task.is_none(),
+                        egui::Button::new(ctx.i18n.tr("common-refresh")),
+                    )
+                    .clicked()
+                {
+                    reload = true;
+                }
+            });
+
+        // Status bar: totals, Export to CSV and search, like the original.
+        let loading = self.task.is_some();
+        let status = format!(
+            "Total events of {}: {}; Current event count: {}",
+            LOGS[self.log],
+            rows.len(),
+            visible.len()
+        );
+        let mut export = false;
+        let search_hint = format!("{}  {}", icons::MAGNIFYING_GLASS, ctx.i18n.tr("common-filter"));
+        frame::status(ui, &status, |ui| {
             ui.add(
                 egui::TextEdit::singleline(&mut self.filter)
-                    .hint_text(format!("{}  {filter_hint}", icons::MAGNIFYING_GLASS))
-                    .desired_width(200.0),
+                    .hint_text(search_hint)
+                    .desired_width(180.0),
             );
-        });
-        let loading = self.task.is_some();
-        frame::status(ui, &format!("{} events", visible.len()), |ui| {
+            export = ui
+                .add_enabled(!visible.is_empty(), egui::Button::new("Export to CSV"))
+                .clicked();
             if loading {
                 ui.spinner();
             }
         });
+        if export
+            && let Some(path) = rfd::FileDialog::new()
+                .add_filter("CSV", &["csv"])
+                .set_file_name(format!("{}-events.csv", LOGS[self.log]))
+                .save_file()
+        {
+            self.message = Some(
+                std::fs::write(&path, to_csv(&visible))
+                    .map(|()| format!("Saved {} events to {}.", visible.len(), path.display()))
+                    .map_err(|e| e.to_string()),
+            );
+        }
 
         // The selected event's details, in a resizable panel at the bottom.
-        if !self.grouped
-            && let Some(r) = self
-                .selected
-                .and_then(|id| rows.iter().find(|r| r.record_id == id))
+        if let Some(r) = self
+            .selected
+            .and_then(|id| rows.iter().find(|r| r.record_id == id))
         {
             egui::Panel::bottom("event_detail")
                 .resizable(true)
@@ -515,11 +557,7 @@ impl Tool for EventViewer {
                 }
                 return;
             }
-            if self.grouped {
-                self.groups_view(ui, &visible);
-            } else {
-                self.table(ui, &visible);
-            }
+            self.tree_table(ui, &visible);
         });
         self.rows = rows_result;
         if reload && self.task.is_none() {
@@ -528,109 +566,134 @@ impl Tool for EventViewer {
     }
 }
 
+/// A row of the grouped view: an event group, or one event inside an open group.
+enum TreeRow<'a> {
+    Group(GroupKey, GroupStats),
+    Event(&'a EventRow),
+}
+
+/// Groups events by (source, ID), most frequent first; each group keeps its newest
+/// time and first message line.
+fn groups<'a>(visible: &[&'a EventRow]) -> Vec<(GroupKey, GroupStats, Vec<&'a EventRow>)> {
+    let mut out: Vec<(GroupKey, GroupStats, Vec<&EventRow>)> = Vec::new();
+    for r in visible {
+        let key = (r.provider.clone(), r.event_id);
+        match out.iter_mut().find(|(k, _, _)| *k == key) {
+            Some((_, g, list)) => {
+                g.1 += 1;
+                list.push(r);
+            }
+            None => out.push((
+                key,
+                (
+                    r.level,
+                    1,
+                    r.time.clone(),
+                    r.message.lines().next().unwrap_or_default().to_owned(),
+                ),
+                vec![r],
+            )),
+        }
+    }
+    out.sort_by_key(|g| std::cmp::Reverse(g.1.1));
+    out
+}
+
 impl EventViewer {
-    fn groups_view(&mut self, ui: &mut egui::Ui, visible: &[&EventRow]) {
-        // (source, id) -> (level, count, latest time, first message line)
-        let mut groups: Vec<(GroupKey, GroupStats)> = Vec::new();
-        for r in visible {
-            let key = (r.provider.clone(), r.event_id);
-            match groups.iter_mut().find(|(k, _)| *k == key) {
-                Some((_, g)) => g.1 += 1,
-                None => groups.push((
-                    key,
-                    (
-                        r.level,
-                        1,
-                        r.time.clone(),
-                        r.message.lines().next().unwrap_or_default().to_owned(),
-                    ),
-                )),
+    /// The original's grouped list: ID | Creation Time | Level | Source | Messages, one
+    /// row per event ID that unfolds into its events.
+    fn tree_table(&mut self, ui: &mut egui::Ui, visible: &[&EventRow]) {
+        let mut rows: Vec<TreeRow<'_>> = Vec::new();
+        for (key, stats, events) in groups(visible) {
+            let open = self.expanded.contains(&key);
+            rows.push(TreeRow::Group(key, stats));
+            if open {
+                rows.extend(events.into_iter().map(TreeRow::Event));
             }
         }
-        groups.sort_by_key(|g| std::cmp::Reverse(g.1.1));
         let (error, warn) = (ui.visuals().error_fg_color, ui.visuals().warn_fg_color);
-        egui::ScrollArea::vertical().id_salt("groups").show(ui, |ui| {
-            egui::Grid::new("event_groups")
-                .striped(true)
-                .spacing([14.0, 4.0])
-                .show(ui, |ui| {
-                    for h in ["Count", "Level", "Source", "Event ID", "Latest", "Message"] {
-                        ui.strong(h);
-                    }
-                    ui.end_row();
-                    for ((source, id), (level, count, latest, msg)) in &groups {
-                        ui.label(count.to_string());
-                        let color = match level {
-                            1 | 2 => error,
-                            3 => warn,
-                            _ => ui.visuals().text_color(),
-                        };
-                        ui.colored_label(color, level_name(*level));
-                        ui.label(source);
-                        if ui
-                            .link(id.to_string())
-                            .on_hover_text("Show these events")
-                            .clicked()
-                        {
-                            self.filter = id.to_string();
-                            self.grouped = false;
-                        }
-                        ui.label(latest);
-                        ui.label(msg);
-                        ui.end_row();
-                    }
-                });
-        });
-    }
-
-    fn table(&mut self, ui: &mut egui::Ui, visible: &[&EventRow]) {
+        let level_color = |ui: &egui::Ui, level: u8| match level {
+            1 | 2 => error,
+            3 => warn,
+            _ => ui.visuals().text_color(),
+        };
+        let mut toggle = None;
         let mut clicked = None;
-        let error = ui.visuals().error_fg_color;
-        let warn = ui.visuals().warn_fg_color;
+        ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
         TableBuilder::new(ui)
             .striped(true)
             .sense(egui::Sense::click())
-            .column(Column::initial(90.0))
-            .column(Column::initial(140.0))
+            .column(Column::initial(110.0))
+            .column(Column::initial(150.0))
+            .column(Column::initial(80.0))
             .column(Column::initial(200.0).clip(true))
-            .column(Column::initial(70.0))
             .column(Column::remainder().clip(true))
             .header(22.0, |mut h| {
-                for title in ["Level", "Date and time", "Source", "Event ID", "Message"] {
+                for title in ["ID", "Creation Time", "Level", "Source", "Messages"] {
                     h.col(|ui| {
                         ui.strong(title);
                     });
                 }
             })
             .body(|body| {
-                body.rows(20.0, visible.len(), |mut row| {
-                    let r = visible[row.index()];
-                    row.set_selected(self.selected == Some(r.record_id));
-                    row.col(|ui| {
-                        let color = match r.level {
-                            1 | 2 => error,
-                            3 => warn,
-                            _ => ui.visuals().text_color(),
-                        };
-                        ui.colored_label(color, level_name(r.level));
-                    });
-                    row.col(|ui| {
-                        ui.label(&r.time);
-                    });
-                    row.col(|ui| {
-                        ui.label(&r.provider);
-                    });
-                    row.col(|ui| {
-                        ui.label(r.event_id.to_string());
-                    });
-                    row.col(|ui| {
-                        ui.label(r.message.lines().next().unwrap_or_default());
-                    });
-                    if row.response().clicked() {
-                        clicked = Some(r.record_id);
+                body.rows(22.0, rows.len(), |mut row| match &rows[row.index()] {
+                    TreeRow::Group(key, (level, count, latest, msg)) => {
+                        let open = self.expanded.contains(key);
+                        row.col(|ui| {
+                            ui.horizontal(|ui| {
+                                ui.label(if open { "▾" } else { "▸" });
+                                ui.colored_label(level_color(ui, *level), wm_core::icons::WARNING);
+                                ui.strong(key.1.to_string());
+                                ui.weak(format!("({count})"));
+                            });
+                        });
+                        row.col(|ui| {
+                            ui.label(latest);
+                        });
+                        row.col(|ui| {
+                            ui.colored_label(level_color(ui, *level), level_name(*level));
+                        });
+                        row.col(|ui| {
+                            ui.label(&key.0);
+                        });
+                        row.col(|ui| {
+                            ui.label(msg);
+                        });
+                        if row.response().clicked() {
+                            toggle = Some(key.clone());
+                        }
+                    }
+                    TreeRow::Event(r) => {
+                        row.set_selected(self.selected == Some(r.record_id));
+                        row.col(|ui| {
+                            ui.horizontal(|ui| {
+                                ui.add_space(22.0);
+                                ui.weak(r.event_id.to_string());
+                            });
+                        });
+                        row.col(|ui| {
+                            ui.label(&r.time);
+                        });
+                        row.col(|ui| {
+                            ui.colored_label(level_color(ui, r.level), level_name(r.level));
+                        });
+                        row.col(|ui| {
+                            ui.label(&r.provider);
+                        });
+                        row.col(|ui| {
+                            ui.label(r.message.lines().next().unwrap_or_default());
+                        });
+                        if row.response().clicked() {
+                            clicked = Some(r.record_id);
+                        }
                     }
                 });
             });
+        if let Some(k) = toggle
+            && !self.expanded.remove(&k)
+        {
+            self.expanded.insert(k);
+        }
         if clicked.is_some() {
             self.selected = clicked;
         }
@@ -646,6 +709,24 @@ mod tests {
         <EventID Qualifiers='16384'>7036</EventID><Version>0</Version><Level>4</Level>\
         <TimeCreated SystemTime='2026-11-23T22:31:10.1234567Z'/><EventRecordID>98765</EventRecordID>\
         </System><EventData><Data Name='param1'>A &amp; B</Data></EventData></Event>";
+
+    #[test]
+    fn events_group_by_source_and_id_most_frequent_first() {
+        let mut a = parse_event_xml(SAMPLE);
+        a.message = "First line\nsecond".into();
+        let mut b = a.clone();
+        b.record_id += 1;
+        let mut c = a.clone();
+        c.event_id = 41;
+        let rows = [&a, &b, &c];
+        let g = groups(&rows);
+        assert_eq!(g.len(), 2);
+        assert_eq!(g[0].0, ("Service Control Manager".to_owned(), 7036));
+        assert_eq!(g[0].1.1, 2, "count");
+        assert_eq!(g[0].1.3, "First line");
+        assert_eq!(g[0].2.len(), 2);
+        assert_eq!(g[1].0.1, 41);
+    }
 
     #[test]
     fn parse_sample_event() {
