@@ -1042,7 +1042,10 @@ mod tests {
 
         // Undo the recycle (the newest entry): the sources come back.
         let last = journal.entries().into_iter().max_by_key(|e| e.id).unwrap();
-        journal.undo(last.id).unwrap();
+        match journal.undo(last.id) {
+            Err(e) if wm_core::safety::no_recycle_bin_here(&e) => return,
+            r => r.unwrap(),
+        }
         assert_eq!(
             std::fs::read_to_string(src.join("sub/deep/c.txt")).unwrap(),
             "gamma"

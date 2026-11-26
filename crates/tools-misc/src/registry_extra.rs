@@ -564,7 +564,8 @@ mod tests {
         assert!(
             parse_aces(&acl::reg_dacl_sddl(&key).unwrap())
                 .iter()
-                .any(|a| a.sid == me && !a.inherited)
+                // The built-in Administrator account is written as the alias "LA".
+                .any(|a| (a.sid == me || (a.sid == "LA" && me.ends_with("-500"))) && !a.inherited)
         );
         let e = journal.entries().into_iter().max_by_key(|e| e.id).unwrap();
         journal.undo(e.id).unwrap();

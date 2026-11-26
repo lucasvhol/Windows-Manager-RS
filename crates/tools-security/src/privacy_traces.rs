@@ -932,7 +932,13 @@ mod tests {
         let entries = journal.entries();
         assert_eq!(entries.len(), 1, "one journal entry per item");
 
-        journal.undo(entries[0].id).unwrap();
+        if let Err(e) = journal.undo(entries[0].id) {
+            delete_key_tree(root).unwrap();
+            if wm_core::safety::no_recycle_bin_here(&e) {
+                return;
+            }
+            panic!("{e:#}");
+        }
         assert!(registry::read_raw(&vals, "MRU0").is_some());
         assert!(registry::read_raw(&format!(r"{tree}\Sub"), "x").is_some());
         assert!(file.exists());

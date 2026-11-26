@@ -258,7 +258,13 @@ mod tests {
         set_dacl_sddl(&f, "D:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;FR;;;WD)").unwrap();
         assert_ne!(dacl_sddl(&f).unwrap(), before);
         set_dacl_sddl(&f, &before).unwrap();
-        assert_eq!(dacl_sddl(&f).unwrap(), before);
+        // Same entries and the same protection. Windows may drop the informational
+        // auto-inherited flag ("AI") when re-deriving inherited entries.
+        let after = dacl_sddl(&f).unwrap();
+        let entries = |s: &str| s[s.find('(').unwrap_or(s.len())..].to_owned();
+        let protected = |s: &str| s[..s.find('(').unwrap_or(s.len())].contains('P');
+        assert_eq!(entries(&after), entries(&before));
+        assert_eq!(protected(&after), protected(&before));
     }
 
     #[test]
