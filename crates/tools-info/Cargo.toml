@@ -15,7 +15,7 @@ sysinfo = "0.40.4"
 tracing = "0.1.44"
 windows = { version = "0.62.2", features = ["Wdk_Graphics_Direct3D", "Win32_Foundation", "Win32_System_Performance", "Win32_System_EventLog", "Win32_Devices_DeviceAndDriverInstallation", "Win32_System_Threading", "Win32_System_Diagnostics_ToolHelp", "Win32_UI_WindowsAndMessaging", "Win32_System_Power", "Win32_System_Diagnostics_Debug"] }
 winreg = "0.56.0"
-wm-core = { version = "0.1.0", path = "../core" }
+wm-core = { version = "0.2.0", path = "../core" }
 
 [dev-dependencies]
 tempfile = "3.27.0"

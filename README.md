@@ -23,7 +23,21 @@ asks whether to keep your settings and Change Journal.
    publishes it with its checksum.
 
 To build the installer locally: `cargo build --release -p win-manager`, then
-`ISCC.exe /DAppVersion=0.1.0 installerwin-manager-rs.iss` (output in `dist`).
+`ISCC.exe /DAppVersion=0.2.0 installer\win-manager-rs.iss` (output in `dist`).
+
+## What's new
+
+**0.2.0** gives every window the layout of a classic Windows utility, keeping the dark theme:
+
+- The hub has a coloured category rail, a tile grid and a slimmer header (Update and About;
+  Settings and Change Journal sit at the bottom of the rail).
+- Each tool window has an icon toolbar for its actions, an options strip, a section list or
+  item list on the left, the content in the middle and a status bar pinned to the bottom.
+- Lists are tables with row selection; empty lists show what to do next.
+- Settings pages and forms are grouped into cards.
+
+**0.1.0** was the first release: 50 tools, the Change Journal with undo, the installer and
+the in-app update check.
 
 ## Build & run
 
