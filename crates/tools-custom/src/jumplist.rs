@@ -31,7 +31,7 @@ use wm_core::{
     icons, paths, registry,
     safety::UndoAction,
     shell::{ShortcutSpec, ensure_com, make_link, read_shortcut},
-    ui::{Confirm, Message, ToolButton, frame, show_message},
+    ui::{Confirm, Message, frame, show_message},
 };
 
 const TOOL: &str = "jumplist";
@@ -366,6 +366,8 @@ pub struct JumpListLauncher {
     loaded: bool,
     list: usize,
     selected: Option<(usize, usize)>,
+    /// The Edit group's Title, Path and Parameter for the selected item.
+    edit: Option<(String, String, String)>,
     editor: Option<Editor>,
     new_list: String,
     new_group: String,
@@ -697,76 +699,108 @@ impl Tool for JumpListLauncher {
             .selected
             .and_then(|(g, i)| self.lists[self.list].groups.get(g)?.items.get(i).cloned());
         let groups_len = self.lists[self.list].groups.len();
-        match frame::toolbar(
-            ui,
-            &[
-                Some(ToolButton::new(icons::PLUS, "Add item")),
-                Some(ToolButton::new(icons::PENCIL_SIMPLE, "Edit").enabled(sel_item.is_some())),
-                Some(ToolButton::new(icons::TRASH, "Remove").enabled(sel_item.is_some())),
-                Some(
-                    ToolButton::new(icons::ARROW_UP, "Up").enabled(self.selected.is_some_and(|(_, i)| i > 0)),
-                ),
-                Some(
-                    ToolButton::new(icons::ARROW_DOWN, "Down").enabled(
-                        self.selected
-                            .is_some_and(|(g, i)| i + 1 < self.lists[self.list].groups[g].items.len()),
-                    ),
-                ),
-                None,
-                Some(ToolButton::new(icons::FLOPPY_DISK, "Back up")),
-                Some(ToolButton::new(icons::CLOCK_COUNTER_CLOCKWISE, "Restore")),
-            ],
-            |_| {},
-        ) {
-            Some(0) => {
-                self.editor = Some(Editor {
-                    at: None,
-                    group: self
-                        .selected
-                        .map_or(0, |(g, _)| g)
-                        .min(groups_len.saturating_sub(1)),
-                    source: Source::Path,
-                    title: String::new(),
-                    target: String::new(),
-                    args: String::new(),
-                    utility: 0,
-                    app: None,
+        let target_group = self
+            .selected
+            .map_or(0, |(g, _)| g)
+            .min(groups_len.saturating_sub(1));
+        let new_editor = |source: Source| Editor {
+            at: None,
+            group: target_group,
+            source,
+            title: String::new(),
+            target: String::new(),
+            args: String::new(),
+            utility: 0,
+            app: None,
+        };
+
+        // The original's top row: the list, Create, Delete, Backup, Restore, Exit.
+        let mut top = None;
+        frame::options(ui, |ui| {
+            let mut chosen = self.list;
+            egui::ComboBox::from_id_salt("jl-list")
+                .selected_text(self.lists[self.list].name.clone())
+                .width(180.0)
+                .show_ui(ui, |ui| {
+                    for (i, l) in self.lists.iter().enumerate() {
+                        ui.selectable_value(&mut chosen, i, format!("{} ({})", l.name, l.count()));
+                    }
                 });
+            if chosen != self.list {
+                self.list = chosen;
+                self.selected = None;
+                self.edit = None;
             }
-            Some(1) => {
-                if let (Some((g, i)), Some(it)) = (self.selected, &sel_item) {
-                    let t = it.target.to_string_lossy().into_owned();
-                    self.editor = Some(Editor {
-                        at: Some((self.list, g, i)),
-                        group: g,
-                        source: if t.contains("://") {
-                            Source::Url
-                        } else {
-                            Source::Path
-                        },
-                        title: it.title.clone(),
-                        target: t,
-                        args: it.args.clone(),
-                        utility: 0,
-                        app: None,
-                    });
+            ui.add(
+                egui::TextEdit::singleline(&mut self.new_list)
+                    .hint_text("New list name")
+                    .desired_width(130.0),
+            );
+            let name = self.new_list.trim().to_owned();
+            let ok = !name.is_empty()
+                && !name.contains(['\\', '/', ':', '*', '?', '"', '<', '>', '|'])
+                && !self.lists.iter().any(|l| l.name.eq_ignore_ascii_case(&name));
+            if ui
+                .add_enabled(ok, egui::Button::new(format!("{}  Create", icons::PLUS)))
+                .on_hover_text("A new list gets its own launcher in Start, which you can pin")
+                .clicked()
+            {
+                top = Some("create");
+            }
+            if ui
+                .add_enabled(
+                    self.lists[self.list].name != MAIN_LIST,
+                    egui::Button::new(format!("{}  Delete", icons::X)),
+                )
+                .clicked()
+            {
+                top = Some("delete");
+            }
+            ui.separator();
+            if ui.button(format!("{}  Backup", icons::FLOPPY_DISK)).clicked() {
+                top = Some("backup");
+            }
+            if ui
+                .button(format!("{}  Restore", icons::CLOCK_COUNTER_CLOCKWISE))
+                .clicked()
+            {
+                top = Some("restore");
+            }
+            ui.separator();
+            if ui.button(format!("{}  Exit", icons::SIGN_OUT)).clicked() {
+                top = Some("exit");
+            }
+        });
+        match top {
+            Some("create") => {
+                let name = self.new_list.trim().to_owned();
+                let r = if ctx.config.dry_run {
+                    Ok(PathBuf::new())
+                } else {
+                    create_launcher(&name)
+                };
+                match r {
+                    Ok(_) => {
+                        self.lists.push(List {
+                            name: name.clone(),
+                            groups: vec![Group::default()],
+                        });
+                        self.list = self.lists.len() - 1;
+                        self.selected = None;
+                        self.new_list.clear();
+                        self.save_and_apply(ctx, format!("Added the list \"{name}\""));
+                    }
+                    Err(e) => self.message = Some(Err(format!("{e:#}"))),
                 }
             }
-            Some(2) => {
-                if let Some((g, i)) = self.selected.take() {
-                    let removed = self.lists[self.list].groups[g].items.remove(i);
-                    self.save_and_apply(ctx, format!("Removed \"{}\" from the jump list", removed.title));
-                }
-            }
-            Some(n @ (3 | 4)) => {
-                if let Some((g, i)) = self.selected {
-                    let j = if n == 3 { i - 1 } else { i + 1 };
-                    self.lists[self.list].groups[g].items.swap(i, j);
-                    self.selected = Some((g, j));
-                    self.save_and_apply(ctx, "Reordered the jump list".into());
-                }
-            }
-            Some(6) => {
+            Some("delete") => self.confirm.ask(
+                format!(
+                    "Delete the list \"{}\" and its Start menu launcher?",
+                    self.lists[self.list].name
+                ),
+                Ask::DeleteList(self.list),
+            ),
+            Some("backup") => {
                 if let Some(f) = rfd::FileDialog::new()
                     .set_file_name("Jump lists.toml")
                     .add_filter("Jump lists", &["toml"])
@@ -779,7 +813,7 @@ impl Tool for JumpListLauncher {
                     );
                 }
             }
-            Some(7) => {
+            Some("restore") => {
                 if let Some(f) = rfd::FileDialog::new()
                     .add_filter("Jump lists", &["toml"])
                     .pick_file()
@@ -790,105 +824,155 @@ impl Tool for JumpListLauncher {
                     );
                 }
             }
+            Some("exit") => ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close),
             _ => {}
         }
-        frame::options(ui, |ui| {
-            // Lists, groups and the maximum count.
-            ui.horizontal(|ui| {
-                ui.label("List");
-                let mut chosen = self.list;
-                egui::ComboBox::from_id_salt("jl-list")
-                    .selected_text(self.lists[self.list].name.clone())
-                    .show_ui(ui, |ui| {
-                        for (i, l) in self.lists.iter().enumerate() {
-                            ui.selectable_value(&mut chosen, i, format!("{} ({})", l.name, l.count()));
-                        }
-                    });
-                if chosen != self.list {
-                    self.list = chosen;
-                    self.selected = None;
-                }
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.new_list)
-                        .hint_text("New list name")
-                        .desired_width(130.0),
-                );
-                let name = self.new_list.trim().to_owned();
-                let ok = !name.is_empty()
-                    && !name.contains(['\\', '/', ':', '*', '?', '"', '<', '>', '|'])
-                    && !self.lists.iter().any(|l| l.name.eq_ignore_ascii_case(&name));
-                if ui.add_enabled(ok, egui::Button::new("Add list")).clicked() {
-                    let r = if ctx.config.dry_run {
-                        Ok(PathBuf::new())
-                    } else {
-                        create_launcher(&name)
-                    };
-                    match r {
-                        Ok(_) => {
-                            self.lists.push(List {
-                                name: name.clone(),
-                                groups: vec![Group::default()],
-                            });
-                            self.list = self.lists.len() - 1;
-                            self.new_list.clear();
-                            self.save_and_apply(ctx, format!("Added the list \"{name}\""));
-                        }
-                        Err(e) => self.message = Some(Err(format!("{e:#}"))),
-                    }
-                }
-                if self.lists[self.list].name != MAIN_LIST && ui.button("Delete list").clicked() {
-                    self.confirm.ask(
-                        format!(
-                            "Delete the list \"{}\" and its Start menu launcher?",
-                            self.lists[self.list].name
-                        ),
-                        Ask::DeleteList(self.list),
-                    );
-                }
-            });
-            ui.horizontal(|ui| {
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.new_group)
-                        .hint_text("New group name")
-                        .desired_width(130.0),
-                );
-                let g = self.new_group.trim().to_owned();
-                if ui
-                    .add_enabled(
-                        !g.is_empty()
-                            && !self.lists[self.list]
-                                .groups
-                                .iter()
-                                .any(|x| x.name.eq_ignore_ascii_case(&g)),
-                        egui::Button::new("Add group"),
-                    )
-                    .clicked()
-                {
-                    self.lists[self.list].groups.push(Group {
-                        name: g.clone(),
-                        items: Vec::new(),
-                    });
-                    self.new_group.clear();
-                    self.save_and_apply(ctx, format!("Added the group \"{g}\""));
-                }
-                ui.separator();
-                ui.label("Recent items shown in jump lists:");
-                let mut max = max_items();
-                if ui.add(egui::DragValue::new(&mut max).range(0..=60)).changed() {
-                    self.message = Some(if ctx.config.dry_run {
-                        Ok(ctx.i18n.tr("common-dry-run-skip"))
-                    } else {
-                        set_max_items(ctx, max)
-                            .map(|_| "Saved.".to_owned())
-                            .map_err(|e| format!("{e:#}"))
-                    });
-                }
-            });
+
+        // The original's action column.
+        let mut act = None;
+        let can_up = self.selected.is_some_and(|(_, i)| i > 0);
+        let can_down = self
+            .selected
+            .is_some_and(|(g, i)| i + 1 < self.lists[self.list].groups[g].items.len());
+        let count = self.lists[self.list].count();
+        frame::right(ui, 200.0, |ui| {
+            ui.add(
+                egui::TextEdit::singleline(&mut self.new_group)
+                    .hint_text("New group name")
+                    .desired_width(ui.available_width()),
+            );
+            let g = self.new_group.trim().to_owned();
+            let ok = !g.is_empty()
+                && !self.lists[self.list]
+                    .groups
+                    .iter()
+                    .any(|x| x.name.eq_ignore_ascii_case(&g));
+            if frame::action(ui, icons::PLUS, "Add Group", ok) {
+                act = Some("group");
+            }
+            if frame::action(ui, icons::PLUS, "Add File", true) {
+                act = Some("file");
+            }
+            if frame::action(ui, icons::PLUS, "Add Folder", true) {
+                act = Some("folder");
+            }
+            if frame::action(ui, icons::PLUS, "Add URL", true) {
+                act = Some("url");
+            }
+            if frame::action(ui, icons::PLUS, "Add Start Menu", true) {
+                act = Some("start");
+            }
+            if frame::action(ui, icons::PLUS, "Add Utility", true) {
+                act = Some("utility");
+            }
+            if frame::action(ui, icons::PLUS, "Add Windows app", true) {
+                act = Some("app");
+            }
+            ui.separator();
+            if frame::action(ui, icons::ARROW_UP, "Up", can_up) {
+                act = Some("up");
+            }
+            if frame::action(ui, icons::ARROW_DOWN, "Down", can_down) {
+                act = Some("down");
+            }
+            ui.separator();
+            if frame::action(ui, icons::X, "Remove", sel_item.is_some()) {
+                act = Some("remove");
+            }
+            if frame::action(ui, icons::X, "Remove All", count > 0) {
+                act = Some("removeall");
+            }
         });
+        match act {
+            Some("group") => {
+                let g = self.new_group.trim().to_owned();
+                self.lists[self.list].groups.push(Group {
+                    name: g.clone(),
+                    items: Vec::new(),
+                });
+                self.new_group.clear();
+                self.save_and_apply(ctx, format!("Added the group \"{g}\""));
+            }
+            Some(kind @ ("file" | "folder")) => {
+                let picked = if kind == "file" {
+                    rfd::FileDialog::new().pick_file()
+                } else {
+                    rfd::FileDialog::new().pick_folder()
+                };
+                if let Some(p) = picked {
+                    let item = Item {
+                        title: p
+                            .file_stem()
+                            .or(p.file_name())
+                            .map(|s| s.to_string_lossy().into_owned())
+                            .unwrap_or_else(|| p.display().to_string()),
+                        target: p,
+                        args: String::new(),
+                    };
+                    let list = &mut self.lists[self.list];
+                    list.groups[target_group].items.push(item.clone());
+                    self.selected = Some((target_group, list.groups[target_group].items.len() - 1));
+                    self.edit = None;
+                    self.save_and_apply(ctx, format!("Added \"{}\" to the jump list", item.title));
+                }
+            }
+            Some("url") => self.editor = Some(new_editor(Source::Url)),
+            Some("start") => self.editor = Some(new_editor(Source::StartItem)),
+            Some("utility") => {
+                let mut e = new_editor(Source::Utility);
+                e.title = crate::hotkeys::utilities()[0].0.to_owned();
+                self.editor = Some(e);
+            }
+            Some("app") => {
+                self.editor = Some(new_editor(Source::App));
+                if self.apps.is_empty() && self.apps_task.is_none() {
+                    self.apps_task = Some(wm_core::task::BackgroundTask::spawn(ui.ctx(), |_| {
+                        crate::hotkeys::store_apps()
+                    }));
+                }
+            }
+            Some(dir @ ("up" | "down")) => {
+                if let Some((g, i)) = self.selected {
+                    let j = if dir == "up" { i - 1 } else { i + 1 };
+                    self.lists[self.list].groups[g].items.swap(i, j);
+                    self.selected = Some((g, j));
+                    self.edit = None;
+                    self.save_and_apply(ctx, "Reordered the jump list".into());
+                }
+            }
+            Some("remove") => {
+                if let Some((g, i)) = self.selected.take() {
+                    let removed = self.lists[self.list].groups[g].items.remove(i);
+                    self.edit = None;
+                    self.save_and_apply(ctx, format!("Removed \"{}\" from the jump list", removed.title));
+                }
+            }
+            Some("removeall") => {
+                for g in &mut self.lists[self.list].groups {
+                    g.items.clear();
+                }
+                self.selected = None;
+                self.edit = None;
+                self.save_and_apply(ctx, "Removed every item from the jump list".into());
+            }
+            _ => {}
+        }
+
+        // Status bar: the list's name and count, and the original's maximum.
         let hidden_headings =
             self.lists[self.list].groups.iter().any(|g| !g.name.is_empty()) && !recent_items_on();
-        let count = self.lists[self.list].count();
-        frame::status(ui, &format!("{count} items in this list"), |ui| {
+        let name = self.lists[self.list].name.clone();
+        let mut max_changed = None;
+        frame::status(ui, &format!("Name: {name}  |  Count: {count}"), |ui| {
+            let mut max = max_items();
+            if ui
+                .add(egui::DragValue::new(&mut max).range(0..=60))
+                .on_hover_text("How many recent items jump lists show")
+                .changed()
+            {
+                max_changed = Some(max);
+            }
+            ui.weak("Maximum allowable number");
             if hidden_headings {
                 ui.colored_label(ui.visuals().warn_fg_color, "Group headings are hidden")
                     .on_hover_text(
@@ -897,29 +981,48 @@ impl Tool for JumpListLauncher {
                     );
             }
         });
+        if let Some(max) = max_changed {
+            self.message = Some(if ctx.config.dry_run {
+                Ok(ctx.i18n.tr("common-dry-run-skip"))
+            } else {
+                set_max_items(ctx, max)
+                    .map(|_| "Saved.".to_owned())
+                    .map_err(|e| format!("{e:#}"))
+            });
+        }
+        self.edit_bar(ui, ctx, sel_item.as_ref());
+
         let mut click = None;
         let mut remove_group = None;
         frame::central(ui, |ui| {
             show_message(ui, &self.message);
+            ui.strong("Title");
+            ui.separator();
             for (g, group) in self.lists[self.list].groups.iter().enumerate() {
                 ui.horizontal(|ui| {
-                    ui.strong(if group.name.is_empty() {
-                        "Tasks"
-                    } else {
-                        &group.name
-                    });
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "{}  {}",
+                            icons::FOLDERS,
+                            if group.name.is_empty() {
+                                "Tasks"
+                            } else {
+                                &group.name
+                            }
+                        ))
+                        .strong(),
+                    );
                     ui.weak(format!("{} items", group.items.len()));
                     if !group.name.is_empty() && ui.small_button("Remove group").clicked() {
                         remove_group = Some(g);
                     }
                 });
-                if group.items.is_empty() {
-                    ui.weak("    (empty)");
-                }
                 for (i, it) in group.items.iter().enumerate() {
                     ui.horizontal(|ui| {
-                        ui.add_space(16.0);
-                        let r = ui.selectable_label(self.selected == Some((g, i)), &it.title);
+                        ui.add_space(22.0);
+                        let r = ui
+                            .selectable_label(self.selected == Some((g, i)), &it.title)
+                            .on_hover_text(format!("{} {}", it.target.display(), it.args).trim().to_owned());
                         if r.clicked() {
                             click = Some((g, i));
                         }
@@ -927,19 +1030,76 @@ impl Tool for JumpListLauncher {
                             let s = spec_for(it);
                             let _ = wm_core::shell::shell_open(&s.target.display().to_string(), &s.args);
                         }
-                        ui.weak(format!("{} {}", it.target.display(), it.args).trim().to_owned());
                     });
                 }
                 ui.add_space(6.0);
             }
         });
-        if click.is_some() {
+        if click.is_some() && click != self.selected {
             self.selected = click;
+            self.edit = None;
         }
         if let Some(g) = remove_group {
             let removed = self.lists[self.list].groups.remove(g);
             self.selected = None;
+            self.edit = None;
             self.save_and_apply(ctx, format!("Removed the group \"{}\"", removed.name));
+        }
+    }
+}
+
+impl JumpListLauncher {
+    /// The original's Edit group: Title, Parameter and Path of the selected item.
+    fn edit_bar(&mut self, ui: &mut egui::Ui, ctx: &mut AppCtx<'_>, sel: Option<&Item>) {
+        if self.edit.is_none()
+            && let Some(it) = sel
+        {
+            self.edit = Some((it.title.clone(), it.target.display().to_string(), it.args.clone()));
+        }
+        let mut save = false;
+        frame::edit_bar(ui, |ui| {
+            let enabled = sel.is_some();
+            let mut empty = (String::new(), String::new(), String::new());
+            let (title, path, args) = self.edit.as_mut().filter(|_| enabled).unwrap_or(&mut empty);
+            let w = ((ui.available_width() - 200.0) / 2.0).max(160.0);
+            ui.add_enabled_ui(enabled, |ui| {
+                ui.horizontal(|ui| {
+                    ui.add_sized([64.0, 20.0], egui::Label::new("Title"));
+                    ui.add(egui::TextEdit::singleline(title).desired_width(w));
+                    ui.add_sized([70.0, 20.0], egui::Label::new("Parameter"));
+                    ui.add(egui::TextEdit::singleline(args).desired_width(w));
+                });
+                ui.horizontal(|ui| {
+                    ui.add_sized([64.0, 20.0], egui::Label::new("Path"));
+                    ui.add(egui::TextEdit::singleline(path).desired_width(w * 2.0 + 78.0));
+                    if ui.button(icons::FOLDER_OPEN).on_hover_text("Browse").clicked()
+                        && let Some(p) = rfd::FileDialog::new().pick_file()
+                    {
+                        *path = p.display().to_string();
+                    }
+                });
+                save = ui
+                    .add_enabled(
+                        !title.trim().is_empty() && !path.trim().is_empty(),
+                        egui::Button::new(format!("{}  Save", icons::FLOPPY_DISK)),
+                    )
+                    .clicked();
+            })
+            .response
+            .on_disabled_hover_text("Select an item to edit it");
+        });
+        if save
+            && let (Some((g, i)), Some((title, path, args))) = (self.selected, self.edit.take())
+            && let Some(it) = self.lists[self.list]
+                .groups
+                .get_mut(g)
+                .and_then(|grp| grp.items.get_mut(i))
+        {
+            it.title = title.trim().to_owned();
+            it.target = PathBuf::from(path.trim().trim_matches('"'));
+            it.args = args.trim().to_owned();
+            let what = format!("Updated \"{}\" in the jump list", it.title);
+            self.save_and_apply(ctx, what);
         }
     }
 }
