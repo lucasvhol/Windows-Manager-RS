@@ -5,26 +5,28 @@
 //! hidden, system or read-only files. Marked copies go to the Recycle Bin or another
 //! folder; single files can be renamed. Every change is journaled and undoable.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use anyhow::{Context, Result};
+use egui_extras::{Column, TableBuilder};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use walkdir::WalkDir;
 use wm_core::{
     AppCtx, Category, Layout, Tool,
+    drives::{self, DriveInfo, DriveKind},
     egui::{self, Vec2},
     icons,
     paths::{move_path, wildcard_match},
     safety::UndoAction,
-    shell::reveal_in_explorer,
+    shell::{reveal_in_explorer, show_properties},
     task::{BackgroundTask, Progress},
     tool_settings,
-    ui::{Confirm, Message, ToolButton, drive_picker, empty_state, format_bytes, frame, show_message},
+    ui::{Confirm, Message, ToolButton, empty_state, format_bytes, frame, show_message},
 };
 
 use crate::desktop::unique_destination;
@@ -407,6 +409,16 @@ pub struct DuplicateFinder {
     focused: Option<(usize, usize)>,
     renaming: Option<(PathBuf, String)>,
     scanned: bool,
+    /// The "Select Drives" panel is open.
+    show_select: bool,
+    /// The marking presets strip (the original's Selection menu) is shown.
+    show_selection: bool,
+    show_options: bool,
+    /// Groups folded in the results.
+    collapsed: HashSet<usize>,
+    drives: Vec<DriveInfo>,
+    /// The highlighted folder in the folder list.
+    folder_pick: Option<usize>,
     confirm: Confirm<Ask>,
     message: Message,
 }
@@ -421,6 +433,12 @@ impl Default for DuplicateFinder {
             focused: None,
             renaming: None,
             scanned: false,
+            show_select: true,
+            show_selection: true,
+            show_options: false,
+            collapsed: HashSet::new(),
+            drives: Vec::new(),
+            folder_pick: None,
             confirm: Confirm::default(),
             message: None,
         }
@@ -447,32 +465,6 @@ impl DuplicateFinder {
 
     fn criteria_panel(&mut self, ui: &mut egui::Ui) {
         let c = &mut self.criteria;
-        ui.strong("Search in");
-        let mut remove = None;
-        for (i, f) in c.folders.iter().enumerate() {
-            ui.horizontal(|ui| {
-                if ui.small_button("✕").clicked() {
-                    remove = Some(i);
-                }
-                ui.label(f.display().to_string())
-                    .on_hover_text(f.display().to_string());
-            });
-        }
-        if let Some(i) = remove {
-            c.folders.remove(i);
-        }
-        if ui.button("Add folder…").clicked()
-            && let Some(d) = rfd::FileDialog::new().pick_folder()
-            && !c.folders.contains(&d)
-        {
-            c.folders.push(d);
-        }
-        ui.checkbox(&mut c.only_folders, "Only these folders");
-        if !c.only_folders {
-            ui.weak("Also search these drives (Windows, program and app-data folders are skipped):");
-            ui.horizontal_wrapped(|ui| drive_picker(ui, &mut c.drives));
-        }
-        ui.separator();
         ui.strong("Match by");
         for m in MatchBy::ALL {
             ui.radio_value(&mut c.match_by, m, m.label());
@@ -656,8 +648,15 @@ impl Tool for DuplicateFinder {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, ctx: &mut AppCtx<'_>) {
+        if self.drives.is_empty() {
+            self.drives = drives::list()
+                .into_iter()
+                .filter(|d| matches!(d.kind, DriveKind::Fixed | DriveKind::Removable))
+                .collect();
+        }
         self.handle_confirm(ui, ctx);
         self.rename_dialog(ui, ctx);
+        self.options_window(ui);
         if let Some(t) = &mut self.task {
             t.poll();
             if let Some(r) = t.take_result() {
@@ -670,6 +669,7 @@ impl Tool for DuplicateFinder {
                         self.marked = apply_preset(&groups, &none, &Preset::KeepOldest);
                         self.groups = groups;
                         self.focused = None;
+                        self.collapsed.clear();
                     }
                     Err(e) => self.message = Some(Err(e)),
                 }
@@ -700,21 +700,38 @@ impl Tool for DuplicateFinder {
             .and_then(|(g, f)| self.groups.get(g).and_then(|g| g.files.get(f)))
             .map(|f| f.path.clone());
         let can_search = !self.criteria.folders.is_empty() || !self.criteria.only_folders;
+        let has = !self.groups.is_empty();
+        let all_open = self.collapsed.is_empty();
 
+        // The original's toolbar. Selection toggles the strip of marking presets
+        // (the original's drop-down); Options opens the search criteria.
         let clicked = frame::toolbar(
             ui,
             &[
                 Some(if busy {
                     ToolButton::new(icons::STOP, "Stop")
                 } else {
-                    ToolButton::new(icons::MAGNIFYING_GLASS, "Find").enabled(can_search)
+                    ToolButton::new(icons::MAGNIFYING_GLASS, "Scan").enabled(can_search)
                 }),
+                Some(ToolButton::new(icons::CHECK, "Selection").enabled(has)),
+                Some(
+                    ToolButton::new(
+                        if all_open { icons::MINUS } else { icons::PLUS },
+                        if all_open { "Collapse All" } else { "Expand All" },
+                    )
+                    .enabled(has),
+                ),
                 None,
-                Some(ToolButton::new(icons::RECYCLE, "Recycle").enabled(!marked.is_empty())),
-                Some(ToolButton::new(icons::FOLDER_OPEN, "Move to…").enabled(!marked.is_empty())),
+                Some(ToolButton::new(icons::FOLDER_OPEN, "Open Folder").enabled(focused.is_some())),
+                Some(ToolButton::new(icons::CLIPBOARD_TEXT, "Properties").enabled(focused.is_some())),
                 None,
+                Some(ToolButton::new(icons::PLAY, "Launch").enabled(focused.is_some())),
                 Some(ToolButton::new(icons::PENCIL_SIMPLE, "Rename").enabled(focused.is_some())),
-                Some(ToolButton::new(icons::ARROW_SQUARE_OUT, "Show").enabled(focused.is_some())),
+                Some(ToolButton::new(icons::X, "Delete").enabled(!marked.is_empty())),
+                None,
+                Some(ToolButton::new(icons::GEAR, "Options")),
+                None,
+                Some(ToolButton::new(icons::SIGN_OUT, "Exit")),
             ],
             |_| {},
         );
@@ -732,23 +749,32 @@ impl Tool for DuplicateFinder {
                     Ok(find_duplicates(&c, Some(p)))
                 }));
             }
-            Some(2) => self.confirm.ask(
-                format!(
-                    "Move {} files ({}) to the Recycle Bin? At least one copy in each group is always kept.",
-                    marked.len(),
-                    format_bytes(marked_bytes)
-                ),
-                Ask::Recycle(marked.clone()),
-            ),
-            Some(3) => {
-                if let Some(dir) = rfd::FileDialog::new().pick_folder() {
-                    self.confirm.ask(
-                        format!("Move {} marked files to {}?", marked.len(), dir.display()),
-                        Ask::Move(marked.clone(), dir),
-                    );
+            Some(1) => self.show_selection = !self.show_selection,
+            Some(2) => {
+                if all_open {
+                    self.collapsed = (0..self.groups.len()).collect();
+                } else {
+                    self.collapsed.clear();
+                }
+            }
+            Some(4) => {
+                if let Some(p) = &focused {
+                    reveal_in_explorer(p);
                 }
             }
             Some(5) => {
+                if let Some(p) = &focused
+                    && let Err(e) = show_properties(p)
+                {
+                    self.message = Some(Err(format!("{e:#}")));
+                }
+            }
+            Some(7) => {
+                if let Some(p) = &focused {
+                    let _ = wm_core::shell::shell_open(&p.display().to_string(), "");
+                }
+            }
+            Some(8) => {
                 if let Some(p) = &focused {
                     let name = p
                         .file_name()
@@ -757,18 +783,24 @@ impl Tool for DuplicateFinder {
                     self.renaming = Some((p.clone(), name));
                 }
             }
-            Some(6) => {
-                if let Some(p) = &focused {
-                    reveal_in_explorer(p);
-                }
-            }
+            Some(9) => self.confirm.ask(
+                format!(
+                    "Move {} files ({}) to the Recycle Bin? At least one copy in each group is always kept.",
+                    marked.len(),
+                    format_bytes(marked_bytes)
+                ),
+                Ask::Recycle(marked.clone()),
+            ),
+            Some(11) => self.show_options = !self.show_options,
+            Some(13) => ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close),
             _ => {}
         }
+
         // Status bar: progress while searching, totals afterwards.
         let wasted: u64 = self.groups.iter().map(Group::wasted).sum();
         let status = match &self.task {
             Some(t) => t.status.clone(),
-            None if self.groups.is_empty() => "Ready".into(),
+            None if self.groups.is_empty() => "Duplicate Files Finder".into(),
             None => format!(
                 "{} groups, {} reclaimable · {} marked ({})",
                 self.groups.len(),
@@ -783,11 +815,9 @@ impl Tool for DuplicateFinder {
                 ui.add(egui::ProgressBar::new(p).desired_width(200.0).show_percentage());
             }
         });
-        frame::left(ui, 270.0, |ui| {
-            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
-            self.criteria_panel(ui);
-        });
-        if !self.groups.is_empty() {
+        self.select_panel(ui);
+        if has && self.show_selection {
+            let mut move_to_dir = false;
             frame::options(ui, |ui| {
                 ui.label("Mark all but the");
                 let mut preset = None;
@@ -816,7 +846,17 @@ impl Tool for DuplicateFinder {
                 if let Some(p) = preset {
                     self.marked = apply_preset(&self.groups, &self.marked, &p);
                 }
+                ui.separator();
+                move_to_dir = ui
+                    .add_enabled(!marked.is_empty(), egui::Button::new("Move marked to…").small())
+                    .clicked();
             });
+            if move_to_dir && let Some(dir) = rfd::FileDialog::new().pick_folder() {
+                self.confirm.ask(
+                    format!("Move {} marked files to {}?", marked.len(), dir.display()),
+                    Ask::Move(marked.clone(), dir),
+                );
+            }
         }
         frame::central_fixed(ui, |ui| self.results(ui, busy));
     }
@@ -827,7 +867,158 @@ impl Tool for DuplicateFinder {
 }
 
 impl DuplicateFinder {
-    /// The results list (or a placeholder before the first search).
+    /// The original's "Select Drives" panel: the drive list on the left and the
+    /// "Search only the specified folders" switch with the folder list on the right.
+    fn select_panel(&mut self, ui: &mut egui::Ui) {
+        let mut toggle = false;
+        egui::Panel::top("dup-select")
+            .resizable(false)
+            .frame(egui::Frame::new().inner_margin(egui::Margin::symmetric(10, 4)))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    let w = ui.available_width();
+                    ui.add_space((w / 2.0 - 50.0).max(0.0));
+                    ui.label("Select Drives");
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        toggle = ui
+                            .small_button(if self.show_select { "«" } else { "»" })
+                            .on_hover_text(if self.show_select { "Hide" } else { "Show" })
+                            .clicked();
+                    });
+                });
+                if !self.show_select {
+                    return;
+                }
+                ui.separator();
+                ui.columns(2, |cols| {
+                    let c = &mut self.criteria;
+                    let ui = &mut cols[0];
+                    ui.add_enabled_ui(!c.only_folders, |ui| {
+                        egui::Grid::new("dup-drives")
+                            .num_columns(2)
+                            .striped(true)
+                            .spacing([8.0, 4.0])
+                            .show(ui, |ui| {
+                                ui.strong("Drive");
+                                ui.strong("Free / Total (Free%)");
+                                ui.end_row();
+                                let system = wm_core::paths::expand_env("%SystemDrive%")
+                                    .chars()
+                                    .next()
+                                    .unwrap_or('C')
+                                    .to_ascii_uppercase();
+                                for d in &self.drives {
+                                    let mut on = if c.drives.is_empty() {
+                                        d.letter == system
+                                    } else {
+                                        c.drives.contains(&d.letter)
+                                    };
+                                    ui.horizontal(|ui| {
+                                        if ui.checkbox(&mut on, "").changed() {
+                                            if c.drives.is_empty() {
+                                                c.drives.push(system);
+                                            }
+                                            c.drives.retain(|x| *x != d.letter);
+                                            if on {
+                                                c.drives.push(d.letter);
+                                            }
+                                            c.drives.sort_unstable();
+                                        }
+                                        ui.label(egui::RichText::new(icons::HARD_DRIVES).size(20.0));
+                                        let name = if d.label.is_empty() {
+                                            format!("{}:\\", d.letter)
+                                        } else {
+                                            format!("{}:\\ ({})", d.letter, d.label)
+                                        };
+                                        ui.label(format!("{name}\n{} {}", d.file_system, d.kind.label()));
+                                    });
+                                    let free = d.free as f32 / d.total.max(1) as f32;
+                                    ui.add(
+                                        egui::ProgressBar::new(1.0 - free)
+                                            .desired_width(ui.available_width().max(140.0))
+                                            .text(format!(
+                                                "{}/{} ({:.0}%)",
+                                                format_bytes(d.free),
+                                                format_bytes(d.total),
+                                                free * 100.0
+                                            )),
+                                    );
+                                    ui.end_row();
+                                }
+                            });
+                    })
+                    .response
+                    .on_disabled_hover_text(
+                        "Turn off \"Search only the specified folders\" to search drives",
+                    );
+
+                    let ui = &mut cols[1];
+                    ui.checkbox(&mut c.only_folders, "Search only the specified folders");
+                    let mut remove = None;
+                    ui.horizontal(|ui| {
+                        egui::Frame::group(ui.style()).show(ui, |ui| {
+                            ui.set_width((ui.available_width() - 48.0).max(120.0));
+                            ui.set_min_height(90.0);
+                            ui.vertical(|ui| {
+                                egui::ScrollArea::vertical().max_height(120.0).show(ui, |ui| {
+                                    for (i, f) in c.folders.iter().enumerate() {
+                                        let sel = self.folder_pick == Some(i);
+                                        if ui
+                                            .selectable_label(sel, f.display().to_string())
+                                            .on_hover_text(f.display().to_string())
+                                            .clicked()
+                                        {
+                                            self.folder_pick = Some(i);
+                                        }
+                                    }
+                                })
+                            });
+                        });
+                        ui.vertical(|ui| {
+                            if ui.button(icons::PLUS).on_hover_text("Add a folder").clicked()
+                                && let Some(d) = rfd::FileDialog::new().pick_folder()
+                                && !c.folders.contains(&d)
+                            {
+                                c.folders.push(d);
+                            }
+                            if ui
+                                .add_enabled(self.folder_pick.is_some(), egui::Button::new(icons::MINUS))
+                                .on_hover_text("Remove the selected folder")
+                                .clicked()
+                            {
+                                remove = self.folder_pick.take();
+                            }
+                        });
+                    });
+                    if let Some(i) = remove
+                        && i < c.folders.len()
+                    {
+                        c.folders.remove(i);
+                    }
+                    if !c.only_folders {
+                        ui.weak("Windows, program and app-data folders on the drives are skipped.");
+                    }
+                });
+            });
+        if toggle {
+            self.show_select = !self.show_select;
+        }
+    }
+
+    fn options_window(&mut self, ui: &mut egui::Ui) {
+        let mut open = self.show_options;
+        egui::Window::new("Options")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .default_width(320.0)
+            .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
+            .show(ui.ctx(), |ui| self.criteria_panel(ui));
+        self.show_options = open;
+    }
+
+    /// The results: one header row per group, then its files (Name, Path, Size, Date
+    /// Modified), drawn as a flat list so only visible rows are laid out.
     fn results(&mut self, ui: &mut egui::Ui, busy: bool) {
         show_message(ui, &self.message);
         if self.groups.is_empty() {
@@ -838,38 +1029,76 @@ impl DuplicateFinder {
                     ui,
                     icons::COPY,
                     "Find files stored more than once",
-                    "Choose where to look and how to compare on the left, then press Find.",
+                    "Choose drives or folders above (Options sets how files are compared), then press Scan.",
                 );
             }
             return;
         }
 
-        // One flat list (group headers and files) so only visible rows are drawn.
         let rows: Vec<(usize, Option<usize>)> = self
             .groups
             .iter()
             .enumerate()
             .flat_map(|(gi, g)| {
-                std::iter::once((gi, None)).chain((0..g.files.len()).map(move |fi| (gi, Some(fi))))
+                let open = !self.collapsed.contains(&gi);
+                std::iter::once((gi, None)).chain(
+                    (0..g.files.len())
+                        .filter(move |_| open)
+                        .map(move |fi| (gi, Some(fi))),
+                )
             })
             .collect();
-        let row_h = 22.0;
         let mut open = None;
-        egui::ScrollArea::vertical()
-            .auto_shrink(false)
-            .show_rows(ui, row_h, rows.len(), |ui, range| {
-                ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
-                for &(gi, fi) in &rows[range] {
+        let mut fold = None;
+        let mut focus = None;
+        ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
+        TableBuilder::new(ui)
+            .striped(true)
+            .sense(egui::Sense::click())
+            .column(Column::exact(44.0))
+            .column(Column::initial(220.0).clip(true))
+            .column(Column::remainder().at_least(200.0).clip(true))
+            .column(Column::initial(80.0))
+            .column(Column::initial(130.0))
+            .header(22.0, |mut h| {
+                for t in ["", "Name", "Path", "Size", "Date Modified"] {
+                    h.col(|ui| {
+                        ui.strong(t);
+                    });
+                }
+            })
+            .body(|body| {
+                body.rows(22.0, rows.len(), |mut row| {
+                    let (gi, fi) = rows[row.index()];
                     let g = &self.groups[gi];
-                    ui.horizontal(|ui| {
-                        ui.set_height(row_h);
-                        let Some(fi) = fi else {
-                            ui.strong(format!("{} × {}", g.files.len(), format_bytes(g.size())));
-                            ui.weak(g.name());
-                            return;
-                        };
-                        let f = &g.files[fi];
-                        ui.add_space(12.0);
+                    let Some(fi) = fi else {
+                        let closed = self.collapsed.contains(&gi);
+                        row.col(|ui| {
+                            ui.label(if closed { "▶" } else { "▼" });
+                        });
+                        row.col(|ui| {
+                            ui.strong(g.name());
+                        });
+                        row.col(|ui| {
+                            ui.weak(format!(
+                                "{} copies, {} reclaimable",
+                                g.files.len(),
+                                format_bytes(g.wasted())
+                            ));
+                        });
+                        row.col(|ui| {
+                            ui.strong(format_bytes(g.size()));
+                        });
+                        row.col(|_| {});
+                        if row.response().clicked() {
+                            fold = Some(gi);
+                        }
+                        return;
+                    };
+                    let f = &g.files[fi];
+                    row.set_selected(self.focused == Some((gi, fi)));
+                    row.col(|ui| {
+                        ui.add_space(16.0);
                         let mut m = self.marked[gi][fi];
                         // Never allow marking the last unmarked copy.
                         let others_kept = self.marked[gi].iter().enumerate().any(|(j, x)| j != fi && !x);
@@ -880,32 +1109,54 @@ impl DuplicateFinder {
                         {
                             self.marked[gi][fi] = m;
                         }
-                        let modified = f
-                            .modified
-                            .map(|t| {
-                                chrono::DateTime::<chrono::Local>::from(t)
-                                    .format("%Y-%m-%d %H:%M")
-                                    .to_string()
-                            })
-                            .unwrap_or_default();
-                        ui.add_sized(
-                            [110.0, row_h],
-                            egui::Label::new(egui::RichText::new(modified).weak()),
-                        );
-                        ui.add_sized([70.0, row_h], egui::Label::new(format_bytes(f.size)));
-                        let sel = self.focused == Some((gi, fi));
-                        let r = ui
-                            .selectable_label(sel, f.path.display().to_string())
-                            .on_hover_text(f.path.display().to_string());
-                        if r.clicked() {
-                            self.focused = Some((gi, fi));
-                        }
-                        if r.double_clicked() {
-                            open = Some(f.path.clone());
-                        }
                     });
-                }
+                    row.col(|ui| {
+                        ui.label(
+                            f.path
+                                .file_name()
+                                .map(|n| n.to_string_lossy().into_owned())
+                                .unwrap_or_default(),
+                        );
+                    });
+                    row.col(|ui| {
+                        let dir = f
+                            .path
+                            .parent()
+                            .map(|p| p.display().to_string())
+                            .unwrap_or_default();
+                        ui.label(&dir).on_hover_text(f.path.display().to_string());
+                    });
+                    row.col(|ui| {
+                        ui.label(format_bytes(f.size));
+                    });
+                    row.col(|ui| {
+                        ui.label(
+                            f.modified
+                                .map(|t| {
+                                    chrono::DateTime::<chrono::Local>::from(t)
+                                        .format("%Y-%m-%d %H:%M")
+                                        .to_string()
+                                })
+                                .unwrap_or_default(),
+                        );
+                    });
+                    let r = row.response();
+                    if r.clicked() {
+                        focus = Some((gi, fi));
+                    }
+                    if r.double_clicked() {
+                        open = Some(f.path.clone());
+                    }
+                });
             });
+        if let Some(gi) = fold
+            && !self.collapsed.remove(&gi)
+        {
+            self.collapsed.insert(gi);
+        }
+        if focus.is_some() {
+            self.focused = focus;
+        }
         if let Some(p) = open {
             let _ = wm_core::shell::shell_open(&p.display().to_string(), "");
         }
