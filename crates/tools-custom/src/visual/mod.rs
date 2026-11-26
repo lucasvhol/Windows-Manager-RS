@@ -13,13 +13,13 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 use wm_core::{
-    AppCtx, Category, Tool,
+    AppCtx, Category, Layout, Tool,
     egui::{self, TextureHandle},
     file_icon, icons as glyph,
     shell::pick_icon,
     tool_settings,
     tweaks::TweakPanel,
-    ui::{Confirm, Message, section_nav, show_message},
+    ui::{Confirm, Message, frame, section_nav, show_message},
 };
 
 use fonts::{Element, Metrics, Size};
@@ -512,20 +512,26 @@ impl Tool for VisualCustomizer {
     fn ui(&mut self, ui: &mut egui::Ui, ctx: &mut AppCtx<'_>) {
         self.handle_confirm(ui, ctx);
         self.gallery.poll(ui.ctx(), ctx, &mut self.message);
-        egui::Panel::left("visual-sections")
-            .resizable(false)
-            .exact_size(180.0)
-            .frame(egui::Frame::NONE.inner_margin(egui::Margin {
-                right: 8,
-                ..Default::default()
-            }))
-            .show(ui, |ui| {
-                if section_nav(ui, &SECTIONS, &mut self.section) {
-                    self.message = None;
-                }
-            });
+        if frame::left(ui, 190.0, |ui| section_nav(ui, &SECTIONS, &mut self.section)) {
+            self.message = None;
+        }
+        if self.section == 0 {
+            frame::nested(ui, |ui| self.panel.ui_framed(ui, ctx));
+            return;
+        }
+        frame::central(ui, |ui| self.page(ui, ctx));
+    }
+
+    fn layout(&self) -> Layout {
+        Layout::Fill
+    }
+}
+
+impl VisualCustomizer {
+    fn page(&mut self, ui: &mut egui::Ui, ctx: &mut AppCtx<'_>) {
+        show_message(ui, &self.message);
         match self.section {
-            0 => self.panel.ui(ui, ctx),
+            0 => {}
             1 => self.fonts_page(ui, ctx),
             2 => self.system_icons_page(ui, ctx),
             3 => self.other_icons_page(ui, ctx),
@@ -535,6 +541,5 @@ impl Tool for VisualCustomizer {
             7 => self.gallery.lock_screen_page(ui, ctx, &mut self.message),
             _ => self.gallery.bing_page(ui, ctx, &mut self.message),
         }
-        show_message(ui, &self.message);
     }
 }

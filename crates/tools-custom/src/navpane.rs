@@ -14,7 +14,7 @@ use egui_extras::{Column, TableBuilder};
 use windows::Win32::UI::Shell::{SHCNE_ASSOCCHANGED, SHCNF_IDLIST, SHChangeNotify, SHLoadIndirectString};
 use windows::core::{GUID, HSTRING};
 use wm_core::{
-    AppCtx, Category, Tool,
+    AppCtx, Category, Layout, Tool,
     egui::{self, Vec2},
     icons, paths,
     process::restart_explorer,
@@ -22,7 +22,7 @@ use wm_core::{
     safety::UndoAction,
     shell::{reveal_in_explorer, shell_open},
     tweaks::TweakPanel,
-    ui::{Confirm, Message, ToolButton, show_message, status_bar, toolbar},
+    ui::{Confirm, Message, ToolButton, frame, section_nav, show_message},
 };
 
 const TOOL: &str = "navpane";
@@ -583,7 +583,7 @@ impl NavPaneManager {
             .as_ref()
             .is_some_and(|i| matches!(i.kind, Kind::Folder { .. }));
 
-        match toolbar(
+        match frame::toolbar(
             ui,
             &[
                 Some(ToolButton::new(icons::PLUS, "Add folder")),
@@ -612,6 +612,7 @@ impl NavPaneManager {
                 Some(ToolButton::new(icons::ARROWS_CLOCKWISE, "Refresh")),
                 Some(ToolButton::new(icons::WINDOWS_LOGO, "Restart Explorer")),
             ],
+            |_| {},
         ) {
             Some(0) => {
                 self.editor = Some(Editor {
@@ -699,12 +700,17 @@ impl NavPaneManager {
             _ => {}
         }
 
+        let n = items.iter().filter(|i| i.shown).count();
+        frame::status(ui, &format!("{} items, {n} shown", items.len()), |_| {});
+        frame::central_fixed(ui, |ui| self.items_table(ui, &items));
+    }
+
+    fn items_table(&mut self, ui: &mut egui::Ui, items: &[NavItem]) {
+        show_message(ui, &self.message);
         let row_h = ui.text_style_height(&egui::TextStyle::Body) + 6.0;
-        let avail = ui.available_height() - 28.0;
         TableBuilder::new(ui)
             .striped(true)
             .sense(egui::Sense::click())
-            .max_scroll_height(avail.max(120.0))
             .column(Column::exact(60.0))
             .column(Column::initial(200.0).at_least(120.0))
             .column(Column::exact(80.0))
@@ -756,9 +762,6 @@ impl NavPaneManager {
                     }
                 });
             });
-
-        let n = items.iter().filter(|i| i.shown).count();
-        status_bar(ui, &format!("{} items, {n} shown", items.len()), |_| {});
     }
 }
 
@@ -793,16 +796,23 @@ impl Tool for NavPaneManager {
             }
         }
         self.editor_window(ui, ctx);
-        ui.horizontal(|ui| {
-            ui.selectable_value(&mut self.tab, Tab::Items, "Items");
-            ui.selectable_value(&mut self.tab, Tab::Options, "Options");
+        let mut sel = usize::from(self.tab == Tab::Options);
+        frame::left(ui, 180.0, |ui| {
+            section_nav(
+                ui,
+                &[(icons::LIST, "Items"), (icons::SLIDERS, "Options")],
+                &mut sel,
+            )
         });
-        ui.separator();
-        show_message(ui, &self.message);
+        self.tab = if sel == 1 { Tab::Options } else { Tab::Items };
         match self.tab {
             Tab::Items => self.items_tab(ui, ctx),
-            Tab::Options => self.panel.ui(ui, ctx),
+            Tab::Options => frame::nested(ui, |ui| self.panel.ui_framed(ui, ctx)),
         }
+    }
+
+    fn layout(&self) -> Layout {
+        Layout::Fill
     }
 }
 

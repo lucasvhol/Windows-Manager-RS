@@ -7,7 +7,7 @@ use std::path::PathBuf;
 
 use egui_extras::{Column, TableBuilder};
 use wm_core::{
-    AppCtx, Category, Tool,
+    AppCtx, Category, Layout, Tool,
     egui::{self, Vec2},
     fileinfo::{self, FileInfo},
     icons,
@@ -15,7 +15,7 @@ use wm_core::{
     registry,
     shell::{reveal_in_explorer, show_properties},
     task::BackgroundTask,
-    ui::{Confirm, Message, ToolButton, section_nav, show_message, status_bar, toolbar},
+    ui::{Confirm, Message, ToolButton, empty_state, frame, section_nav, show_message},
 };
 
 use super::builtins::{BUILTINS, NewCommand, Source, add_command};
@@ -363,20 +363,33 @@ impl ContextMenuManager {
         }
     }
 
-    fn menu_section(&mut self, ui: &mut egui::Ui, ctx: &mut AppCtx<'_>) {
-        if self.section == FILE_TYPE {
-            ui.horizontal(|ui| {
-                ui.label("File type: .");
-                let r = ui.add(egui::TextEdit::singleline(&mut self.ext).desired_width(90.0));
-                if (r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)))
-                    || ui.button("Show").clicked()
-                {
-                    self.entries = None;
-                    self.selected = None;
-                }
-                ui.weak(format!("Looks in: {}", self.classes().join(", ")));
-            });
+    /// The Windows 11 classic-menu switch, shown in the options strip of the menu sections.
+    fn classic_option(&mut self, ui: &mut egui::Ui, ctx: &mut AppCtx<'_>) {
+        let mut classic = classic_menu_enabled();
+        if ui
+            .checkbox(
+                &mut classic,
+                "Always show the full classic context menu (Windows 11)",
+            )
+            .changed()
+            && !self.dry(ctx)
+        {
+            let r = set_classic_menu(ctx, classic)
+                .map(|_| "Saved. Restart Explorer to see the change.".to_owned());
+            self.restart_pending = r.is_ok();
+            self.report(r);
         }
+        if self.restart_pending && ui.button("Restart Explorer").clicked() {
+            self.message = Some(
+                restart_explorer()
+                    .map(|()| "Explorer restarted.".into())
+                    .map_err(|e| format!("{e:#}")),
+            );
+            self.restart_pending = false;
+        }
+    }
+
+    fn menu_section(&mut self, ui: &mut egui::Ui, ctx: &mut AppCtx<'_>) {
         let classes = self.classes();
         let entries = self.entries.get_or_insert_with(|| enumerate(&classes)).clone();
         self.load_info(ui, &entries);
@@ -389,7 +402,7 @@ impl ContextMenuManager {
             .as_ref()
             .is_some_and(|e| e.writable(ctx.elevated) && !e.protected());
 
-        match toolbar(
+        match frame::toolbar(
             ui,
             &[
                 Some(ToolButton::new(icons::PLUS, "Add command")),
@@ -408,6 +421,7 @@ impl ContextMenuManager {
                 Some(ToolButton::new(icons::FIRST_AID_KIT, "Repair")),
                 Some(ToolButton::new(icons::ARROWS_CLOCKWISE, "Refresh")),
             ],
+            |_| {},
         ) {
             Some(0) => {
                 let here = if self.section < LOCATIONS.len() {
@@ -491,10 +505,21 @@ impl ContextMenuManager {
             }
             _ => {}
         }
-        show_message(ui, &self.message);
-        if let Some(e) = &selected {
-            self.details(ui, ctx, e);
-        }
+        frame::options(ui, |ui| {
+            if self.section == FILE_TYPE {
+                ui.label("File type: .");
+                let r = ui.add(egui::TextEdit::singleline(&mut self.ext).desired_width(90.0));
+                if (r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)))
+                    || ui.button("Show").clicked()
+                {
+                    self.entries = None;
+                    self.selected = None;
+                }
+                ui.weak(format!("Looks in: {}", self.classes().join(", ")));
+                ui.separator();
+            }
+            self.classic_option(ui, ctx);
+        });
 
         let f = self.filter.to_lowercase();
         let visible: Vec<&Entry> = entries
@@ -509,107 +534,124 @@ impl ContextMenuManager {
             visible.iter().filter(|e| !e.enabled).count(),
             visible.iter().filter(|e| e.broken).count()
         );
-        egui::Panel::bottom("cm-status")
-            .frame(egui::Frame::NONE)
-            .show(ui, |ui| {
-                status_bar(ui, &status, |ui| {
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.filter)
-                            .hint_text(ctx.i18n.tr("common-filter"))
-                            .desired_width(160.0),
-                    );
-                })
-            });
+        let filter_hint = format!("{}  {}", icons::MAGNIFYING_GLASS, ctx.i18n.tr("common-filter"));
+        frame::status(ui, &status, |ui| {
+            ui.add(
+                egui::TextEdit::singleline(&mut self.filter)
+                    .hint_text(filter_hint)
+                    .desired_width(180.0),
+            );
+        });
         let mut toggle = None;
         let mut clicked = None;
-        ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
-        TableBuilder::new(ui)
-            .striped(true)
-            .sense(egui::Sense::click())
-            .column(Column::exact(24.0))
-            .column(Column::initial(230.0).clip(true))
-            .column(Column::initial(72.0))
-            .column(Column::initial(44.0))
-            .column(Column::initial(60.0))
-            .column(Column::initial(150.0).clip(true))
-            .column(Column::initial(80.0))
-            .column(Column::initial(70.0))
-            .column(Column::remainder().clip(true))
-            .header(22.0, |mut h| {
-                for t in [
-                    "",
-                    "Name",
-                    "Type",
-                    "Shift",
-                    "Position",
-                    "Company",
-                    "Signature",
-                    "For",
-                    "",
-                ] {
-                    h.col(|ui| {
-                        ui.strong(t);
-                    });
-                }
-            })
-            .body(|body| {
-                body.rows(21.0, visible.len(), |mut row| {
-                    let e = visible[row.index()];
-                    row.set_selected(self.selected.as_deref() == Some(e.key.as_str()));
-                    let info = e.target.as_ref().and_then(|t| self.info.get(&t.to_lowercase()));
-                    row.col(|ui| {
-                        let mut on = e.enabled;
-                        let ok = e.toggleable() && e.writable(ctx.elevated);
-                        if ui
-                            .add_enabled(ok, egui::Checkbox::without_text(&mut on))
-                            .on_disabled_hover_text(if e.protected() {
-                                "Core Explorer command".to_owned()
-                            } else {
-                                ctx.i18n.tr("shell-needs-admin")
-                            })
-                            .changed()
-                        {
-                            toggle = Some((e.clone(), on));
-                        }
-                    });
-                    row.col(|ui| {
-                        ui.label(&e.display).on_hover_text(&e.key);
-                    });
-                    row.col(|ui| {
-                        ui.weak(match e.kind {
-                            Kind::Command => "Command",
-                            Kind::Handler => "Extension",
+        frame::central_fixed(ui, |ui| {
+            show_message(ui, &self.message);
+            if let Some(e) = &selected {
+                self.details(ui, ctx, e);
+                ui.add_space(4.0);
+            }
+            if visible.is_empty() {
+                empty_state(
+                    ui,
+                    icons::LIST,
+                    "No entries here",
+                    if self.filter.is_empty() {
+                        "Nothing is registered for this part of the menu."
+                    } else {
+                        "Nothing matches the filter."
+                    },
+                );
+                return;
+            }
+            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
+            TableBuilder::new(ui)
+                .striped(true)
+                .sense(egui::Sense::click())
+                .column(Column::exact(24.0))
+                .column(Column::initial(230.0).clip(true))
+                .column(Column::initial(72.0))
+                .column(Column::initial(44.0))
+                .column(Column::initial(60.0))
+                .column(Column::initial(150.0).clip(true))
+                .column(Column::initial(80.0))
+                .column(Column::initial(70.0))
+                .column(Column::remainder().clip(true))
+                .header(22.0, |mut h| {
+                    for t in [
+                        "",
+                        "Name",
+                        "Type",
+                        "Shift",
+                        "Position",
+                        "Company",
+                        "Signature",
+                        "For",
+                        "",
+                    ] {
+                        h.col(|ui| {
+                            ui.strong(t);
                         });
-                    });
-                    row.col(|ui| {
-                        if e.extended {
-                            ui.label("Yes");
-                        }
-                    });
-                    row.col(|ui| {
-                        ui.weak(&e.position);
-                    });
-                    row.col(|ui| {
-                        ui.weak(info.map(|i| i.company.as_str()).unwrap_or_default());
-                    });
-                    row.col(|ui| {
-                        ui.weak(info.map(|i| i.signature.label()).unwrap_or_default());
-                    });
-                    row.col(|ui| {
-                        ui.weak(scope(&e.key));
-                    });
-                    row.col(|ui| {
-                        if e.broken {
-                            ui.colored_label(ui.visuals().warn_fg_color, "Program missing");
-                        } else if e.ours() {
-                            ui.weak("Added here");
-                        }
-                    });
-                    if row.response().clicked() {
-                        clicked = Some(e.key.clone());
                     }
+                })
+                .body(|body| {
+                    body.rows(21.0, visible.len(), |mut row| {
+                        let e = visible[row.index()];
+                        row.set_selected(self.selected.as_deref() == Some(e.key.as_str()));
+                        let info = e.target.as_ref().and_then(|t| self.info.get(&t.to_lowercase()));
+                        row.col(|ui| {
+                            let mut on = e.enabled;
+                            let ok = e.toggleable() && e.writable(ctx.elevated);
+                            if ui
+                                .add_enabled(ok, egui::Checkbox::without_text(&mut on))
+                                .on_disabled_hover_text(if e.protected() {
+                                    "Core Explorer command".to_owned()
+                                } else {
+                                    ctx.i18n.tr("shell-needs-admin")
+                                })
+                                .changed()
+                            {
+                                toggle = Some((e.clone(), on));
+                            }
+                        });
+                        row.col(|ui| {
+                            ui.label(&e.display).on_hover_text(&e.key);
+                        });
+                        row.col(|ui| {
+                            ui.weak(match e.kind {
+                                Kind::Command => "Command",
+                                Kind::Handler => "Extension",
+                            });
+                        });
+                        row.col(|ui| {
+                            if e.extended {
+                                ui.label("Yes");
+                            }
+                        });
+                        row.col(|ui| {
+                            ui.weak(&e.position);
+                        });
+                        row.col(|ui| {
+                            ui.weak(info.map(|i| i.company.as_str()).unwrap_or_default());
+                        });
+                        row.col(|ui| {
+                            ui.weak(info.map(|i| i.signature.label()).unwrap_or_default());
+                        });
+                        row.col(|ui| {
+                            ui.weak(scope(&e.key));
+                        });
+                        row.col(|ui| {
+                            if e.broken {
+                                ui.colored_label(ui.visuals().warn_fg_color, "Program missing");
+                            } else if e.ours() {
+                                ui.weak("Added here");
+                            }
+                        });
+                        if row.response().clicked() {
+                            clicked = Some(e.key.clone());
+                        }
+                    });
                 });
-            });
+        });
         if clicked.is_some() {
             self.selected = clicked;
         }
@@ -687,7 +729,7 @@ impl ContextMenuManager {
             .as_ref()
             .and_then(|k| apps.iter().find(|a| &a.key == k))
             .cloned();
-        match toolbar(
+        match frame::toolbar(
             ui,
             &[
                 Some(
@@ -700,6 +742,7 @@ impl ContextMenuManager {
                 Some(ToolButton::new(icons::TREE_STRUCTURE, "Registry").enabled(selected.is_some())),
                 Some(ToolButton::new(icons::ARROWS_CLOCKWISE, "Refresh")),
             ],
+            |_| {},
         ) {
             Some(0) => {
                 if let Some(a) = &selected {
@@ -720,61 +763,71 @@ impl ContextMenuManager {
             Some(2) => self.open_with = None,
             _ => {}
         }
-        ui.weak("Untick a program to leave it out of every \"Open with\" list.");
-        show_message(ui, &self.message);
+        let status = format!(
+            "{} programs, {} hidden, {} missing",
+            apps.len(),
+            apps.iter().filter(|a| a.hidden).count(),
+            apps.iter().filter(|a| a.broken).count()
+        );
+        frame::status(ui, &status, |ui| {
+            ui.weak("Untick a program to leave it out of every \"Open with\" list.");
+        });
         let mut toggle = None;
         let mut clicked = None;
-        ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
-        TableBuilder::new(ui)
-            .striped(true)
-            .sense(egui::Sense::click())
-            .column(Column::exact(24.0))
-            .column(Column::initial(220.0).clip(true))
-            .column(Column::initial(150.0).clip(true))
-            .column(Column::initial(70.0))
-            .column(Column::remainder().clip(true))
-            .header(22.0, |mut h| {
-                for t in ["", "Program", "File", "For", "Runs"] {
-                    h.col(|ui| {
-                        ui.strong(t);
-                    });
-                }
-            })
-            .body(|body| {
-                body.rows(21.0, apps.len(), |mut row| {
-                    let a = &apps[row.index()];
-                    row.set_selected(self.selected.as_deref() == Some(a.key.as_str()));
-                    row.col(|ui| {
-                        let mut shown = !a.hidden;
-                        let ok = ctx.elevated || !registry::needs_admin(&a.key);
-                        if ui
-                            .add_enabled(ok, egui::Checkbox::without_text(&mut shown))
-                            .changed()
-                        {
-                            toggle = Some((a.clone(), !shown));
-                        }
-                    });
-                    row.col(|ui| {
-                        ui.label(&a.display);
-                    });
-                    row.col(|ui| {
-                        ui.weak(&a.exe);
-                    });
-                    row.col(|ui| {
-                        ui.weak(scope(&a.key));
-                    });
-                    row.col(|ui| {
-                        if a.broken {
-                            ui.colored_label(ui.visuals().warn_fg_color, "Program missing");
-                        } else {
-                            ui.weak(a.target.clone().unwrap_or_default());
-                        }
-                    });
-                    if row.response().clicked() {
-                        clicked = Some(a.key.clone());
+        frame::central_fixed(ui, |ui| {
+            show_message(ui, &self.message);
+            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
+            TableBuilder::new(ui)
+                .striped(true)
+                .sense(egui::Sense::click())
+                .column(Column::exact(24.0))
+                .column(Column::initial(220.0).clip(true))
+                .column(Column::initial(150.0).clip(true))
+                .column(Column::initial(70.0))
+                .column(Column::remainder().clip(true))
+                .header(22.0, |mut h| {
+                    for t in ["", "Program", "File", "For", "Runs"] {
+                        h.col(|ui| {
+                            ui.strong(t);
+                        });
                     }
+                })
+                .body(|body| {
+                    body.rows(21.0, apps.len(), |mut row| {
+                        let a = &apps[row.index()];
+                        row.set_selected(self.selected.as_deref() == Some(a.key.as_str()));
+                        row.col(|ui| {
+                            let mut shown = !a.hidden;
+                            let ok = ctx.elevated || !registry::needs_admin(&a.key);
+                            if ui
+                                .add_enabled(ok, egui::Checkbox::without_text(&mut shown))
+                                .changed()
+                            {
+                                toggle = Some((a.clone(), !shown));
+                            }
+                        });
+                        row.col(|ui| {
+                            ui.label(&a.display);
+                        });
+                        row.col(|ui| {
+                            ui.weak(&a.exe);
+                        });
+                        row.col(|ui| {
+                            ui.weak(scope(&a.key));
+                        });
+                        row.col(|ui| {
+                            if a.broken {
+                                ui.colored_label(ui.visuals().warn_fg_color, "Program missing");
+                            } else {
+                                ui.weak(a.target.clone().unwrap_or_default());
+                            }
+                        });
+                        if row.response().clicked() {
+                            clicked = Some(a.key.clone());
+                        }
+                    });
                 });
-            });
+        });
         if clicked.is_some() {
             self.selected = clicked;
         }
@@ -797,7 +850,15 @@ impl ContextMenuManager {
                 self.new_list = Some(r.unwrap_or_default());
             }
         }
-        ui.horizontal(|ui| {
+        if frame::toolbar(
+            ui,
+            &[Some(ToolButton::new(icons::ARROWS_CLOCKWISE, "Refresh"))],
+            |_| {},
+        ) == Some(0)
+        {
+            self.new_list = None;
+        }
+        frame::options(ui, |ui| {
             ui.label("Add a file type: .");
             ui.add(egui::TextEdit::singleline(&mut self.new_ext).desired_width(80.0));
             if ui
@@ -813,61 +874,72 @@ impl ContextMenuManager {
                 self.new_ext.clear();
                 self.report(r);
             }
-            if ui.button(ctx.i18n.tr("common-refresh")).clicked() {
-                self.new_list = None;
-            }
         });
-        ui.weak("Untick a file type to remove it from the desktop and folder \"New\" menu.");
-        show_message(ui, &self.message);
-        let Some(items) = self.new_list.clone() else {
-            ui.spinner();
-            return;
-        };
+        let status = self.new_list.as_ref().map_or_else(
+            || "Reading the New menu…".to_owned(),
+            |l| {
+                format!(
+                    "{} file types, {} turned off",
+                    l.len(),
+                    l.iter().filter(|i| !i.enabled).count()
+                )
+            },
+        );
+        frame::status(ui, &status, |ui| {
+            ui.weak("Untick a file type to remove it from the desktop and folder \"New\" menu.");
+        });
         let mut toggle = None;
-        ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
-        TableBuilder::new(ui)
-            .striped(true)
-            .column(Column::exact(24.0))
-            .column(Column::initial(260.0).clip(true))
-            .column(Column::initial(90.0))
-            .column(Column::initial(70.0))
-            .column(Column::remainder().clip(true))
-            .header(22.0, |mut h| {
-                for t in ["", "File type", "Extension", "For", ""] {
-                    h.col(|ui| {
-                        ui.strong(t);
-                    });
-                }
-            })
-            .body(|body| {
-                body.rows(21.0, items.len(), |mut row| {
-                    let i = &items[row.index()];
-                    row.col(|ui| {
-                        let mut on = i.enabled;
-                        let ok = ctx.elevated || !registry::needs_admin(&i.parent);
-                        if ui
-                            .add_enabled(ok, egui::Checkbox::without_text(&mut on))
-                            .changed()
-                        {
-                            toggle = Some((i.clone(), on));
-                        }
-                    });
-                    row.col(|ui| {
-                        ui.label(&i.display);
-                    });
-                    row.col(|ui| {
-                        ui.weak(&i.ext);
-                    });
-                    row.col(|ui| {
-                        ui.weak(scope(&i.parent));
-                    });
-                    row.col(|ui| {
-                        if ui.small_button("Registry").clicked() {
-                            let _ = registry::open_in_regedit(&i.key());
-                        }
+        frame::central_fixed(ui, |ui| {
+            show_message(ui, &self.message);
+            let Some(items) = self.new_list.clone() else {
+                ui.spinner();
+                return;
+            };
+            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
+            TableBuilder::new(ui)
+                .striped(true)
+                .column(Column::exact(24.0))
+                .column(Column::initial(260.0).clip(true))
+                .column(Column::initial(90.0))
+                .column(Column::initial(70.0))
+                .column(Column::remainder().clip(true))
+                .header(22.0, |mut h| {
+                    for t in ["", "File type", "Extension", "For", ""] {
+                        h.col(|ui| {
+                            ui.strong(t);
+                        });
+                    }
+                })
+                .body(|body| {
+                    body.rows(21.0, items.len(), |mut row| {
+                        let i = &items[row.index()];
+                        row.col(|ui| {
+                            let mut on = i.enabled;
+                            let ok = ctx.elevated || !registry::needs_admin(&i.parent);
+                            if ui
+                                .add_enabled(ok, egui::Checkbox::without_text(&mut on))
+                                .changed()
+                            {
+                                toggle = Some((i.clone(), on));
+                            }
+                        });
+                        row.col(|ui| {
+                            ui.label(&i.display);
+                        });
+                        row.col(|ui| {
+                            ui.weak(&i.ext);
+                        });
+                        row.col(|ui| {
+                            ui.weak(scope(&i.parent));
+                        });
+                        row.col(|ui| {
+                            if ui.small_button("Registry").clicked() {
+                                let _ = registry::open_in_regedit(&i.key());
+                            }
+                        });
                     });
                 });
-            });
+        });
         if let Some((i, on)) = toggle
             && !self.dry(ctx)
         {
@@ -883,7 +955,7 @@ impl ContextMenuManager {
             .as_ref()
             .and_then(|k| items.iter().find(|i| &i.path.display().to_string() == k))
             .cloned();
-        match toolbar(
+        match frame::toolbar(
             ui,
             &[
                 Some(ToolButton::new(icons::PLUS, "Add program")),
@@ -896,6 +968,7 @@ impl ContextMenuManager {
                 Some(ToolButton::new(icons::FOLDER_OPEN, "Open folder")),
                 Some(ToolButton::new(icons::ARROWS_CLOCKWISE, "Refresh")),
             ],
+            |_| {},
         ) {
             Some(i @ (0 | 1)) => {
                 let picked = if i == 0 {
@@ -930,50 +1003,59 @@ impl ContextMenuManager {
             Some(5) => self.send_to = None,
             _ => {}
         }
-        ui.weak("Untick an item to hide it from the \"Send to\" menu; it is kept and can be ticked again.");
-        show_message(ui, &self.message);
+        let status = format!(
+            "{} items, {} hidden",
+            items.len(),
+            items.iter().filter(|i| !i.enabled).count()
+        );
+        frame::status(ui, &status, |ui| {
+            ui.weak("Untick an item to hide it from \"Send to\"; it is kept and can be ticked again.");
+        });
         let mut toggle = None;
         let mut clicked = None;
-        TableBuilder::new(ui)
-            .striped(true)
-            .sense(egui::Sense::click())
-            .column(Column::exact(24.0))
-            .column(Column::initial(240.0).clip(true))
-            .column(Column::remainder().clip(true))
-            .header(22.0, |mut h| {
-                for t in ["", "Item", "File"] {
-                    h.col(|ui| {
-                        ui.strong(t);
-                    });
-                }
-            })
-            .body(|body| {
-                body.rows(21.0, items.len(), |mut row| {
-                    let s = &items[row.index()];
-                    let key = s.path.display().to_string();
-                    row.set_selected(self.selected.as_deref() == Some(key.as_str()));
-                    row.col(|ui| {
-                        let mut on = s.enabled;
-                        if ui.checkbox(&mut on, "").changed() {
-                            toggle = Some((s.clone(), on));
+        frame::central_fixed(ui, |ui| {
+            show_message(ui, &self.message);
+            TableBuilder::new(ui)
+                .striped(true)
+                .sense(egui::Sense::click())
+                .column(Column::exact(24.0))
+                .column(Column::initial(240.0).clip(true))
+                .column(Column::remainder().clip(true))
+                .header(22.0, |mut h| {
+                    for t in ["", "Item", "File"] {
+                        h.col(|ui| {
+                            ui.strong(t);
+                        });
+                    }
+                })
+                .body(|body| {
+                    body.rows(21.0, items.len(), |mut row| {
+                        let s = &items[row.index()];
+                        let key = s.path.display().to_string();
+                        row.set_selected(self.selected.as_deref() == Some(key.as_str()));
+                        row.col(|ui| {
+                            let mut on = s.enabled;
+                            if ui.checkbox(&mut on, "").changed() {
+                                toggle = Some((s.clone(), on));
+                            }
+                        });
+                        row.col(|ui| {
+                            ui.label(&s.display);
+                        });
+                        row.col(|ui| {
+                            ui.weak(
+                                s.path
+                                    .file_name()
+                                    .map(|n| n.to_string_lossy().into_owned())
+                                    .unwrap_or_default(),
+                            );
+                        });
+                        if row.response().clicked() {
+                            clicked = Some(key);
                         }
                     });
-                    row.col(|ui| {
-                        ui.label(&s.display);
-                    });
-                    row.col(|ui| {
-                        ui.weak(
-                            s.path
-                                .file_name()
-                                .map(|n| n.to_string_lossy().into_owned())
-                                .unwrap_or_default(),
-                        );
-                    });
-                    if row.response().clicked() {
-                        clicked = Some(key);
-                    }
                 });
-            });
+        });
         if clicked.is_some() {
             self.selected = clicked;
         }
@@ -998,30 +1080,6 @@ impl Tool for ContextMenuManager {
     fn ui(&mut self, ui: &mut egui::Ui, ctx: &mut AppCtx<'_>) {
         self.handle_confirm(ui, ctx);
         self.editor_window(ui, ctx);
-        ui.horizontal(|ui| {
-            let mut classic = classic_menu_enabled();
-            if ui
-                .checkbox(
-                    &mut classic,
-                    "Always show the full classic context menu (Windows 11)",
-                )
-                .changed()
-                && !self.dry(ctx)
-            {
-                let r = set_classic_menu(ctx, classic)
-                    .map(|_| "Saved. Restart Explorer to see the change.".to_owned());
-                self.restart_pending = r.is_ok();
-                self.report(r);
-            }
-            if self.restart_pending && ui.button("Restart Explorer").clicked() {
-                self.message = Some(
-                    restart_explorer()
-                        .map(|()| "Explorer restarted.".into())
-                        .map_err(|e| format!("{e:#}")),
-                );
-                self.restart_pending = false;
-            }
-        });
         let mut nav: Vec<(&str, &str)> = LOCATIONS.iter().map(|l| (l.icon, l.label)).collect();
         nav.extend([
             (icons::FILE_SEARCH, "File type…"),
@@ -1029,27 +1087,20 @@ impl Tool for ContextMenuManager {
             (icons::PLUS, "New menu"),
             (icons::ARROW_SQUARE_OUT, "Send to"),
         ]);
-        egui::Panel::left("cm-sections")
-            .resizable(false)
-            .exact_size(190.0)
-            .frame(egui::Frame::NONE.inner_margin(egui::Margin {
-                right: 8,
-                ..Default::default()
-            }))
-            .show(ui, |ui| {
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    if section_nav(ui, &nav, &mut self.section) {
-                        self.entries = None;
-                        self.selected = None;
-                        self.message = None;
-                    }
-                });
-            });
+        if frame::left(ui, 190.0, |ui| section_nav(ui, &nav, &mut self.section)) {
+            self.entries = None;
+            self.selected = None;
+            self.message = None;
+        }
         match self.section {
             OPEN_WITH => self.open_with_section(ui, ctx),
             NEW_MENU => self.new_menu_section(ui, ctx),
             SEND_TO => self.send_to_section(ui, ctx),
             _ => self.menu_section(ui, ctx),
         }
+    }
+
+    fn layout(&self) -> Layout {
+        Layout::Fill
     }
 }

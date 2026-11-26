@@ -13,7 +13,7 @@ use anyhow::{Result, bail};
 use egui_extras::{Column, TableBuilder};
 use windows::core::GUID;
 use wm_core::{
-    AppCtx, Category, Tool,
+    AppCtx, Category, Layout, Tool,
     egui::{self, Vec2},
     icons, paths,
     process::{hidden_command, restart_explorer},
@@ -21,7 +21,7 @@ use wm_core::{
     safety::UndoAction,
     shell::shell_open,
     tweaks::TweakPanel,
-    ui::{Confirm, Message, ToolButton, show_message, status_bar, toolbar},
+    ui::{Confirm, Message, ToolButton, frame, section_nav, show_message},
 };
 
 use crate::navpane::{
@@ -519,7 +519,7 @@ impl ThisPcManager {
             .and_then(|id| items.iter().find(|i| &i.clsid == id))
             .cloned();
         let own = sel.as_ref().is_some_and(PcItem::own);
-        match toolbar(
+        match frame::toolbar(
             ui,
             &[
                 Some(ToolButton::new(icons::PLUS, "Add")),
@@ -543,6 +543,7 @@ impl ThisPcManager {
                 Some(ToolButton::new(icons::ARROWS_CLOCKWISE, "Refresh")),
                 Some(ToolButton::new(icons::WINDOWS_LOGO, "Restart Explorer")),
             ],
+            |_| {},
         ) {
             Some(0) => {
                 self.editor = Some(Editor {
@@ -607,12 +608,17 @@ impl ThisPcManager {
             _ => {}
         }
 
+        let on = items.iter().filter(|i| i.enabled).count();
+        frame::status(ui, &format!("{} items, {on} in This PC", items.len()), |_| {});
+        frame::central_fixed(ui, |ui| self.items_table(ui, &items));
+    }
+
+    fn items_table(&mut self, ui: &mut egui::Ui, items: &[PcItem]) {
+        show_message(ui, &self.message);
         let row_h = ui.text_style_height(&egui::TextStyle::Body) + 6.0;
-        let avail = ui.available_height() - 28.0;
         TableBuilder::new(ui)
             .striped(true)
             .sense(egui::Sense::click())
-            .max_scroll_height(avail.max(120.0))
             .column(Column::exact(50.0))
             .column(Column::initial(200.0).at_least(120.0))
             .column(Column::exact(80.0))
@@ -656,8 +662,6 @@ impl ThisPcManager {
                     }
                 });
             });
-        let on = items.iter().filter(|i| i.enabled).count();
-        status_bar(ui, &format!("{} items, {on} in This PC", items.len()), |_| {});
     }
 }
 
@@ -692,21 +696,28 @@ impl Tool for ThisPcManager {
             }
         }
         self.editor_window(ui, ctx);
-        ui.horizontal(|ui| {
-            ui.selectable_value(&mut self.tab, Tab::Items, "Items");
-            ui.selectable_value(&mut self.tab, Tab::Folders, "Personal folders");
+        let mut sel = usize::from(self.tab == Tab::Folders);
+        frame::left(ui, 190.0, |ui| {
+            section_nav(
+                ui,
+                &[(icons::LIST, "Items"), (icons::FOLDERS, "Personal folders")],
+                &mut sel,
+            )
         });
-        ui.separator();
-        show_message(ui, &self.message);
+        self.tab = if sel == 1 { Tab::Folders } else { Tab::Items };
         match self.tab {
             Tab::Items => self.items_tab(ui, ctx),
-            Tab::Folders => {
-                ui.weak(
-                    "Which personal folders This PC shows. Applies to all users (administrator required).",
-                );
-                self.panel.ui(ui, ctx);
-            }
+            Tab::Folders => frame::nested(ui, |ui| {
+                frame::options(ui, |ui| {
+                    ui.weak("Which personal folders This PC shows. Applies to all users (administrator required).");
+                });
+                self.panel.ui_framed(ui, ctx);
+            }),
         }
+    }
+
+    fn layout(&self) -> Layout {
+        Layout::Fill
     }
 }
 

@@ -12,7 +12,7 @@ use anyhow::{Context, Result, bail};
 use egui_extras::{Column, TableBuilder};
 use walkdir::WalkDir;
 use wm_core::{
-    AppCtx, Category, Tool,
+    AppCtx, Category, Layout, Tool,
     egui::{self, Vec2},
     icons, paths,
     process::{hidden_command, restart_explorer, run_checked},
@@ -21,7 +21,7 @@ use wm_core::{
         ShortcutSpec, create_shortcut, is_broken_shortcut, read_shortcut, reveal_in_explorer, shell_open,
     },
     tweaks::TweakPanel,
-    ui::{Confirm, Message, ToolButton, show_message, status_bar, toolbar},
+    ui::{Confirm, Message, ToolButton, frame, section_nav, show_message},
 };
 
 const TOOL: &str = "startmenu";
@@ -475,7 +475,7 @@ impl StartMenuManager {
         let can_edit = selected.as_ref().is_some_and(usable);
         let broken_label = format!("Remove broken ({})", broken.len());
 
-        match toolbar(
+        match frame::toolbar(
             ui,
             &[
                 Some(ToolButton::new(icons::PLUS, "Add program")),
@@ -492,6 +492,7 @@ impl StartMenuManager {
                 Some(ToolButton::new(icons::BROOM, &broken_label).enabled(!broken.is_empty())),
                 Some(ToolButton::new(icons::ARROWS_CLOCKWISE, "Refresh")),
             ],
+            |_| {},
         ) {
             Some(0) => {
                 if let Some(t) = rfd::FileDialog::new()
@@ -542,24 +543,23 @@ impl StartMenuManager {
             Some(9) => self.items = None,
             _ => {}
         }
-        show_message(ui, &self.message);
+        let filter_hint = ctx.i18n.tr("common-filter");
+        frame::options(ui, |ui| {
+            ui.add(
+                egui::TextEdit::singleline(&mut self.filter)
+                    .hint_text(format!("{}  {filter_hint}", icons::MAGNIFYING_GLASS))
+                    .desired_width(200.0),
+            );
+            ui.checkbox(&mut self.broken_only, "Only broken");
+        });
         let status = format!(
-            "{} shortcuts, {} broken. Pin items from Start itself; Windows does not let other programs pin.",
+            "{} shortcuts, {} broken",
             items.len(),
             items.iter().filter(|i| i.broken).count()
         );
-        egui::Panel::bottom("start-status")
-            .frame(egui::Frame::NONE)
-            .show(ui, |ui| {
-                status_bar(ui, &status, |ui| {
-                    ui.checkbox(&mut self.broken_only, "Only broken");
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.filter)
-                            .hint_text(ctx.i18n.tr("common-filter"))
-                            .desired_width(150.0),
-                    );
-                })
-            });
+        frame::status(ui, &status, |ui| {
+            ui.weak("Pin items from Start itself; Windows doesn't let other programs pin.");
+        });
 
         let f = self.filter.to_lowercase();
         let visible: Vec<&StartItem> = items
@@ -572,7 +572,8 @@ impl StartMenuManager {
         let mut folders: Vec<&str> = visible.iter().map(|i| i.folder.as_str()).collect();
         folders.dedup();
         let mut clicked = None;
-        egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
+        frame::central(ui, |ui| {
+            show_message(ui, &self.message);
             ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
             for folder in folders {
                 let rows: Vec<&&StartItem> = visible.iter().filter(|i| i.folder == folder).collect();
@@ -712,17 +713,32 @@ impl Tool for StartMenuManager {
             self.done(r);
         }
         self.dialogs(ui, ctx);
-        ui.horizontal(|ui| {
-            ui.selectable_value(&mut self.tab, Tab::Shortcuts, "All apps");
-            ui.selectable_value(&mut self.tab, Tab::Layout, "Taskbar and Start backup");
-            ui.selectable_value(&mut self.tab, Tab::Options, "Start options");
+        let tabs = [Tab::Shortcuts, Tab::Layout, Tab::Options];
+        let mut sel = tabs.iter().position(|t| *t == self.tab).unwrap_or(0);
+        frame::left(ui, 200.0, |ui| {
+            section_nav(
+                ui,
+                &[
+                    (icons::LIST, "All apps"),
+                    (icons::FLOPPY_DISK, "Taskbar and Start backup"),
+                    (icons::SLIDERS, "Start options"),
+                ],
+                &mut sel,
+            )
         });
-        ui.separator();
+        self.tab = tabs[sel];
         match self.tab {
             Tab::Shortcuts => self.shortcuts_tab(ui, ctx),
-            Tab::Layout => self.layout_tab(ui),
-            Tab::Options => self.panel.ui(ui, ctx),
+            Tab::Layout => frame::central(ui, |ui| {
+                show_message(ui, &self.message);
+                self.layout_tab(ui);
+            }),
+            Tab::Options => frame::nested(ui, |ui| self.panel.ui_framed(ui, ctx)),
         }
+    }
+
+    fn layout(&self) -> Layout {
+        Layout::Fill
     }
 }
 

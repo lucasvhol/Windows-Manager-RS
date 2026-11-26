@@ -26,12 +26,12 @@ use windows::Win32::UI::Shell::{
 };
 use windows::core::{HSTRING, Interface, PCWSTR, PWSTR};
 use wm_core::{
-    AppCtx, Category, Tool,
+    AppCtx, Category, Layout, Tool,
     egui::{self, Vec2},
     icons, paths, registry,
     safety::UndoAction,
     shell::{ShortcutSpec, ensure_com, make_link, read_shortcut},
-    ui::{Confirm, Message, ToolButton, show_message, toolbar},
+    ui::{Confirm, Message, ToolButton, frame, show_message},
 };
 
 const TOOL: &str = "jumplist";
@@ -623,6 +623,10 @@ impl JumpListLauncher {
 }
 
 impl Tool for JumpListLauncher {
+    fn layout(&self) -> Layout {
+        Layout::Fill
+    }
+
     fn id(&self) -> &'static str {
         "jumplist"
     }
@@ -689,109 +693,11 @@ impl Tool for JumpListLauncher {
         }
         self.editor_window(ui, ctx);
 
-        // Lists, groups and the maximum count.
-        ui.horizontal(|ui| {
-            ui.label("List");
-            let mut chosen = self.list;
-            egui::ComboBox::from_id_salt("jl-list")
-                .selected_text(self.lists[self.list].name.clone())
-                .show_ui(ui, |ui| {
-                    for (i, l) in self.lists.iter().enumerate() {
-                        ui.selectable_value(&mut chosen, i, format!("{} ({})", l.name, l.count()));
-                    }
-                });
-            if chosen != self.list {
-                self.list = chosen;
-                self.selected = None;
-            }
-            ui.add(
-                egui::TextEdit::singleline(&mut self.new_list)
-                    .hint_text("New list name")
-                    .desired_width(130.0),
-            );
-            let name = self.new_list.trim().to_owned();
-            let ok = !name.is_empty()
-                && !name.contains(['\\', '/', ':', '*', '?', '"', '<', '>', '|'])
-                && !self.lists.iter().any(|l| l.name.eq_ignore_ascii_case(&name));
-            if ui.add_enabled(ok, egui::Button::new("Add list")).clicked() {
-                let r = if ctx.config.dry_run {
-                    Ok(PathBuf::new())
-                } else {
-                    create_launcher(&name)
-                };
-                match r {
-                    Ok(_) => {
-                        self.lists.push(List {
-                            name: name.clone(),
-                            groups: vec![Group::default()],
-                        });
-                        self.list = self.lists.len() - 1;
-                        self.new_list.clear();
-                        self.save_and_apply(ctx, format!("Added the list \"{name}\""));
-                    }
-                    Err(e) => self.message = Some(Err(format!("{e:#}"))),
-                }
-            }
-            if self.lists[self.list].name != MAIN_LIST && ui.button("Delete list").clicked() {
-                self.confirm.ask(
-                    format!(
-                        "Delete the list \"{}\" and its Start menu launcher?",
-                        self.lists[self.list].name
-                    ),
-                    Ask::DeleteList(self.list),
-                );
-            }
-        });
-        ui.horizontal(|ui| {
-            ui.add(
-                egui::TextEdit::singleline(&mut self.new_group)
-                    .hint_text("New group name")
-                    .desired_width(130.0),
-            );
-            let g = self.new_group.trim().to_owned();
-            if ui
-                .add_enabled(
-                    !g.is_empty()
-                        && !self.lists[self.list]
-                            .groups
-                            .iter()
-                            .any(|x| x.name.eq_ignore_ascii_case(&g)),
-                    egui::Button::new("Add group"),
-                )
-                .clicked()
-            {
-                self.lists[self.list].groups.push(Group {
-                    name: g.clone(),
-                    items: Vec::new(),
-                });
-                self.new_group.clear();
-                self.save_and_apply(ctx, format!("Added the group \"{g}\""));
-            }
-            ui.separator();
-            ui.label("Recent items shown in jump lists:");
-            let mut max = max_items();
-            if ui.add(egui::DragValue::new(&mut max).range(0..=60)).changed() {
-                self.message = Some(if ctx.config.dry_run {
-                    Ok(ctx.i18n.tr("common-dry-run-skip"))
-                } else {
-                    set_max_items(ctx, max)
-                        .map(|_| "Saved.".to_owned())
-                        .map_err(|e| format!("{e:#}"))
-                });
-            }
-        });
-        if self.lists[self.list].groups.iter().any(|g| !g.name.is_empty()) && !recent_items_on() {
-            ui.weak(
-                "\"Show recently opened items\" is off (Settings > Personalization > Start), so \
-                 Windows hides group headings: groups appear under Tasks, separated by lines.",
-            );
-        }
-
         let sel_item = self
             .selected
             .and_then(|(g, i)| self.lists[self.list].groups.get(g)?.items.get(i).cloned());
         let groups_len = self.lists[self.list].groups.len();
-        match toolbar(
+        match frame::toolbar(
             ui,
             &[
                 Some(ToolButton::new(icons::PLUS, "Add item")),
@@ -810,6 +716,7 @@ impl Tool for JumpListLauncher {
                 Some(ToolButton::new(icons::FLOPPY_DISK, "Back up")),
                 Some(ToolButton::new(icons::CLOCK_COUNTER_CLOCKWISE, "Restore")),
             ],
+            |_| {},
         ) {
             Some(0) => {
                 self.editor = Some(Editor {
@@ -885,11 +792,115 @@ impl Tool for JumpListLauncher {
             }
             _ => {}
         }
-        show_message(ui, &self.message);
-
+        frame::options(ui, |ui| {
+            // Lists, groups and the maximum count.
+            ui.horizontal(|ui| {
+                ui.label("List");
+                let mut chosen = self.list;
+                egui::ComboBox::from_id_salt("jl-list")
+                    .selected_text(self.lists[self.list].name.clone())
+                    .show_ui(ui, |ui| {
+                        for (i, l) in self.lists.iter().enumerate() {
+                            ui.selectable_value(&mut chosen, i, format!("{} ({})", l.name, l.count()));
+                        }
+                    });
+                if chosen != self.list {
+                    self.list = chosen;
+                    self.selected = None;
+                }
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.new_list)
+                        .hint_text("New list name")
+                        .desired_width(130.0),
+                );
+                let name = self.new_list.trim().to_owned();
+                let ok = !name.is_empty()
+                    && !name.contains(['\\', '/', ':', '*', '?', '"', '<', '>', '|'])
+                    && !self.lists.iter().any(|l| l.name.eq_ignore_ascii_case(&name));
+                if ui.add_enabled(ok, egui::Button::new("Add list")).clicked() {
+                    let r = if ctx.config.dry_run {
+                        Ok(PathBuf::new())
+                    } else {
+                        create_launcher(&name)
+                    };
+                    match r {
+                        Ok(_) => {
+                            self.lists.push(List {
+                                name: name.clone(),
+                                groups: vec![Group::default()],
+                            });
+                            self.list = self.lists.len() - 1;
+                            self.new_list.clear();
+                            self.save_and_apply(ctx, format!("Added the list \"{name}\""));
+                        }
+                        Err(e) => self.message = Some(Err(format!("{e:#}"))),
+                    }
+                }
+                if self.lists[self.list].name != MAIN_LIST && ui.button("Delete list").clicked() {
+                    self.confirm.ask(
+                        format!(
+                            "Delete the list \"{}\" and its Start menu launcher?",
+                            self.lists[self.list].name
+                        ),
+                        Ask::DeleteList(self.list),
+                    );
+                }
+            });
+            ui.horizontal(|ui| {
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.new_group)
+                        .hint_text("New group name")
+                        .desired_width(130.0),
+                );
+                let g = self.new_group.trim().to_owned();
+                if ui
+                    .add_enabled(
+                        !g.is_empty()
+                            && !self.lists[self.list]
+                                .groups
+                                .iter()
+                                .any(|x| x.name.eq_ignore_ascii_case(&g)),
+                        egui::Button::new("Add group"),
+                    )
+                    .clicked()
+                {
+                    self.lists[self.list].groups.push(Group {
+                        name: g.clone(),
+                        items: Vec::new(),
+                    });
+                    self.new_group.clear();
+                    self.save_and_apply(ctx, format!("Added the group \"{g}\""));
+                }
+                ui.separator();
+                ui.label("Recent items shown in jump lists:");
+                let mut max = max_items();
+                if ui.add(egui::DragValue::new(&mut max).range(0..=60)).changed() {
+                    self.message = Some(if ctx.config.dry_run {
+                        Ok(ctx.i18n.tr("common-dry-run-skip"))
+                    } else {
+                        set_max_items(ctx, max)
+                            .map(|_| "Saved.".to_owned())
+                            .map_err(|e| format!("{e:#}"))
+                    });
+                }
+            });
+        });
+        let hidden_headings =
+            self.lists[self.list].groups.iter().any(|g| !g.name.is_empty()) && !recent_items_on();
+        let count = self.lists[self.list].count();
+        frame::status(ui, &format!("{count} items in this list"), |ui| {
+            if hidden_headings {
+                ui.colored_label(ui.visuals().warn_fg_color, "Group headings are hidden")
+                    .on_hover_text(
+                        "\"Show recently opened items\" is off (Settings > Personalization > Start), so \
+                         Windows hides group headings: groups appear under Tasks, separated by lines.",
+                    );
+            }
+        });
         let mut click = None;
         let mut remove_group = None;
-        egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
+        frame::central(ui, |ui| {
+            show_message(ui, &self.message);
             for (g, group) in self.lists[self.list].groups.iter().enumerate() {
                 ui.horizontal(|ui| {
                     ui.strong(if group.name.is_empty() {

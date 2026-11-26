@@ -17,7 +17,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     HOT_KEY_MODIFIERS, MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, MOD_SHIFT, RegisterHotKey, UnregisterHotKey,
 };
 use wm_core::{
-    AppCtx, Category, Tool,
+    AppCtx, Category, Layout, Tool,
     egui::{self, Vec2},
     icons, paths,
     process::{json_list, powershell_json},
@@ -25,7 +25,7 @@ use wm_core::{
     shell::{KnownFolder, ShortcutSpec, create_shortcut, known_folder, read_shortcut},
     task::BackgroundTask,
     tool_settings,
-    ui::{Confirm, Message, ToolButton, show_message, status_bar, toolbar},
+    ui::{Confirm, Message, ToolButton, frame, show_message},
 };
 
 const TOOL: &str = "hotkeys";
@@ -796,7 +796,7 @@ impl Tool for HotkeyManager {
         } else {
             "Turn off"
         };
-        match toolbar(
+        match frame::toolbar(
             ui,
             &[
                 Some(ToolButton::new(icons::PLUS, "New hotkey")),
@@ -814,6 +814,7 @@ impl Tool for HotkeyManager {
                 Some(ToolButton::new(icons::CLOCK_COUNTER_CLOCKWISE, "Restore")),
                 Some(ToolButton::new(icons::ARROWS_CLOCKWISE, "Refresh")),
             ],
+            |_| {},
         ) {
             Some(0) => self.draft = Some(Draft::default()),
             Some(1) => {
@@ -884,10 +885,11 @@ impl Tool for HotkeyManager {
             Some(7) => self.items = None,
             _ => {}
         }
-        ui.weak("Hotkeys are stored in shortcuts, so Windows handles them even when this app is closed.");
-        show_message(ui, &self.message);
         let Some(items) = self.items.clone() else {
-            ui.spinner();
+            frame::central(ui, |ui| {
+                show_message(ui, &self.message);
+                ui.spinner();
+            });
             return;
         };
         let conflicts = items
@@ -906,9 +908,20 @@ impl Tool for HotkeyManager {
                 String::new()
             }
         );
-        egui::Panel::bottom("hk-status")
-            .frame(egui::Frame::NONE)
-            .show(ui, |ui| status_bar(ui, &status, |_| {}));
+        frame::status(ui, &status, |ui| {
+            ui.weak("Hotkeys live in shortcuts, so Windows handles them even when this app is closed.");
+        });
+        frame::central_fixed(ui, |ui| self.table(ui, &items));
+    }
+
+    fn layout(&self) -> Layout {
+        Layout::Fill
+    }
+}
+
+impl HotkeyManager {
+    fn table(&mut self, ui: &mut egui::Ui, items: &[HotkeyItem]) {
+        show_message(ui, &self.message);
         let ours = our_folder();
         let mut clicked = None;
         ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);

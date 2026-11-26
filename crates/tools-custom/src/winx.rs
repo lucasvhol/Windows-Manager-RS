@@ -24,12 +24,12 @@ use windows::Win32::UI::Shell::PropertiesSystem::IPropertyStore;
 use windows::Win32::UI::Shell::{HashData, IShellLinkW, ShellLink};
 use windows::core::{GUID, HSTRING, Interface};
 use wm_core::{
-    AppCtx, Category, Tool,
+    AppCtx, Category, Layout, Tool,
     egui::{self, Vec2},
     icons, paths,
     process::restart_explorer,
     safety::UndoAction,
-    ui::{Confirm, Message, ToolButton, show_message, status_bar, toolbar},
+    ui::{Confirm, Message, ToolButton, frame, show_message},
 };
 
 const TOOL: &str = "winx";
@@ -716,6 +716,10 @@ impl WinXEditor {
 }
 
 impl Tool for WinXEditor {
+    fn layout(&self) -> Layout {
+        Layout::Fill
+    }
+
     fn id(&self) -> &'static str {
         "winx"
     }
@@ -767,7 +771,7 @@ impl Tool for WinXEditor {
         let (up, down) = (neighbour(true), neighbour(false));
         let shown = selected.as_ref().is_some_and(|s| !s.hidden);
 
-        match toolbar(
+        match frame::toolbar(
             ui,
             &[
                 Some(ToolButton::new(icons::PLUS, "Add entry")),
@@ -780,6 +784,7 @@ impl Tool for WinXEditor {
                 None,
                 Some(ToolButton::new(icons::ARROWS_CLOCKWISE, "Restart Explorer").enabled(self.restart_pending)),
             ],
+            |_| {},
         ) {
             Some(0) => {
                 self.add = Some(AddDialog {
@@ -830,7 +835,7 @@ impl Tool for WinXEditor {
             }
             _ => {}
         }
-        ui.horizontal(|ui| {
+        frame::options(ui, |ui| {
             ui.weak("Untick entries to hide them. Changes appear after Explorer restarts.");
             if let Some(s) = selected.as_ref().filter(|s| !s.hidden) {
                 ui.separator();
@@ -856,7 +861,6 @@ impl Tool for WinXEditor {
                 }
             }
         });
-        show_message(ui, &self.message);
         let status = format!(
             "{} entries in {} groups{}",
             items.iter().filter(|i| !i.hidden).count(),
@@ -867,14 +871,13 @@ impl Tool for WinXEditor {
                 ""
             }
         );
-        egui::Panel::bottom("winx-status")
-            .frame(egui::Frame::NONE)
-            .show(ui, |ui| status_bar(ui, &status, |_| {}));
+        frame::status(ui, &status, |_| {});
 
         let mut toggle = None;
         let mut clicked = None;
         let mut group_action = None;
-        egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
+        frame::central(ui, |ui| {
+            show_message(ui, &self.message);
             for g in groups() {
                 ui.horizontal(|ui| {
                     ui.strong(&g);

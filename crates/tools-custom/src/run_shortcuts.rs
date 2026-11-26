@@ -15,7 +15,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     HWND_BROADCAST, SMTO_ABORTIFHUNG, SendMessageTimeoutW, WM_SETTINGCHANGE,
 };
 use wm_core::{
-    AppCtx, Category, Tool,
+    AppCtx, Category, Layout, Tool,
     egui::{self, Vec2},
     icons,
     paths::{self, definitely_missing},
@@ -23,7 +23,7 @@ use wm_core::{
     registry,
     safety::UndoAction,
     shell::{ShortcutSpec, create_shortcut, read_shortcut, shell_open},
-    ui::{Confirm, Message, ToolButton, show_message, status_bar, toolbar},
+    ui::{Confirm, Message, ToolButton, frame, show_message},
 };
 
 const TOOL: &str = "runshortcuts";
@@ -547,7 +547,7 @@ impl Tool for RunShortcuts {
             .and_then(|k| items.iter().find(|a| &a.location == k))
             .cloned();
         let writable = selected.as_ref().is_some_and(|a| !a.machine || ctx.elevated);
-        match toolbar(
+        match frame::toolbar(
             ui,
             &[
                 Some(ToolButton::new(icons::PLUS, "New name")),
@@ -560,6 +560,7 @@ impl Tool for RunShortcuts {
                 Some(ToolButton::new(icons::CLOCK_COUNTER_CLOCKWISE, "Restore")),
                 Some(ToolButton::new(icons::ARROWS_CLOCKWISE, "Refresh")),
             ],
+            |_| {},
         ) {
             Some(0) => self.draft = Some(NewAlias::default()),
             Some(1) => {
@@ -604,25 +605,34 @@ impl Tool for RunShortcuts {
             Some(6) => self.items = None,
             _ => {}
         }
-        ui.weak("Type these names in the Run dialog (Win+R) or File Explorer's address bar.");
-        show_message(ui, &self.message);
+        let filter_hint = ctx.i18n.tr("common-filter");
+        frame::options(ui, |ui| {
+            ui.add(
+                egui::TextEdit::singleline(&mut self.filter)
+                    .hint_text(format!("{}  {filter_hint}", icons::MAGNIFYING_GLASS))
+                    .desired_width(200.0),
+            );
+        });
         let status = format!(
             "{} names, {} yours, {} whose target is missing",
             items.len(),
             items.iter().filter(|a| !a.machine).count(),
             items.iter().filter(|a| a.broken).count()
         );
-        egui::Panel::bottom("run-status")
-            .frame(egui::Frame::NONE)
-            .show(ui, |ui| {
-                status_bar(ui, &status, |ui| {
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.filter)
-                            .hint_text(ctx.i18n.tr("common-filter"))
-                            .desired_width(160.0),
-                    );
-                })
-            });
+        frame::status(ui, &status, |ui| {
+            ui.weak("Type these names in the Run dialog (Win+R) or File Explorer's address bar.");
+        });
+        frame::central_fixed(ui, |ui| self.table(ui, &items));
+    }
+
+    fn layout(&self) -> Layout {
+        Layout::Fill
+    }
+}
+
+impl RunShortcuts {
+    fn table(&mut self, ui: &mut egui::Ui, items: &[Alias]) {
+        show_message(ui, &self.message);
         let f = self.filter.to_lowercase();
         let visible: Vec<&Alias> = items
             .iter()

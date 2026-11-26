@@ -467,6 +467,16 @@ pub mod frame {
             .inner
     }
 
+    /// The rest of the window as a new parent for frame regions, without margins:
+    /// for a page with its own toolbar, left pane or status bar inside a tool whose
+    /// section list already uses the window's left pane.
+    pub fn nested<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
+        egui::CentralPanel::default()
+            .frame(egui::Frame::NONE)
+            .show(ui, add)
+            .inner
+    }
+
     /// Like [`central`] but without the scroll area, for content that scrolls itself
     /// (tables) or fills the space (charts).
     pub fn central_fixed<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
