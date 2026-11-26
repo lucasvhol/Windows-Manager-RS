@@ -17,7 +17,7 @@ use wm_core::{
     safety::UndoAction,
     shell::{KnownFolder, ShortcutSpec, create_shortcut, known_folder, shell_open},
     tweaks::TweakPanel,
-    ui::{Message, ToolButton, frame, section_nav, show_message},
+    ui::{Message, frame, show_message},
 };
 
 const TOOL: &str = "lockdown";
@@ -381,9 +381,9 @@ fn shortcut_at(lnk: &Path, page: &str, title: &str) -> Result<()> {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Tab {
-    Restrictions,
     Pages,
     ControlPanel,
+    Restrictions,
 }
 
 pub struct SettingsSecurity {
@@ -391,52 +391,42 @@ pub struct SettingsSecurity {
     panel: TweakPanel,
     /// Mode and ticked pages being edited; loaded from the policy on first view.
     pages: Option<(Mode, Vec<String>)>,
+    /// The pages policy as it is now (for the Status column).
+    pages_applied: Option<Option<(Mode, Vec<String>)>>,
     cpl: Option<(Mode, Vec<String>)>,
+    cpl_applied: Option<Option<(Mode, Vec<String>)>>,
     cpl_items: Option<Vec<CplItem>>,
     filter: String,
-    place: Place,
+    /// The highlighted page id or Control Panel canonical name.
+    current: Option<String>,
     message: Message,
 }
 
 impl Default for SettingsSecurity {
     fn default() -> Self {
         Self {
-            tab: Tab::Restrictions,
+            tab: Tab::Pages,
             panel: TweakPanel::new(TOOL, include_str!("../tweaks/lockdown.toml"))
                 .with_extra(Box::new(crate::system_keys::WindowsKeysSetting::default())),
             pages: None,
+            pages_applied: None,
             cpl: None,
+            cpl_applied: None,
             cpl_items: None,
             filter: String::new(),
-            place: Place::Desktop,
+            current: None,
             message: None,
         }
     }
 }
 
-fn mode_picker(ui: &mut egui::Ui, mode: &mut Mode, what: &str) {
-    ui.radio_value(mode, Mode::Hide, format!("Hide the ticked {what}"));
-    ui.radio_value(mode, Mode::ShowOnly, format!("Show only the ticked {what}"));
-}
-
-/// Apply / Allow all toolbar of the two list pages; returns the list to write.
-fn apply_toolbar(ui: &mut egui::Ui, enabled: bool, ticked: &[String]) -> Option<Vec<String>> {
-    match frame::toolbar(
-        ui,
-        &[
-            Some(ToolButton::new(icons::CHECK, "Apply").enabled(enabled)),
-            Some(ToolButton::new(icons::ARROW_COUNTER_CLOCKWISE, "Allow all").enabled(enabled)),
-        ],
-        |_| {},
-    ) {
-        Some(0) => Some(ticked.to_vec()),
-        Some(1) => Some(Vec::new()),
-        _ => None,
+/// Whether a policy hides `id` (Hide lists it, Show only leaves it out).
+pub fn hidden_by(policy: Option<&(Mode, Vec<String>)>, id: &str) -> bool {
+    match policy {
+        Some((Mode::Hide, list)) => list.iter().any(|p| p.eq_ignore_ascii_case(id)),
+        Some((Mode::ShowOnly, list)) => !list.is_empty() && !list.iter().any(|p| p.eq_ignore_ascii_case(id)),
+        None => false,
     }
-}
-
-fn filter_hint(ctx: &AppCtx<'_>) -> String {
-    format!("{}  {}", icons::MAGNIFYING_GLASS, ctx.i18n.tr("common-filter"))
 }
 
 fn toggle(list: &mut Vec<String>, item: &str, on: bool) {
@@ -445,6 +435,102 @@ fn toggle(list: &mut Vec<String>, item: &str, on: bool) {
         list.push(item.to_owned());
     } else if !on && has {
         list.retain(|p| !p.eq_ignore_ascii_case(item));
+    }
+}
+
+/// What the bottom bar asked for.
+enum Action {
+    Apply,
+    Restore,
+    Execute,
+    Shortcut(Place),
+    OpenAll,
+}
+
+/// The original's bottom bar: `open_label` on the left; Hide, Show only, Restore,
+/// Execute (and Shortcut for Settings pages) on the right.
+fn bottom_bar(
+    ui: &mut egui::Ui,
+    open_label: &str,
+    mode: Mode,
+    writable: bool,
+    has_current: bool,
+    shortcut: bool,
+) -> Option<Action> {
+    let mut act = None;
+    let mut open_all = false;
+    frame::footer(
+        ui,
+        |ui| {
+            open_all = ui.button(format!("{}  {open_label}", icons::GEAR)).clicked();
+        },
+        |ui| {
+            if shortcut {
+                ui.add_enabled_ui(has_current, |ui| {
+                    ui.menu_button("Shortcut", |ui| {
+                        if ui.button("On the desktop").clicked() {
+                            act = Some(Action::Shortcut(Place::Desktop));
+                            ui.close();
+                        }
+                        if ui.button("In Start").clicked() {
+                            act = Some(Action::Shortcut(Place::Start));
+                            ui.close();
+                        }
+                    });
+                });
+            }
+            if ui
+                .add_enabled(has_current, egui::Button::new("Execute"))
+                .clicked()
+            {
+                act = Some(Action::Execute);
+            }
+            if ui
+                .add_enabled(writable, egui::Button::new("Restore"))
+                .on_hover_text("Allow everything again")
+                .clicked()
+            {
+                act = Some(Action::Restore);
+            }
+            if ui
+                .add_enabled(writable && mode == Mode::ShowOnly, egui::Button::new("Show only"))
+                .on_hover_text("Allow only the ticked ones")
+                .clicked()
+            {
+                act = Some(Action::Apply);
+            }
+            if ui
+                .add_enabled(writable && mode == Mode::Hide, egui::Button::new("Hide"))
+                .on_hover_text("Hide the ticked ones")
+                .clicked()
+            {
+                act = Some(Action::Apply);
+            }
+        },
+    );
+    if open_all {
+        act = Some(Action::OpenAll);
+    }
+    act
+}
+
+/// The mode switch and search box under the tabs.
+fn mode_strip(ui: &mut egui::Ui, mode: &mut Mode, filter: &mut String) {
+    frame::options(ui, |ui| {
+        ui.radio_value(mode, Mode::Hide, "Hide mode");
+        ui.radio_value(mode, Mode::ShowOnly, "Show only mode");
+        ui.separator();
+        ui.add(
+            egui::TextEdit::singleline(filter)
+                .hint_text(format!("{}  Search", icons::MAGNIFYING_GLASS))
+                .desired_width(200.0),
+        );
+    });
+}
+
+fn status_cell(ui: &mut egui::Ui, hidden: bool) {
+    if hidden {
+        ui.colored_label(ui.visuals().warn_fg_color, "Hidden");
     }
 }
 
@@ -457,27 +543,14 @@ impl SettingsSecurity {
     }
 
     fn pages_tab(&mut self, ui: &mut egui::Ui, ctx: &mut AppCtx<'_>) {
+        let applied = self.pages_applied.get_or_insert_with(read_pages).clone();
         let (mut mode, mut ticked) = self
             .pages
             .take()
-            .unwrap_or_else(|| read_pages().unwrap_or((Mode::Hide, Vec::new())));
-        let apply = apply_toolbar(ui, ctx.elevated, &ticked);
-        let filter_hint = filter_hint(ctx);
-        frame::options(ui, |ui| {
-            mode_picker(ui, &mut mode, "pages");
-            ui.separator();
-            ui.add(
-                egui::TextEdit::singleline(&mut self.filter)
-                    .hint_text(filter_hint)
-                    .desired_width(180.0),
-            );
-            ui.separator();
-            ui.label("Shortcuts go on");
-            ui.radio_value(&mut self.place, Place::Desktop, "the desktop");
-            ui.radio_value(&mut self.place, Place::Start, "Start");
-        });
+            .unwrap_or_else(|| applied.clone().unwrap_or((Mode::Hide, Vec::new())));
+        mode_strip(ui, &mut mode, &mut self.filter);
         let status = if mode == Mode::ShowOnly && ticked.is_empty() {
-            "No page ticked: with none, Apply allows every page.".to_owned()
+            "No page ticked: with none, Show only allows every page.".to_owned()
         } else {
             format!("{} of {} pages ticked", ticked.len(), PAGES.len())
         };
@@ -491,114 +564,161 @@ impl SettingsSecurity {
                 );
             }
         });
+        let act = bottom_bar(
+            ui,
+            "Open Settings",
+            mode,
+            ctx.elevated,
+            self.current.is_some(),
+            true,
+        );
+
+        // The original's tree: one entry per Settings section, its pages inside.
         let filter = self.filter.to_lowercase();
-        let rows: Vec<_> = PAGES
-            .iter()
-            .filter(|(id, title, section)| {
-                filter.is_empty()
-                    || [*id, *title, *section]
-                        .iter()
-                        .any(|s| s.to_lowercase().contains(&filter))
-            })
-            .collect();
-        let mut open = None;
-        let mut shortcut = None;
-        frame::central_fixed(ui, |ui| {
+        let mut sections: Vec<&str> = Vec::new();
+        for (_, _, s) in PAGES {
+            if !sections.contains(s) {
+                sections.push(s);
+            }
+        }
+        let mut pick = None;
+        frame::central(ui, |ui| {
             show_message(ui, &self.message);
-            ui.weak("Choose which Settings pages people on this PC can open.");
-            let row_h = ui.text_style_height(&egui::TextStyle::Body) + 8.0;
-            TableBuilder::new(ui)
-                .striped(true)
-                .column(Column::exact(28.0))
-                .column(Column::initial(220.0).at_least(140.0))
-                .column(Column::initial(150.0))
-                .column(Column::initial(210.0))
-                .column(Column::remainder().at_least(150.0))
-                .header(row_h, |mut h| {
-                    for t in ["", "Page", "Section", "Name", ""] {
-                        h.col(|ui| {
-                            ui.strong(t);
-                        });
+            let (head, _) =
+                ui.allocate_exact_size(egui::vec2(ui.available_width(), 20.0), egui::Sense::hover());
+            let strong = ui.visuals().strong_text_color();
+            for (x, t) in [(4.0, "Name"), (head.width() - 110.0, "Status")] {
+                ui.painter().text(
+                    head.left_center() + egui::vec2(x, 0.0),
+                    egui::Align2::LEFT_CENTER,
+                    t,
+                    egui::FontId::proportional(13.5),
+                    strong,
+                );
+            }
+            ui.separator();
+            for section in sections {
+                let rows: Vec<_> = PAGES
+                    .iter()
+                    .filter(|(_, _, s)| *s == section)
+                    .filter(|(id, title, s)| {
+                        filter.is_empty()
+                            || [*id, *title, *s]
+                                .iter()
+                                .any(|v| v.to_lowercase().contains(&filter))
+                    })
+                    .collect();
+                if rows.is_empty() {
+                    continue;
+                }
+                let on_count = rows
+                    .iter()
+                    .filter(|(id, _, _)| ticked.iter().any(|p| p.eq_ignore_ascii_case(id)))
+                    .count();
+                let id = ui.make_persistent_id(("ss-section", section));
+                egui::collapsing_header::CollapsingState::load_with_default_open(
+                    ui.ctx(),
+                    id,
+                    !filter.is_empty(),
+                )
+                .show_header(ui, |ui| {
+                    let mut all = on_count == rows.len();
+                    if ui
+                        .add(
+                            egui::Checkbox::new(&mut all, section)
+                                .indeterminate(on_count > 0 && on_count < rows.len()),
+                        )
+                        .changed()
+                    {
+                        for (pid, _, _) in &rows {
+                            toggle(&mut ticked, pid, all);
+                        }
                     }
                 })
-                .body(|body| {
-                    body.rows(row_h, rows.len(), |mut row| {
-                        let (id, title, section) = rows[row.index()];
-                        row.col(|ui| {
-                            let mut on = ticked.iter().any(|p| p.eq_ignore_ascii_case(id));
+                .body(|ui| {
+                    for (pid, title, _) in &rows {
+                        ui.horizontal(|ui| {
+                            let mut on = ticked.iter().any(|p| p.eq_ignore_ascii_case(pid));
                             if ui.checkbox(&mut on, "").changed() {
-                                toggle(&mut ticked, id, on);
+                                toggle(&mut ticked, pid, on);
                             }
-                        });
-                        row.col(|ui| {
-                            ui.label(*title);
-                        });
-                        row.col(|ui| {
-                            ui.label(*section);
-                        });
-                        row.col(|ui| {
-                            ui.monospace(*id);
-                        });
-                        row.col(|ui| {
-                            ui.horizontal(|ui| {
-                                if ui.small_button("Open").clicked() {
-                                    open = Some(*id);
-                                }
-                                if ui.small_button("Create shortcut").clicked() {
-                                    shortcut = Some((*id, *title));
-                                }
+                            let sel = self.current.as_deref() == Some(*pid);
+                            if ui
+                                .selectable_label(sel, *title)
+                                .on_hover_text(format!("ms-settings:{pid}"))
+                                .clicked()
+                            {
+                                pick = Some((*pid).to_owned());
+                            }
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                ui.add_space(60.0);
+                                status_cell(ui, hidden_by(applied.as_ref(), pid));
                             });
                         });
-                    });
+                    }
                 });
-        });
-        if let Some(id) = open
-            && let Err(e) = shell_open(&format!("ms-settings:{id}"), "")
-        {
-            self.message = Some(Err(format!("{e:#}")));
-        }
-        if let Some((id, title)) = shortcut
-            && !self.dry(ctx)
-        {
-            self.message = Some(
-                create_page_shortcut(ctx, id, title, self.place)
-                    .map(|p| format!("Created {}.", p.display()))
-                    .map_err(|e| format!("{e:#}")),
-            );
-        }
-        if let Some(list) = apply
-            && !self.dry(ctx)
-        {
-            self.message = Some(
-                write_pages(ctx, mode, &list)
-                    .map(|m| format!("{m}. Reopen Settings to see the change."))
-                    .map_err(|e| format!("{e:#}")),
-            );
-            if list.is_empty() {
-                ticked.clear();
             }
+        });
+        if pick.is_some() {
+            self.current = pick;
+        }
+        match act {
+            Some(Action::OpenAll) => {
+                let _ = shell_open("ms-settings:", "");
+            }
+            Some(Action::Execute) => {
+                if let Some(id) = &self.current
+                    && let Err(e) = shell_open(&format!("ms-settings:{id}"), "")
+                {
+                    self.message = Some(Err(format!("{e:#}")));
+                }
+            }
+            Some(Action::Shortcut(place)) => {
+                if let Some(id) = self.current.clone()
+                    && !self.dry(ctx)
+                {
+                    let title = PAGES
+                        .iter()
+                        .find(|(p, _, _)| *p == id)
+                        .map(|(_, t, _)| *t)
+                        .unwrap_or("Settings");
+                    self.message = Some(
+                        create_page_shortcut(ctx, &id, title, place)
+                            .map(|p| format!("Created {}.", p.display()))
+                            .map_err(|e| format!("{e:#}")),
+                    );
+                }
+            }
+            Some(a @ (Action::Apply | Action::Restore)) if !self.dry(ctx) => {
+                let list = if matches!(a, Action::Restore) {
+                    Vec::new()
+                } else {
+                    ticked.clone()
+                };
+                self.message = Some(
+                    write_pages(ctx, mode, &list)
+                        .map(|m| format!("{m}. Reopen Settings to see the change."))
+                        .map_err(|e| format!("{e:#}")),
+                );
+                if list.is_empty() {
+                    ticked.clear();
+                }
+                self.pages_applied = None;
+            }
+            _ => {}
         }
         self.pages = Some((mode, ticked));
     }
 
     fn cpl_tab(&mut self, ui: &mut egui::Ui, ctx: &mut AppCtx<'_>) {
         let items = self.cpl_items.get_or_insert_with(cpl_items).clone();
+        let applied = self.cpl_applied.get_or_insert_with(read_cpl).clone();
         let (mut mode, mut ticked) = self
             .cpl
             .take()
-            .unwrap_or_else(|| read_cpl().unwrap_or((Mode::Hide, Vec::new())));
+            .unwrap_or_else(|| applied.clone().unwrap_or((Mode::Hide, Vec::new())));
         let writable = ctx.elevated || user_policy_writable();
-        let apply = apply_toolbar(ui, writable, &ticked);
-        let filter_hint = filter_hint(ctx);
-        frame::options(ui, |ui| {
-            mode_picker(ui, &mut mode, "items");
-            ui.separator();
-            ui.add(
-                egui::TextEdit::singleline(&mut self.filter)
-                    .hint_text(filter_hint)
-                    .desired_width(180.0),
-            );
-        });
+        mode_strip(ui, &mut mode, &mut self.filter);
         frame::status(
             ui,
             &format!("{} of {} items ticked", ticked.len(), items.len()),
@@ -613,6 +733,14 @@ impl SettingsSecurity {
                 }
             },
         );
+        let act = bottom_bar(
+            ui,
+            "Open Control Panel",
+            mode,
+            writable,
+            self.current.is_some(),
+            false,
+        );
         let filter = self.filter.to_lowercase();
         let rows: Vec<_> = items
             .iter()
@@ -622,19 +750,19 @@ impl SettingsSecurity {
                     || i.canonical.to_lowercase().contains(&filter)
             })
             .collect();
-        let mut open = None;
+        let mut pick = None;
         frame::central_fixed(ui, |ui| {
             show_message(ui, &self.message);
-            ui.weak("Choose which Control Panel items this account can open.");
             let row_h = ui.text_style_height(&egui::TextStyle::Body) + 8.0;
             TableBuilder::new(ui)
                 .striped(true)
+                .sense(egui::Sense::click())
                 .column(Column::exact(28.0))
-                .column(Column::initial(240.0).at_least(140.0))
+                .column(Column::initial(260.0).at_least(140.0))
                 .column(Column::initial(280.0))
                 .column(Column::remainder().at_least(60.0))
                 .header(row_h, |mut h| {
-                    for t in ["", "Item", "Canonical name", ""] {
+                    for t in ["", "Name", "Canonical name", "Status"] {
                         h.col(|ui| {
                             ui.strong(t);
                         });
@@ -643,6 +771,7 @@ impl SettingsSecurity {
                 .body(|body| {
                     body.rows(row_h, rows.len(), |mut row| {
                         let item = rows[row.index()];
+                        row.set_selected(self.current.as_deref() == Some(item.canonical.as_str()));
                         row.col(|ui| {
                             let mut on = ticked.iter().any(|p| p.eq_ignore_ascii_case(&item.canonical));
                             if ui.checkbox(&mut on, "").changed() {
@@ -656,32 +785,48 @@ impl SettingsSecurity {
                             ui.monospace(&item.canonical);
                         });
                         row.col(|ui| {
-                            if ui.small_button("Open").clicked() {
-                                open = Some(item.canonical.clone());
-                            }
+                            status_cell(ui, hidden_by(applied.as_ref(), &item.canonical));
                         });
+                        if row.response().clicked() {
+                            pick = Some(item.canonical.clone());
+                        }
                     });
                 });
         });
-        if let Some(c) = open
-            && let Err(e) = shell_open(
-                &paths::expand_env(r"%WINDIR%\System32\control.exe"),
-                &format!("/name {c}"),
-            )
-        {
-            self.message = Some(Err(format!("{e:#}")));
+        if pick.is_some() {
+            self.current = pick;
         }
-        if let Some(list) = apply
-            && !self.dry(ctx)
-        {
-            self.message = Some(
-                write_cpl(ctx, mode, &list)
-                    .map(|m| format!("{m}. Reopen Control Panel to see the change."))
-                    .map_err(|e| format!("{e:#}")),
-            );
-            if list.is_empty() {
-                ticked.clear();
+        match act {
+            Some(Action::OpenAll) => {
+                let _ = shell_open(&paths::expand_env(r"%WINDIR%\System32\control.exe"), "");
             }
+            Some(Action::Execute) => {
+                if let Some(c) = &self.current
+                    && let Err(e) = shell_open(
+                        &paths::expand_env(r"%WINDIR%\System32\control.exe"),
+                        &format!("/name {c}"),
+                    )
+                {
+                    self.message = Some(Err(format!("{e:#}")));
+                }
+            }
+            Some(a @ (Action::Apply | Action::Restore)) if !self.dry(ctx) => {
+                let list = if matches!(a, Action::Restore) {
+                    Vec::new()
+                } else {
+                    ticked.clone()
+                };
+                self.message = Some(
+                    write_cpl(ctx, mode, &list)
+                        .map(|m| format!("{m}. Reopen Control Panel to see the change."))
+                        .map_err(|e| format!("{e:#}")),
+                );
+                if list.is_empty() {
+                    ticked.clear();
+                }
+                self.cpl_applied = None;
+            }
+            _ => {}
         }
         self.cpl = Some((mode, ticked));
     }
@@ -697,22 +842,32 @@ impl Tool for SettingsSecurity {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, ctx: &mut AppCtx<'_>) {
-        const TABS: [Tab; 3] = [Tab::Restrictions, Tab::Pages, Tab::ControlPanel];
-        let mut sel = TABS.iter().position(|t| *t == self.tab).unwrap_or(0);
-        if frame::left(ui, 200.0, |ui| {
-            section_nav(
-                ui,
-                &[
-                    (icons::SHIELD, "Restrictions"),
-                    (icons::GEAR, "Settings pages"),
-                    (icons::SLIDERS, "Control Panel items"),
-                ],
-                &mut sel,
-            )
-        }) {
+        // The original's tabs (Restrictions is ours).
+        let mut tab = self.tab;
+        egui::Panel::top("ss-tabs")
+            .resizable(false)
+            .frame(egui::Frame::new().inner_margin(egui::Margin::symmetric(10, 6)))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    for (t, icon, label) in [
+                        (Tab::Pages, icons::GEAR, "Settings"),
+                        (Tab::ControlPanel, icons::SLIDERS, "Control Panel"),
+                        (Tab::Restrictions, icons::SHIELD, "Restrictions"),
+                    ] {
+                        ui.selectable_value(
+                            &mut tab,
+                            t,
+                            egui::RichText::new(format!("{icon}  {label}")).size(14.5),
+                        );
+                    }
+                });
+            });
+        if tab != self.tab {
+            self.tab = tab;
             self.message = None;
+            self.current = None;
+            self.filter.clear();
         }
-        self.tab = TABS[sel];
         match self.tab {
             Tab::Restrictions => frame::nested(ui, |ui| {
                 frame::options(ui, |ui| {
@@ -743,6 +898,18 @@ impl Tool for SettingsSecurity {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hidden_status() {
+        let hide = (Mode::Hide, vec!["display".to_owned()]);
+        assert!(hidden_by(Some(&hide), "Display"));
+        assert!(!hidden_by(Some(&hide), "sound"));
+        let only = (Mode::ShowOnly, vec!["display".to_owned()]);
+        assert!(!hidden_by(Some(&only), "display"));
+        assert!(hidden_by(Some(&only), "sound"));
+        assert!(!hidden_by(Some(&(Mode::ShowOnly, Vec::new())), "sound"));
+        assert!(!hidden_by(None, "sound"));
+    }
 
     #[test]
     fn visibility_round_trip() {

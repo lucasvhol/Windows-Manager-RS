@@ -76,7 +76,7 @@ Tools reachable only from a dropdown: Windows Features (System Protection), App 
 | StartMenuManager.exe | startmenu | Ticked list of Start menu shortcuts (folders fold open), action column on the right with the search box, status "Total n" | Columns Name, User (All Users / Current User), Available ("No" in red; those start ticked); actions Rename, Remove, Open Folder, Launch | Pin to Taskbar is left out (Windows only allows pinning from Start itself); top-level shortcuts come before folders | Kept: Add Program, Add to All apps, Tick unavailable, Refresh; Taskbar and Start Backup and Start Options open as pages | ✅ |
 | (hub) System Security | systemsecurity | | | | | ❌ |
 | (hub) Other Security | othersecurity | | | | | ❌ |
-| SettingsSecurity.exe | lockdown | | | | | ❌ |
+| SettingsSecurity.exe | lockdown | Tabs Settings / Control Panel on top, Hide mode / Show only mode + search, tree of Settings sections with tick boxes and a Status column, bottom bar Open Settings | Hide, Show only, Restore, Execute, Shortcut, status line | Buttons and columns as the original | Restrictions (our account restrictions, hardening and system keys) is a third tab; Control Panel items are a flat list with the canonical name | | ✅ |
 | FileSecurity.exe | filesecurity, unlocker | | | | | ❌ |
 | PrivacyProtector.exe | privacy | | | | | ❌ |
 | SecurityLock.exe | securitylock, applocker | | | | | ❌ |
