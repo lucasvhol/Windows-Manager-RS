@@ -1,0 +1,11 @@
+# Wi-Fi (wlanapi.dll) and System Restore (srclient.dll) are missing on some Windows
+# installs (Windows Server, editions without those features). Delay-load them so the
+# app and its tests still start there; only the Wi-Fi and restore-point calls fail.
+[target.x86_64-pc-windows-msvc]
+rustflags = [
+    "-C", "link-arg=/DELAYLOAD:wlanapi.dll",
+    "-C", "link-arg=/DELAYLOAD:srclient.dll",
+    "-C", "link-arg=delayimp.lib",
+    # Binaries that never call them (build scripts) would warn "no imports found".
+    "-C", "link-arg=/IGNORE:4199",
+]
