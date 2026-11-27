@@ -808,11 +808,11 @@ mod tests {
 
     #[test]
     fn real_user_verb_toggle_shift_position_delete_and_undo() {
-        let class = r"Directory\Background";
-        let key = format!(
-            r"HKCU\Software\Classes\{class}\shell\wm-test-{}",
-            std::process::id()
-        );
+        // A class of its own: tests running in parallel change and restore keys under
+        // the shared shell classes (Directory\Background…), which could wipe this one.
+        let class = format!("WinManagerTest{}", std::process::id());
+        let class_key = format!(r"HKCU\Software\Classes\{class}");
+        let key = format!(r"{class_key}\shell\wm-test");
         registry::write_raw(&key, "MUIVerb", &registry::string("WM Test")).unwrap();
         registry::write_raw(
             &format!(r"{key}\command"),
@@ -820,7 +820,11 @@ mod tests {
             &registry::string(r#""C:\Windows\no-such-wm.exe" "%V""#),
         )
         .unwrap();
-        let find = || enumerate(&[class.to_owned()]).into_iter().find(|e| e.key == key);
+        let find = || {
+            enumerate(std::slice::from_ref(&class))
+                .into_iter()
+                .find(|e| e.key == key)
+        };
         let e = find().expect("test verb listed");
         assert!(e.enabled && e.broken && e.display == "WM Test");
         with_ctx(|ctx, journal| {
@@ -839,7 +843,7 @@ mod tests {
             journal.undo(journal.entries()[0].id).unwrap();
             assert!(find().is_some(), "undo re-imports the deleted verb");
         });
-        let (root, sub) = registry::split_path(&key).unwrap();
+        let (root, sub) = registry::split_path(&class_key).unwrap();
         root.delete_subkey_all(sub).unwrap();
     }
 
