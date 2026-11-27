@@ -739,7 +739,7 @@ impl Tool for SuperCopy {
 
         let idle = self.task.is_none();
         let ready = !self.sources.is_empty() && self.dest.is_some() && idle;
-        let start_label = format!("Start {}", self.opts.mode.label().to_lowercase());
+        let start_label = "Start Current Scheme".to_owned();
         match frame::toolbar(
             ui,
             &[
@@ -789,21 +789,30 @@ impl Tool for SuperCopy {
             _ => {}
         }
         frame::options(ui, |ui| self.schemes_ui(ui));
+        // The original's status bar: current scheme, scheme count, shutdown box.
+        let saved_name = self
+            .saved
+            .schemes
+            .iter()
+            .any(|s| s.name == self.scheme_name.trim() && !self.scheme_name.trim().is_empty());
         let status = format!(
-            "{} sources → {}",
-            self.sources.len(),
-            self.dest
-                .as_ref()
-                .map_or("(no destination yet)".into(), |p| p.display().to_string())
+            "Current Scheme: {}  |  Scheme Count: {}",
+            if saved_name {
+                self.scheme_name.trim()
+            } else {
+                "Not saved"
+            },
+            self.saved.schemes.len()
         );
         let progress = self.task.as_ref().map(|t| (t.progress, t.status.clone()));
+        let mut shutdown = self.shutdown;
         frame::status(ui, &status, |ui| {
             if let Some((p, text)) = progress {
                 ui.add(egui::ProgressBar::new(p).desired_width(260.0).text(text));
-            } else {
-                ui.weak("Re-running a job resumes it: identical files are skipped.");
             }
+            ui.checkbox(&mut shutdown, "Shutdown when current scheme finished");
         });
+        self.shutdown = shutdown;
         frame::central(ui, |ui| {
             show_message(ui, &self.message);
             if self.shutdown_pending {
@@ -824,7 +833,7 @@ impl Tool for SuperCopy {
             }
             section(
                 ui,
-                &format!("Copy from ({})", self.sources.len()),
+                &format!("Source directory ({})", self.sources.len()),
                 |_| {},
                 |ui| {
                     if self.sources.is_empty() {
@@ -843,7 +852,7 @@ impl Tool for SuperCopy {
             ui.add_space(8.0);
             section(
                 ui,
-                "Copy to",
+                "Destination directory",
                 |_| {},
                 |ui| {
                     ui.label(
@@ -858,7 +867,7 @@ impl Tool for SuperCopy {
             ui.add_space(8.0);
             section(
                 ui,
-                "Options",
+                "Copy options",
                 |_| {},
                 |ui| {
                     self.options_ui(ui);
@@ -870,7 +879,7 @@ impl Tool for SuperCopy {
                         {
                             let _ = wm_core::shell::shell_open(&p.display().to_string(), "");
                         }
-                        ui.checkbox(&mut self.shutdown, "Shut down Windows when done");
+                        ui.weak("Re-running a scheme resumes it: identical files are skipped.");
                     });
                     if self.saved.log != before {
                         self.save_settings();
