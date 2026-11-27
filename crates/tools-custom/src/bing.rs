@@ -269,7 +269,7 @@ impl Tool for BingDownloader {
                 |ui| {
                     ui.horizontal(|ui| {
                         ui.checkbox(&mut self.settings.daily, "Download today's picture every day at");
-                        ui.add(egui::TextEdit::singleline(&mut self.settings.time).desired_width(50.0));
+                        ui.add(egui::TextEdit::singleline(&mut self.settings.time).desired_width(64.0));
                         ui.checkbox(&mut self.settings.wallpaper, "and set it as the wallpaper");
                     });
                     ui.weak(

@@ -177,9 +177,9 @@ impl ExtraSetting for ThemeScheduleSetting {
             ui.add_enabled_ui(self.edit.enabled, |ui| {
                 ui.horizontal(|ui| {
                     ui.label("Light from");
-                    ui.add(egui::TextEdit::singleline(&mut self.edit.light_at).desired_width(50.0));
+                    ui.add(egui::TextEdit::singleline(&mut self.edit.light_at).desired_width(64.0));
                     ui.label("Dark from");
-                    ui.add(egui::TextEdit::singleline(&mut self.edit.dark_at).desired_width(50.0));
+                    ui.add(egui::TextEdit::singleline(&mut self.edit.dark_at).desired_width(64.0));
                 });
             });
             ui.horizontal(|ui| {

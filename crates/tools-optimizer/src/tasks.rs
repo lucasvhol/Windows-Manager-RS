@@ -940,7 +940,7 @@ impl TaskSchedulerManager {
                         ui.label("Starting");
                         ui.horizontal(|ui| {
                             ui.add(egui::TextEdit::singleline(&mut form.date).desired_width(90.0));
-                            ui.add(egui::TextEdit::singleline(&mut form.time).desired_width(50.0));
+                            ui.add(egui::TextEdit::singleline(&mut form.time).desired_width(64.0));
                             ui.weak("YYYY-MM-DD  HH:MM");
                         });
                         ui.end_row();
