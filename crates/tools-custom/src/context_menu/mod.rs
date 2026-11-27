@@ -727,6 +727,10 @@ pub fn add_send_to(ctx: &AppCtx<'_>, target: &Path, name: &str) -> Result<PathBu
     Ok(lnk)
 }
 
+/// Serializes the tests that write under the shared shell classes in HKCU.
+#[cfg(test)]
+pub(crate) static TEST_REG_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -808,11 +812,13 @@ mod tests {
 
     #[test]
     fn real_user_verb_toggle_shift_position_delete_and_undo() {
-        // A class of its own: tests running in parallel change and restore keys under
-        // the shared shell classes (Directory\Background…), which could wipe this one.
-        let class = format!("WinManagerTest{}", std::process::id());
-        let class_key = format!(r"HKCU\Software\Classes\{class}");
-        let key = format!(r"{class_key}\shell\wm-test");
+        // The builtins test changes and restores keys under the same shell class.
+        let _serial = TEST_REG_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let class = r"Directory\Background".to_owned();
+        let key = format!(
+            r"HKCU\Software\Classes\{class}\shell\wm-test-{}",
+            std::process::id()
+        );
         registry::write_raw(&key, "MUIVerb", &registry::string("WM Test")).unwrap();
         registry::write_raw(
             &format!(r"{key}\command"),
@@ -843,7 +849,7 @@ mod tests {
             journal.undo(journal.entries()[0].id).unwrap();
             assert!(find().is_some(), "undo re-imports the deleted verb");
         });
-        let (root, sub) = registry::split_path(&class_key).unwrap();
+        let (root, sub) = registry::split_path(&key).unwrap();
         root.delete_subkey_all(sub).unwrap();
     }
 

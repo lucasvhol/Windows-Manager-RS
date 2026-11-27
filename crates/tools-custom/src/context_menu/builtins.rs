@@ -479,6 +479,9 @@ mod tests {
 
     #[test]
     fn add_builtin_and_handler_then_undo() {
+        let _serial = crate::context_menu::TEST_REG_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let label = format!("WM Test Cmd {}", std::process::id());
         /// Removes the test keys even if an assertion fails.
         struct Cleanup(String);
