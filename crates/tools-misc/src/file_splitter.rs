@@ -13,7 +13,7 @@ use wm_core::{
     icons,
     safety::UndoAction,
     task::{BackgroundTask, Progress},
-    ui::{Message, format_bytes, frame, section_nav, show_message},
+    ui::{Message, format_bytes, frame, show_message},
 };
 
 pub const MANIFEST_EXT: &str = "wmsplit";
@@ -229,6 +229,8 @@ enum Mode {
 type Outcome = (String, Vec<PathBuf>, Vec<PathBuf>);
 
 pub struct FileSplitter {
+    /// Wizard page: 0 = Split or Merge, 1 = the form.
+    page: u8,
     mode: Mode,
     source: Option<PathBuf>,
     out_dir: Option<PathBuf>,
@@ -246,6 +248,7 @@ pub struct FileSplitter {
 impl Default for FileSplitter {
     fn default() -> Self {
         Self {
+            page: 0,
             mode: Mode::Split,
             source: None,
             out_dir: None,
@@ -278,6 +281,7 @@ fn step(ui: &mut egui::Ui, n: u32, title: &str) {
 impl FileSplitter {
     fn choose(&mut self, p: PathBuf) {
         self.mode = if is_manifest(&p) { Mode::Join } else { Mode::Split };
+        self.page = 1;
         self.out_dir = p.parent().map(Path::to_path_buf);
         self.source = Some(p);
     }
@@ -339,37 +343,13 @@ impl Tool for FileSplitter {
                 self.finish(ctx, r);
             }
         }
-        let mut sel = usize::from(self.mode == Mode::Join);
-        frame::left(ui, 170.0, |ui| {
-            section_nav(
-                ui,
-                &[(icons::SCISSORS, "Split a file"), (icons::STACK, "Join parts")],
-                &mut sel,
-            )
-        });
-        self.mode = if sel == 1 { Mode::Join } else { Mode::Split };
-        frame::options(ui, |ui| {
-            let installed = *self.menu_installed.get_or_insert_with(|| VERB.is_installed());
-            let mut on = installed;
-            if ui
-                .checkbox(&mut on, "In Explorer's right-click menu")
-                .on_hover_text(
-                    "Adds \"Split or join with Win Manager\" for files; on a .wmsplit file it joins.",
-                )
-                .changed()
-            {
-                let r = if on {
-                    VERB.install(ctx.journal, "splitter")
-                } else {
-                    VERB.uninstall(ctx.journal, "splitter")
-                };
-                self.message = Some(
-                    r.map(|()| "Explorer menu updated.".into())
-                        .map_err(|e| format!("{e:#}")),
-                );
-                self.menu_installed = None;
-            }
-        });
+        // The original's wizard: a heading band, the Split / Merge choice, then the form.
+        egui::Panel::top("splitter-band")
+            .resizable(false)
+            .frame(egui::Frame::new().inner_margin(egui::Margin::symmetric(16, 10)))
+            .show(ui, |ui| {
+                ui.label(egui::RichText::new("File Split or Merge").strong().size(17.0));
+            });
         frame::status(
             ui,
             if self.mode == Mode::Split {
@@ -379,6 +359,91 @@ impl Tool for FileSplitter {
             },
             |_| {},
         );
+        let mut nav = 0i8;
+        let mut menu_change = None;
+        let installed = *self.menu_installed.get_or_insert_with(|| VERB.is_installed());
+        let page = self.page;
+        let busy = self.task.is_some();
+        frame::footer(
+            ui,
+            |ui| {
+                let mut on = installed;
+                if ui
+                    .checkbox(&mut on, "Add to Context Menu")
+                    .on_hover_text(
+                        "Adds \"Split or join with Win Manager\" for files; on a .wmsplit file it joins.",
+                    )
+                    .changed()
+                {
+                    menu_change = Some(on);
+                }
+            },
+            |ui| {
+                if ui.button("Exit").clicked() {
+                    nav = 2;
+                }
+                if ui.add_enabled(page == 0, egui::Button::new("Next >")).clicked() {
+                    nav = 1;
+                }
+                if ui
+                    .add_enabled(page == 1 && !busy, egui::Button::new("< Back"))
+                    .clicked()
+                {
+                    nav = -1;
+                }
+            },
+        );
+        match nav {
+            1 => self.page = 1,
+            -1 => self.page = 0,
+            2 => ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close),
+            _ => {}
+        }
+        if let Some(on) = menu_change {
+            let r = if on {
+                VERB.install(ctx.journal, "splitter")
+            } else {
+                VERB.uninstall(ctx.journal, "splitter")
+            };
+            self.message = Some(
+                r.map(|()| "Explorer menu updated.".into())
+                    .map_err(|e| format!("{e:#}")),
+            );
+            self.menu_installed = None;
+        }
+        if self.page == 0 {
+            frame::central(ui, |ui| {
+                show_message(ui, &self.message);
+                ui.add_space(24.0);
+                for (mode, icon, title, desc) in [
+                    (
+                        Mode::Split,
+                        icons::SCISSORS,
+                        "Split a file",
+                        "Split into several smaller files",
+                    ),
+                    (
+                        Mode::Join,
+                        icons::STACK,
+                        "Merge split files",
+                        "Merge several files into a single larger file",
+                    ),
+                ] {
+                    ui.horizontal(|ui| {
+                        ui.add_space(60.0);
+                        ui.label(egui::RichText::new(icon).size(44.0).color(wm_core::ui::ACCENT));
+                        ui.add_space(24.0);
+                        ui.vertical(|ui| {
+                            ui.radio_value(&mut self.mode, mode, egui::RichText::new(title).strong());
+                            ui.add_space(4.0);
+                            ui.weak(format!("      {desc}"));
+                        });
+                    });
+                    ui.add_space(36.0);
+                }
+            });
+            return;
+        }
         frame::central(ui, |ui| {
             let splitting = self.mode == Mode::Split;
             if self.source.as_ref().is_some_and(|p| is_manifest(p) == splitting) {
