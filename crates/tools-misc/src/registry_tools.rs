@@ -883,44 +883,68 @@ impl Tool for RegistryTools {
             (
                 Tab::Search,
                 icons::MAGNIFYING_GLASS,
-                "Search",
+                "Registry Finder",
                 "Finds keys, value names and data under a key.",
             ),
             (
                 Tab::Jump,
                 icons::ARROW_SQUARE_OUT,
-                "Jump to key",
+                "Registry Jumper",
                 "Opens the Registry Editor at a key you type or paste.",
             ),
             (
                 Tab::Editor,
                 icons::PENCIL_SIMPLE,
-                "Edit key",
+                "Registry Editor",
                 "Every change can be undone from the Change Journal.",
             ),
             (
                 Tab::Import,
                 icons::DOWNLOAD,
-                "Import",
+                "Import Registry",
                 "Lists the keys a .reg file changes and backs them up before importing it.",
             ),
             (
                 Tab::Compare,
                 icons::SWAP,
-                "Compare keys",
+                "Registry Compare",
                 "Lists the differences between two keys.",
             ),
             (
                 Tab::Favorites,
                 icons::BOOKMARK_SIMPLE,
-                "Favourites",
+                "Registry Favorites",
                 "Keys you visit often, one click away.",
             ),
         ];
         let mut sel = TABS.iter().position(|t| t.0 == self.tab).unwrap_or(0);
-        let nav: Vec<(&str, &str)> = TABS.iter().map(|t| (t.1, t.2)).collect();
-        if frame::left(ui, 180.0, |ui| section_nav(ui, &nav, &mut sel)) {
+        let mut nav: Vec<(&str, &str)> = TABS.iter().map(|t| (t.1, t.2)).collect();
+        // The original also lists the registry cleaner and defrag; these open those tools.
+        nav.push((icons::DATABASE, "Registry Cleaner"));
+        nav.push((icons::STACK, "Registry Defrag"));
+        egui::Panel::top("regtools-band")
+            .resizable(false)
+            .frame(egui::Frame::new().inner_margin(egui::Margin::symmetric(12, 8)))
+            .show(ui, |ui| {
+                ui.vertical_centered(|ui| {
+                    ui.label(
+                        egui::RichText::new("Manage the system registry using advanced registry tools")
+                            .strong()
+                            .size(15.0),
+                    );
+                });
+            });
+        if frame::left(ui, 190.0, |ui| section_nav(ui, &nav, &mut sel)) {
             self.message = None;
+        }
+        if sel >= TABS.len() {
+            let id = if sel == TABS.len() {
+                "regclean"
+            } else {
+                "regdefrag"
+            };
+            wm_core::ui::request_open_tool(ui.ctx(), id);
+            sel = TABS.iter().position(|t| t.0 == self.tab).unwrap_or(0);
         }
         self.tab = TABS[sel].0;
         frame::status(ui, TABS[sel].3, |_| {});
