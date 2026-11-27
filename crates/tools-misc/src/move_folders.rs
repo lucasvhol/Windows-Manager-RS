@@ -18,7 +18,7 @@ use wm_core::{
     AppCtx, Category, Layout, Tool, egui, icons, registry,
     safety::UndoAction,
     task::BackgroundTask,
-    ui::{Confirm, Message, ToolButton, format_bytes, frame, section, show_message},
+    ui::{Confirm, Message, ToolButton, format_bytes, frame, show_message},
 };
 
 const USF: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders";
@@ -234,7 +234,6 @@ pub struct MoveFolders {
     rows: Vec<Row>,
     sizes: Option<BackgroundTask<Vec<u64>>>,
     selected: Option<usize>,
-    target_parent: Option<PathBuf>,
     with_files: bool,
     confirm: Confirm<(usize, PathBuf, bool)>,
     message: Message,
@@ -246,7 +245,6 @@ impl Default for MoveFolders {
             rows: Vec::new(),
             sizes: None,
             selected: None,
-            target_parent: None,
             with_files: true,
             confirm: Confirm::default(),
             message: None,
@@ -283,11 +281,9 @@ impl MoveFolders {
         let resp = ui
             .add_enabled(
                 can,
-                egui::Checkbox::new(
-                    &mut on,
-                    "Stop people from moving these folders (hides the Location tab in their Properties)",
-                ),
+                egui::Checkbox::new(&mut on, "Prevent from changing system folder location"),
             )
+            .on_hover_text("Hides the Location tab in these folders' Properties")
             .on_disabled_hover_text("Needs administrator rights: restart the app as administrator.");
         if resp.changed() {
             self.message = Some(if ctx.config.dry_run {
@@ -297,9 +293,6 @@ impl MoveFolders {
                     .map(|()| "Saved. Explorer windows opened from now on follow it.".to_owned())
                     .map_err(|e| format!("{e:#}"))
             });
-        }
-        if !can {
-            ui.weak("Changing this needs administrator rights (restart the app as administrator).");
         }
     }
 }
@@ -338,39 +331,42 @@ impl Tool for MoveFolders {
         let selected = self.selected.filter(|&i| i < self.rows.len());
         let row_name = selected.map_or("", |i| self.rows[i].name);
         let current = selected.and_then(|i| self.rows[i].path.clone());
-        let target = selected
-            .and(self.target_parent.as_ref())
-            .map(|p| p.join(row_name));
-        let check = match (&target, &current) {
-            (Some(t), Some(cur)) => check_target(cur, t),
-            _ => Err(anyhow::anyhow!("")),
-        };
+        // The original's toolbar: Refresh, Change (pick where the folder goes, then
+        // confirm), Open Folder, Exit.
         match frame::toolbar(
             ui,
             &[
-                Some(ToolButton::new(icons::FOLDER_OPEN, "Choose target").enabled(selected.is_some())),
-                Some(ToolButton::new(icons::ARROW_SQUARE_OUT, "Move").enabled(check.is_ok())),
-                None,
-                Some(ToolButton::new(icons::FOLDERS, "Open folder").enabled(current.is_some())),
                 Some(ToolButton::new(icons::ARROWS_CLOCKWISE, "Refresh")),
+                None,
+                Some(ToolButton::new(icons::ARROW_SQUARE_OUT, "Change").enabled(selected.is_some())),
+                Some(ToolButton::new(icons::FOLDER_OPEN, "Open Folder").enabled(current.is_some())),
+                None,
+                Some(ToolButton::new(icons::SIGN_OUT, "Exit")),
             ],
             |_| {},
         ) {
             Some(0) => {
-                if let Some(d) = rfd::FileDialog::new().pick_folder() {
-                    self.target_parent = Some(d);
-                }
+                self.rows.clear();
+                self.message = None;
             }
-            Some(1) => {
-                if let (Some(i), Some(t)) = (selected, target.clone()) {
-                    self.confirm.ask(
-                        format!(
-                            "Move {row_name} to {}{}? Close programs using files in it first. You can undo this from the Change Journal.",
-                            t.display(),
-                            if self.with_files { " with its files" } else { "" }
+            Some(2) => {
+                if let (Some(i), Some(cur)) = (selected, current.clone())
+                    && let Some(d) = rfd::FileDialog::new()
+                        .set_title(format!("Where should {row_name} go?"))
+                        .pick_folder()
+                {
+                    let t = d.join(row_name);
+                    match check_target(&cur, &t) {
+                        Ok(()) => self.confirm.ask(
+                            format!(
+                                "Move {row_name} to {}{}? Close programs using files in it first. You can undo this from the Change Journal.",
+                                t.display(),
+                                if self.with_files { " with its files" } else { "" }
+                            ),
+                            (i, t, self.with_files),
                         ),
-                        (i, t, self.with_files),
-                    );
+                        Err(e) => self.message = Some(Err(format!("{e:#}"))),
+                    }
                 }
             }
             Some(3) => {
@@ -378,25 +374,18 @@ impl Tool for MoveFolders {
                     let _ = std::process::Command::new("explorer").arg(p).spawn();
                 }
             }
-            Some(4) => {
-                self.rows.clear();
-                self.message = None;
-            }
+            Some(5) => ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close),
             _ => {}
         }
         frame::options(ui, |ui| {
             ui.radio_value(&mut self.with_files, true, "Move my files there too");
             ui.radio_value(&mut self.with_files, false, "Only change the location");
-            ui.separator();
-            self.lock_ui(ui, ctx);
         });
         let total: u64 = self.rows.iter().filter_map(|r| r.size).sum();
         frame::status(
             ui,
             &format!("{} folders, {} in all", self.rows.len(), format_bytes(total)),
-            |ui| {
-                ui.weak("Another drive gives Windows room, and your files survive a reinstall.");
-            },
+            |ui| self.lock_ui(ui, ctx),
         );
         frame::central(ui, |ui| {
             show_message(ui, &self.message);
@@ -410,7 +399,7 @@ impl Tool for MoveFolders {
                 .column(Column::initial(420.0).clip(true))
                 .column(Column::remainder())
                 .header(22.0, |mut h| {
-                    for t in ["Folder", "Location", "Size"] {
+                    for t in ["Folder Name", "Current Path", "Size"] {
                         h.col(|ui| {
                             ui.strong(t);
                         });
@@ -443,34 +432,7 @@ impl Tool for MoveFolders {
                 self.selected = Some(i);
             }
             ui.add_space(10.0);
-            if selected.is_none() {
-                ui.weak("Pick a folder above, then choose where to move it.");
-                return;
-            }
-            section(
-                ui,
-                &format!("Move {row_name}"),
-                |_| {},
-                |ui| {
-                    ui.horizontal(|ui| {
-                        ui.weak("Into");
-                        ui.label(
-                            self.target_parent
-                                .as_ref()
-                                .map_or("(press Choose target)".into(), |p| p.display().to_string()),
-                        );
-                    });
-                    if let Some(t) = &target {
-                        ui.horizontal(|ui| {
-                            ui.weak("New location");
-                            ui.label(t.display().to_string());
-                        });
-                        if let Err(e) = &check {
-                            ui.colored_label(ui.visuals().warn_fg_color, format!("{e:#}"));
-                        }
-                    }
-                },
-            );
+            ui.weak("Select a folder, then press Change to choose where it goes.");
         });
     }
 
