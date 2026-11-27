@@ -1,5 +1,5 @@
 ; Win Manager RS installer (Inno Setup 6).
-; Build:  ISCC.exe /DAppVersion=0.2.0 installer\win-manager-rs.iss
+; Build:  ISCC.exe /DAppVersion=0.3.0 installer\win-manager-rs.iss
 ; Expects target\release\win-manager.exe; writes dist\WinManagerRS-<version>-setup.exe.
 
 #ifndef AppVersion

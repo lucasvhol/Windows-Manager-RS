@@ -4935,7 +4935,7 @@ dependencies = [
 
 [[package]]
 name = "win-manager"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "eframe",
@@ -5293,7 +5293,7 @@ dependencies = [
 
 [[package]]
 name = "wm-core"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "argon2",
@@ -5320,7 +5320,7 @@ dependencies = [
 
 [[package]]
 name = "wm-tools-cleaner"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "blake3",
@@ -5343,7 +5343,7 @@ dependencies = [
 
 [[package]]
 name = "wm-tools-custom"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "ab_glyph",
  "anyhow",
@@ -5364,7 +5364,7 @@ dependencies = [
 
 [[package]]
 name = "wm-tools-info"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -5382,7 +5382,7 @@ dependencies = [
 
 [[package]]
 name = "wm-tools-misc"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "blake3",
@@ -5402,7 +5402,7 @@ dependencies = [
 
 [[package]]
 name = "wm-tools-network"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -5421,7 +5421,7 @@ dependencies = [
 
 [[package]]
 name = "wm-tools-oneclick"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -5442,7 +5442,7 @@ dependencies = [
 
 [[package]]
 name = "wm-tools-optimizer"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -5459,7 +5459,7 @@ dependencies = [
 
 [[package]]
 name = "wm-tools-security"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "aes-gcm",
  "anyhow",

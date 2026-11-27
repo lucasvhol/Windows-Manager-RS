@@ -1,5 +1,5 @@
 name: Release
-# Push a tag like v0.2.0 (matching the version in Cargo.toml) to publish a release with
+# Push a tag like v0.3.0 (matching the version in Cargo.toml) to publish a release with
 # the installer and its checksum. The in-app Update button reads these releases.
 on:
   push:
